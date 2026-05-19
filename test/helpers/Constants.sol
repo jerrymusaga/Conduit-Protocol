@@ -2,8 +2,8 @@
 pragma solidity 0.8.23;
 
 /// @notice Live framework addresses + EIP-712 domain on Base Sepolia (84532).
-///         Pulled from `@metamask/delegation-deployments` v1.3.0, plus a
-///         `cast call $DM 'eip712Domain()(...)'` for the domain values.
+///         Pulled from MetaMask's delegation-deployments package (v1.3.0),
+///         plus `cast call DM 'eip712Domain()(...)'` for the domain values.
 library BaseSepoliaConstants {
     uint256 internal constant CHAIN_ID = 84532;
 

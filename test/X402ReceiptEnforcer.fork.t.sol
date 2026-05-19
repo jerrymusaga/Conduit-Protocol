@@ -57,11 +57,11 @@ interface IUSDC {
 
 contract X402ReceiptEnforcerForkTest is Test {
     // Actors
-    address internal userEOA;
-    uint256 internal userPK;
+    address internal userEoa;
+    uint256 internal userPk;
     address internal userSmartAccount;
     address internal coordinator;
-    uint256 internal coordinatorPK;
+    uint256 internal coordinatorPk;
     address internal specialist;
     address internal payTo;
 
@@ -73,15 +73,15 @@ contract X402ReceiptEnforcerForkTest is Test {
     bytes32 internal constant ZERO_MODE = bytes32(0);
 
     function setUp() public {
-        (userEOA, userPK)               = makeAddrAndKey("user");
-        (coordinator, coordinatorPK)    = makeAddrAndKey("coordinator");
+        (userEoa, userPk)               = makeAddrAndKey("user");
+        (coordinator, coordinatorPk)    = makeAddrAndKey("coordinator");
         (specialist, )                  = makeAddrAndKey("specialist");
         payTo                           = makeAddr("payTo");
 
         enforcer = new X402ReceiptEnforcer();
 
         userSmartAccount = address(new MinimalAccount(
-            userEOA,
+            userEoa,
             BaseSepoliaConstants.DELEGATION_MANAGER
         ));
 
@@ -114,7 +114,7 @@ contract X402ReceiptEnforcerForkTest is Test {
             salt: 0,
             signature: hex""
         });
-        root.signature = _signDelegation(dm, root, userPK);
+        root.signature = _signDelegation(dm, root, userPk);
         bytes32 rootHash = dm.getDelegationHash(root);
 
         // ---------- 2. Child delegation with our enforcer ----------
@@ -149,7 +149,7 @@ contract X402ReceiptEnforcerForkTest is Test {
             salt: 1,
             signature: hex""
         });
-        child.signature = _signDelegation(dm, child, coordinatorPK);
+        child.signature = _signDelegation(dm, child, coordinatorPk);
 
         // ---------- 3. Encode the redemption ----------
         // Chain MUST be [leaf, ..., root]; otherwise the DM rejects with
@@ -234,7 +234,7 @@ contract X402ReceiptEnforcerForkTest is Test {
         IDelegationManager dm,
         IDelegationManager.Delegation memory d,
         uint256 pk
-    ) internal view returns (bytes memory) {
+    ) internal pure returns (bytes memory) {
         bytes32 structHash = dm.getDelegationHash(d);
         bytes32 digest = keccak256(abi.encodePacked(
             "\x19\x01",

@@ -1,4 +1,22 @@
 {
+  "lib/account-abstraction": {
+    "tag": {
+      "name": "v0.7.0",
+      "rev": "7af70c8993a6f42973f520ae0752386a5032abe7"
+    }
+  },
+  "lib/delegation-framework": {
+    "tag": {
+      "name": "v1.3.0",
+      "rev": "bfbdf9795a976833ed2fa000baf42fbb83958b03"
+    }
+  },
+  "lib/erc7579-implementation": {
+    "tag": {
+      "name": "v0.0.2",
+      "rev": "0f321b8544cea7ad3be1b5669c7998329636ef84"
+    }
+  },
   "lib/forge-std": {
     "tag": {
       "name": "v1.16.1",

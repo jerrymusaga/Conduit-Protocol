@@ -17,15 +17,15 @@ pragma solidity 0.8.23;
  *         forwarding. Plenty for tests; not for production.
  */
 contract MinimalAccount {
-    address public immutable owner;
-    address public immutable delegationManager;
+    address public immutable OWNER;
+    address public immutable DELEGATION_MANAGER;
 
     bytes4 private constant EIP1271_MAGIC = 0x1626ba7e;
     bytes4 private constant EIP1271_FAIL  = 0xffffffff;
 
     constructor(address _owner, address _dm) {
-        owner = _owner;
-        delegationManager = _dm;
+        OWNER = _owner;
+        DELEGATION_MANAGER = _dm;
     }
 
     function isValidSignature(bytes32 hash, bytes calldata signature)
@@ -41,7 +41,7 @@ contract MinimalAccount {
             v := byte(0, calldataload(add(signature.offset, 64)))
         }
         address recovered = ecrecover(hash, v, r, s);
-        if (recovered != address(0) && recovered == owner) return EIP1271_MAGIC;
+        if (recovered != address(0) && recovered == OWNER) return EIP1271_MAGIC;
         return EIP1271_FAIL;
     }
 
@@ -50,7 +50,7 @@ contract MinimalAccount {
     function executeFromExecutor(bytes32 /*mode*/, bytes calldata executionCallData)
         external returns (bytes[] memory results)
     {
-        require(msg.sender == delegationManager, "MinimalAccount: only DM");
+        require(msg.sender == DELEGATION_MANAGER, "MinimalAccount: only DM");
         require(executionCallData.length >= 52, "MinimalAccount: invalid exec data");
 
         address target;

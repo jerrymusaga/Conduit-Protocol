@@ -20,10 +20,12 @@ import { ModeCode } from "@delegator/utils/Types.sol";
 contract X402ReceiptEnforcerTest is Test {
     X402ReceiptEnforcer internal enforcer;
 
-    // Test fixtures
+    // Test fixtures — EIP-55 checksummed (Solidity enforces the checksum on
+    // any 40-hex-digit literal, regardless of case). If you change these, run
+    // the failing build once; the compiler tells you the correct casing.
     bytes32 internal constant INTENT_HASH = keccak256("intent-x402-unit-test");
-    address internal constant TOKEN     = address(0xDEAD0000000000000000000000000000000000DE);
-    address internal constant RECIPIENT = address(0xBEEF0000000000000000000000000000000000EF);
+    address internal constant TOKEN     = address(0xdead000000000000000000000000000000000001);
+    address internal constant RECIPIENT = address(0xbeeF000000000000000000000000000000000002);
     uint128 internal constant MAX_AMOUNT = 10_000; // 0.01 USDC-ish
     uint8   internal constant FLAGS = 0;
 
@@ -115,7 +117,8 @@ contract X402ReceiptEnforcerTest is Test {
 
     function test_RevertsOn_WrongTokenTarget() public {
         bytes memory terms = _terms(INTENT_HASH, TOKEN, RECIPIENT, MAX_AMOUNT, FLAGS);
-        address wrongToken = address(0xBADC0FFEE0DDF00D5BADC0FFEE0DDf00d5BAdC0fe);
+        // EIP-55 checksummed.
+        address wrongToken = address(0xBaDc0FFEEbADC0ffeebaDC0ffeebaDc0FfeEbADc);
         bytes memory exec  = _packTransfer(wrongToken, 0, RECIPIENT, MAX_AMOUNT);
 
         vm.expectRevert(bytes("X402Receipt:wrong-token"));
