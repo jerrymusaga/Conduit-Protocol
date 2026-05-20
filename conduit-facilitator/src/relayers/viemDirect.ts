@@ -23,6 +23,9 @@ const DM_ABI = parseAbi([
 export const viemDirectBackend: RelayBackend = {
   name: "viem-direct",
 
+  // The relayer EOA is the redeemer — it's msg.sender at the DM.
+  redeemer: walletClient?.account?.address ?? null,
+
   async submit(params: RelaySubmitParams): Promise<RelayResult> {
     if (!walletClient || !walletClient.account) {
       return {

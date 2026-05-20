@@ -28,6 +28,11 @@ import type { RelayBackend, RelayResult, RelaySubmitParams } from "./types.js";
 export const oneshotPermissionlessBackend: RelayBackend = {
   name: "oneshot-pl",
 
+  // TBD at the mainnet swap: 1Shot's relayer address (the actual msg.sender
+  // at the DM). Buyers will name this in their Redeemer caveat. Pull it from
+  // the relayer's capabilities response when implementing this backend.
+  redeemer: null,
+
   async submit(_params: RelaySubmitParams): Promise<RelayResult> {
     const job = createJob();
 

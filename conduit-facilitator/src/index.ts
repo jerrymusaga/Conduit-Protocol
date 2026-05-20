@@ -22,7 +22,7 @@ app.get("/health", (_req, res) => {
   });
 });
 
-app.use(supportedRouter);
+app.use(supportedRouter(backend));
 app.use(verifyRouter);
 app.use(settleRouter(backend));
 

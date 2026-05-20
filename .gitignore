@@ -17,3 +17,8 @@ lib/
 # Editors
 .vscode/
 .idea/
+
+# facilitator
+conduit-facilitator/node_modules/
+conduit-facilitator/dist/
+conduit-facilitator/.env

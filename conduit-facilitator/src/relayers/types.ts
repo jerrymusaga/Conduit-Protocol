@@ -44,5 +44,12 @@ export interface RelayResult {
  */
 export interface RelayBackend {
   readonly name: string;
+  /**
+   * The on-chain address that submits redemptions — i.e. msg.sender at the
+   * DelegationManager. Buyers must name this in their delegation's Redeemer
+   * caveat. For viem-direct it's the relayer EOA; for oneshot-pl it's
+   * 1Shot's relayer (null until the mainnet backend is implemented).
+   */
+  readonly redeemer: Address | null;
   submit(params: RelaySubmitParams): Promise<RelayResult>;
 }
