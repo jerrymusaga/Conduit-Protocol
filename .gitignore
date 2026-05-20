@@ -22,3 +22,7 @@ lib/
 conduit-facilitator/node_modules/
 conduit-facilitator/dist/
 conduit-facilitator/.env
+
+# endpoint
+conduit-endpoint/node_modules
+conduit-endpoint/.env
