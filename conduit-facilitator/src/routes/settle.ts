@@ -39,7 +39,7 @@ export function settleRouter(backend: RelayBackend): Router {
   });
 
   router.get("/jobs/:id", (req: Request, res: Response) => {
-    const job = getJob(req.params.id);
+    const job = getJob(req.params.id ?? "");
     if (!job) return res.status(404).json({ error: "job not found" });
     res.json({
       jobId: job.id,

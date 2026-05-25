@@ -23,7 +23,7 @@ app.get("/health", (_req, res) => {
 });
 
 app.use(supportedRouter(backend));
-app.use(verifyRouter);
+app.use(verifyRouter(backend));
 app.use(settleRouter(backend));
 
 app.listen(config.port, () => {
