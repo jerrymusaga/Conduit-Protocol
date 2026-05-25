@@ -3,25 +3,25 @@
  *
  * A user grants a *coordinator* agent a bounded, revocable, time-limited
  * spending policy: up to N USDC per period, single-use per request. The
- * coordinator is an ephemeral session smart account whose address is named as
- * the permission's `signer`; later it redelegates narrower, intent-bound
- * rights to task agents (handoff step 3).
+ * coordinator's address is named as the permission's grantee (`to`); later it
+ * redelegates narrower, intent-bound rights toward the facilitator that settles
+ * the payment (handoff step 3, see lib/payment.ts).
+ *
+ * The coordinator is an ephemeral EOA (not a smart account): its redelegation
+ * signature is plain ECDSA, so it validates at redemption WITHOUT the
+ * coordinator ever being deployed — which is what lets the facilitator redeem
+ * directly (no bundler/userOp). The ephemeral key can never exceed the granted
+ * budget, so it's safe to generate fresh each session.
  *
  * MetaMask handles the EIP-7702 upgrade of the user's EOA → Smart Account as
  * part of approving this grant, so there is no separate authorization to sign.
  */
 import {
-  Implementation,
-  toMetaMaskSmartAccount,
-  type MetaMaskSmartAccount,
-} from "@metamask/smart-accounts-kit";
-import {
   erc7715ProviderActions,
   type RequestExecutionPermissionsReturnType,
 } from "@metamask/smart-accounts-kit/actions";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
-import { parseUnits, type WalletClient } from "viem";
-import { publicClient } from "./chain";
+import { parseUnits, type Hex, type WalletClient } from "viem";
 import { config } from "./config";
 
 /** The shape of a single granted permission, from the toolkit's return type. */
@@ -48,20 +48,21 @@ export function periodLabel(seconds: number): string {
   return PERIOD_OPTIONS.find((o) => o.seconds === seconds)?.label ?? `${seconds}s`;
 }
 
+/** The coordinator agent: an ephemeral EOA holding the root grant. */
+export interface Coordinator {
+  address: Hex;
+  /** Kept in-memory only, to sign the redelegation. Never persisted/sent. */
+  privateKey: Hex;
+}
+
 /**
- * Create the coordinator session account. An ephemeral key lives only for the
- * browser session — it can never exceed the granted budget, so it's safe to
- * generate fresh each time (matches the canonical gator-7715 pattern).
+ * Create the coordinator account — a fresh ephemeral EOA. We keep the private
+ * key so it can ECDSA-sign the redelegation (which validates without deploying
+ * the account). It only ever holds budget-bounded authority.
  */
-export async function createCoordinatorAccount(): Promise<MetaMaskSmartAccount> {
-  const account = privateKeyToAccount(generatePrivateKey());
-  return toMetaMaskSmartAccount({
-    client: publicClient,
-    implementation: Implementation.Hybrid,
-    deployParams: [account.address, [], [], []],
-    deploySalt: "0x",
-    signer: { account },
-  });
+export function createCoordinatorAccount(): Coordinator {
+  const privateKey = generatePrivateKey();
+  return { privateKey, address: privateKeyToAccount(privateKey).address };
 }
 
 export interface GrantResult {
@@ -91,7 +92,7 @@ export interface GrantResult {
 export async function grantBudget(params: {
   walletClient: WalletClient;
   chainId: number;
-  coordinator: MetaMaskSmartAccount;
+  coordinator: Coordinator;
   /** Human-readable cap per period, in USDC (default 0.10). */
   amountUsdc?: string;
   /** Period length in seconds; the grant expires after one period (default 1h). */

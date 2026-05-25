@@ -3,8 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { WalletClient } from "viem";
-import type { MetaMaskSmartAccount } from "@metamask/smart-accounts-kit";
+import { formatUnits, type WalletClient } from "viem";
 import { connectWallet } from "@/lib/wallet";
 import {
   BUDGET,
@@ -12,8 +11,11 @@ import {
   periodLabel,
   createCoordinatorAccount,
   grantBudget,
+  type Coordinator,
   type GrantResult,
 } from "@/lib/erc7715";
+import { fetch402, payAndClaim } from "@/lib/endpoint";
+import { buildPayment } from "@/lib/payment";
 import { config } from "@/lib/config";
 
 /* ===========================================================================
@@ -72,11 +74,10 @@ export default function DemoPage() {
   const [nowSec, setNowSec] = useState(() => Math.floor(Date.now() / 1000));
   const logEndRef = useRef<HTMLDivElement>(null);
   const walletRef = useRef<WalletClient | null>(null);
-  const coordinatorRef = useRef<MetaMaskSmartAccount | null>(null);
+  const coordinatorRef = useRef<Coordinator | null>(null);
 
   // Budget meter scales to the real granted cap once we have it.
   const CAP = grantResult ? Number(grantResult.periodAmount) : 100_000; // micro-USDC
-  const PRICE = 10_000; // 0.01 USDC (still mock until run-flow is wired)
 
   // Tick the expiry countdown while a grant is live.
   useEffect(() => {
@@ -136,7 +137,7 @@ export default function DemoPage() {
     setBusy(true);
     try {
       append("info", "Creating coordinator session account…");
-      const coordinator = await createCoordinatorAccount();
+      const coordinator = createCoordinatorAccount();
       coordinatorRef.current = coordinator;
       append("agent", `Coordinator account · ${shorten(coordinator.address)}`);
 
@@ -168,40 +169,71 @@ export default function DemoPage() {
     }
   };
 
+  // REAL: discover (402) → execute (intent-bound redelegation → endpoint →
+  // facilitator /verify + /settle) → claim. Surfaces the real on-chain receipt.
   const runFlow = async () => {
-    if (busy || revoked) return;
+    if (busy || revoked || !grantResult || !coordinatorRef.current) return;
     setBusy(true);
     setReceipt(null);
+    try {
+      append("agent", "Coordinator › preparing intent-bound redelegation");
 
-    append("agent", "Coordinator › redelegating narrow rights to task agents");
-    await wait(500);
-    setAgent("discover", "active");
-    append("agent", "discover › GET /asset  →  402 Payment Required (0.01 USDC)");
-    await wait(700);
-    setAgent("discover", "done");
+      // --- discover: read the 402 requirements (no spend) ----------------
+      setAgent("discover", "active");
+      append("agent", "discover › GET /paid-data");
+      const req = await fetch402();
+      const price = formatUnits(BigInt(req.maxAmountRequired), 6);
+      append(
+        "agent",
+        `discover › 402 Payment Required · ${price} USDC → ${shorten(req.payTo)}`
+      );
+      setAgent("discover", "done");
 
-    setAgent("execute", "active");
-    append("pay", "execute › authority check: within grant ✓");
-    await wait(500);
-    append("pay", "execute › paying via Conduit → 1Shot relayer (gas in USDC)…");
-    await wait(1100);
-    const tx = "0x38b9574c7fbc04e2…995a47b8f";
-    append("ok", `settled ✓  ${tx}  ·  X402IntentSettled emitted`);
-    setSpent((s) => s + PRICE);
-    setAgent("execute", "done");
+      // --- execute: build + sign the bound redelegation, then pay --------
+      setAgent("execute", "active");
+      append("pay", "execute › binding payment · X402ReceiptEnforcer + IdEnforcer");
+      const built = await buildPayment({
+        grant: grantResult,
+        coordinator: coordinatorRef.current,
+        req,
+      });
+      append(
+        "pay",
+        `execute › intent ${shorten(built.intentHash)} · redeemer ${shorten(req.redeemer!)}`
+      );
+      append("pay", "execute › X-PAYMENT → facilitator /verify → /settle…");
+      const claim = await payAndClaim(built.paymentPayload);
+      if (!claim.ok) {
+        setAgent("execute", "idle");
+        append("reject", `Rejected on-chain · ${claim.error}`);
+        return;
+      }
+      const tx = claim.settlement?.transaction ?? null;
+      append(
+        "ok",
+        `settled ✓ ${tx ? shorten(tx) : "(pending)"} · ${
+          claim.settlement?.status ?? "submitted"
+        } · X402IntentSettled`
+      );
+      setSpent((s) => s + Number(built.amount));
+      setAgent("execute", "done");
 
-    setAgent("claim", "active");
-    append("agent", "claim › GET /asset  →  200 OK, asset unlocked");
-    await wait(600);
-    setAgent("claim", "done");
+      // --- claim: the asset is now unlocked ------------------------------
+      setAgent("claim", "active");
+      append("agent", "claim › GET /paid-data → 200 OK, asset unlocked");
+      setAgent("claim", "done");
 
-    setReceipt({
-      amount: "0.01 USDC",
-      recipient: "0xa5cA…7350",
-      intent: "0xf3e8a26c…e75e748",
-      tx,
-    });
-    setBusy(false);
+      setReceipt({
+        amount: `${formatUnits(built.amount, 6)} USDC`,
+        recipient: built.payTo,
+        intent: built.intentHash,
+        tx: tx ?? "(pending)",
+      });
+    } catch (e) {
+      append("reject", `Run failed · ${errMsg(e)}`);
+    } finally {
+      setBusy(false);
+    }
   };
 
   const tryBreak = async (kind: "redirect" | "overspend" | "replay") => {

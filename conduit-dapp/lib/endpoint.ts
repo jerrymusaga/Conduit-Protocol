@@ -1,0 +1,83 @@
+/**
+ * Talks to the Conduit demo seller (conduit-endpoint). The dapp drives the x402
+ * exchange: GET → 402 (read requirements) → re-GET with X-PAYMENT → 200 (asset).
+ * The endpoint internally calls the facilitator's /verify + /settle.
+ */
+import { config } from "./config";
+
+const RESOURCE_PATH = "/paid-data";
+
+/** The bits of the x402 402-envelope (`accepts[0]`) the dapp needs to pay. */
+export interface PaymentRequirements {
+  scheme: string;
+  network: string;
+  /** Price in token base units (string). */
+  maxAmountRequired: string;
+  resource: string;
+  payTo: `0x${string}`;
+  asset: `0x${string}`;
+  delegationManager: `0x${string}`;
+  receiptEnforcer: `0x${string}`;
+  /** Who submits redeemDelegations — must be the leaf delegate. */
+  redeemer: `0x${string}` | null;
+}
+
+/** GET the protected resource with no payment → parse the 402 requirements. */
+export async function fetch402(): Promise<PaymentRequirements> {
+  const res = await fetch(`${config.endpointUrl}${RESOURCE_PATH}`);
+  if (res.status !== 402) {
+    throw new Error(`expected 402 Payment Required, got HTTP ${res.status}`);
+  }
+  const body = await res.json();
+  const accept = body?.accepts?.[0];
+  if (!accept) throw new Error("402 envelope missing accepts[0]");
+  const extra = accept.extra ?? {};
+  return {
+    scheme: accept.scheme,
+    network: accept.network,
+    maxAmountRequired: accept.maxAmountRequired,
+    resource: accept.resource,
+    payTo: accept.payTo,
+    asset: accept.asset,
+    delegationManager: extra.delegationManager,
+    receiptEnforcer: extra.receiptEnforcer,
+    redeemer: extra.redeemer ?? null,
+  };
+}
+
+export interface ClaimResult {
+  ok: boolean;
+  status: number;
+  data?: unknown;
+  settlement?: { jobId?: string; status?: string; transaction?: string | null };
+  /** Present on rejection — the real reason (verify revert / settle failure). */
+  error?: string;
+}
+
+/**
+ * Re-GET the resource with the X-PAYMENT header (base64 JSON per x402). The
+ * endpoint verifies (simulation) then settles (relayer submits the redemption)
+ * and, on success, returns the asset + settlement info.
+ */
+export async function payAndClaim(paymentPayload: unknown): Promise<ClaimResult> {
+  const header = btoa(JSON.stringify(paymentPayload));
+  const res = await fetch(`${config.endpointUrl}${RESOURCE_PATH}`, {
+    headers: { "X-PAYMENT": header },
+  });
+  const body = await res.json().catch(() => ({}) as Record<string, unknown>);
+
+  if (res.status === 200) {
+    return {
+      ok: true,
+      status: 200,
+      data: (body as { data?: unknown }).data,
+      settlement: (body as { settlement?: ClaimResult["settlement"] }).settlement,
+    };
+  }
+
+  // 402 (verify failed) → body.error; 502 (settle failed) → body.error + detail.
+  const b = body as { error?: string; detail?: string };
+  const error =
+    [b.error, b.detail].filter(Boolean).join(" · ") || `HTTP ${res.status}`;
+  return { ok: false, status: res.status, error };
+}
