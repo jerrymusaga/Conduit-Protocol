@@ -2,13 +2,25 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { WalletClient } from "viem";
+import type { MetaMaskSmartAccount } from "@metamask/smart-accounts-kit";
+import { connectWallet } from "@/lib/wallet";
+import {
+  BUDGET,
+  createCoordinatorAccount,
+  grantBudget,
+  type GrantResult,
+} from "@/lib/erc7715";
+import { config } from "@/lib/config";
 
 /* ===========================================================================
-   Conduit demo — VISUAL SHELL with mock state.
+   Conduit demo.
    The flow, the panels, and every judging-lens beat are here and animated.
-   The real wiring (MetaMask connect, ERC-7715 grant, EIP-7702, redelegation,
-   facilitator /verify + /settle) gets swapped in where marked `MOCK:` next.
+   WIRED (real): Connect (viem + MetaMask) and Grant (ERC-7715 erc20-token-
+   periodic; EIP-7702 upgrade handled by MetaMask).
+   Still MOCK (next): Run flow (redelegation + X402ReceiptEnforcer + facilitator
+   /verify + /settle), break-it buttons, kill-root (disableDelegation).
    =========================================================================== */
 
 type LogKind = "info" | "agent" | "pay" | "ok" | "reject";
@@ -39,7 +51,9 @@ const now = () =>
 
 export default function DemoPage() {
   const [connected, setConnected] = useState(false);
+  const [account, setAccount] = useState<`0x${string}` | null>(null);
   const [granted, setGranted] = useState(false);
+  const [grantResult, setGrantResult] = useState<GrantResult | null>(null);
   const [revoked, setRevoked] = useState(false);
   const [busy, setBusy] = useState(false);
   const [spent, setSpent] = useState(0); // micro-USDC used this period
@@ -51,10 +65,34 @@ export default function DemoPage() {
     intent: string;
     tx: string;
   }>(null);
+  const [nowSec, setNowSec] = useState(() => Math.floor(Date.now() / 1000));
   const logEndRef = useRef<HTMLDivElement>(null);
+  const walletRef = useRef<WalletClient | null>(null);
+  const coordinatorRef = useRef<MetaMaskSmartAccount | null>(null);
 
-  const CAP = 100_000; // 0.10 USDC in micro units
-  const PRICE = 10_000; // 0.01 USDC
+  // Budget meter scales to the real granted cap once we have it.
+  const CAP = grantResult ? Number(grantResult.periodAmount) : 100_000; // micro-USDC
+  const PRICE = 10_000; // 0.01 USDC (still mock until run-flow is wired)
+
+  // Tick the expiry countdown while a grant is live.
+  useEffect(() => {
+    if (!grantResult || revoked) return;
+    const id = setInterval(
+      () => setNowSec(Math.floor(Date.now() / 1000)),
+      1000
+    );
+    return () => clearInterval(id);
+  }, [grantResult, revoked]);
+
+  const remaining = grantResult
+    ? Math.max(0, grantResult.expiry - nowSec)
+    : null;
+  const expiryText =
+    remaining == null
+      ? "—"
+      : `${String(Math.floor(remaining / 60)).padStart(2, "0")}:${String(
+          remaining % 60
+        ).padStart(2, "0")}`;
 
   const append = useCallback((kind: LogKind, text: string) => {
     setLog((l) => [...l, { t: now(), kind, text }]);
@@ -67,24 +105,59 @@ export default function DemoPage() {
   const setAgent = (id: Agent["id"], state: AgentState) =>
     setAgents((a) => a.map((x) => (x.id === id ? { ...x, state } : x)));
 
-  // --- actions (MOCK) ----------------------------------------------------
+  // --- actions -----------------------------------------------------------
 
+  // REAL: viem walletClient over the injected provider; ensures Base Sepolia.
   const connect = async () => {
-    // MOCK: replace with viem custom(window.ethereum) connect
-    setConnected(true);
-    append("info", "Wallet connected · MetaMask Smart Account");
+    if (busy) return;
+    setBusy(true);
+    append("info", "Connecting wallet…");
+    try {
+      const { address, walletClient } = await connectWallet();
+      walletRef.current = walletClient;
+      setAccount(address);
+      setConnected(true);
+      append("ok", `Wallet connected · ${shorten(address)} · Base Sepolia`);
+    } catch (e) {
+      append("reject", `Connect failed · ${errMsg(e)}`);
+    } finally {
+      setBusy(false);
+    }
   };
 
+  // REAL: ERC-7715 grant. Creates the coordinator session account, then opens
+  // MetaMask's Advanced Permissions dialog (MetaMask does the EIP-7702 upgrade).
   const grant = async () => {
-    // MOCK: replace with wallet_grantPermissions (ERC-7715) + EIP-7702 auth
+    if (busy || !walletRef.current) return;
     setBusy(true);
-    append("info", "Requesting ERC-7715 permission: 0.10 USDC / hour…");
-    await wait(700);
-    append("ok", "Permission granted · Coordinator holds the root policy");
-    append("info", "EIP-7702 authorization signed · EOA → Smart Account");
-    setAgent("coordinator", "active");
-    setGranted(true);
-    setBusy(false);
+    try {
+      append("info", "Creating coordinator session account…");
+      const coordinator = await createCoordinatorAccount();
+      coordinatorRef.current = coordinator;
+      append("agent", `Coordinator account · ${shorten(coordinator.address)}`);
+
+      append(
+        "info",
+        `Requesting ERC-7715 permission: ${BUDGET.periodAmountUsdc} USDC / hour…`
+      );
+      const result = await grantBudget({
+        walletClient: walletRef.current,
+        chainId: config.chainId,
+        coordinator,
+      });
+      setGrantResult(result);
+      setGranted(true);
+      setAgent("coordinator", "active");
+      append("ok", "Permission granted · Coordinator holds the root policy");
+      append(
+        "info",
+        "EIP-7702 authorization handled by MetaMask · EOA → Smart Account"
+      );
+    } catch (e) {
+      append("reject", `Grant failed · ${errMsg(e)}`);
+    } finally {
+      setBusy(false);
+    }
   };
 
   const runFlow = async () => {
@@ -157,13 +230,18 @@ export default function DemoPage() {
     setBusy(false);
   };
 
+  // Soft reset: clears the run (log / receipt / spent), keeps the wallet
+  // connection and the live grant so you can run again with a fresh intent.
   const reset = () => {
-    setAgents(INITIAL_AGENTS);
     setLog([]);
     setReceipt(null);
     setSpent(0);
-    setGranted(false);
     setRevoked(false);
+    setAgents(
+      INITIAL_AGENTS.map((a) =>
+        a.id === "coordinator" && granted ? { ...a, state: "active" } : a
+      )
+    );
   };
 
   const pct = Math.min(100, (spent / CAP) * 100);
@@ -180,13 +258,17 @@ export default function DemoPage() {
               demo
             </span>
           </Link>
-          {connected ? (
+          {connected && account ? (
             <span className="mono rounded-lg border border-conduit-border px-3 py-1.5 text-xs text-conduit-cyan">
-              0x6CA6…129D · Base Sepolia
+              {shorten(account)} · Base Sepolia
             </span>
           ) : (
-            <button onClick={connect} className="btn-primary text-sm">
-              Connect wallet
+            <button
+              onClick={connect}
+              disabled={busy}
+              className="btn-primary text-sm disabled:opacity-40"
+            >
+              {busy ? "Connecting…" : "Connect wallet"}
             </button>
           )}
         </div>
@@ -216,9 +298,11 @@ export default function DemoPage() {
 
             <p className="mt-4 text-[15px] leading-relaxed">
               Authorizing{" "}
-              <span className="font-semibold text-white">up to 0.10 USDC / hour</span>,
-              single-use per request, expires in{" "}
-              <span className="mono text-conduit-cyan">59:58</span>.
+              <span className="font-semibold text-white">
+                up to {BUDGET.periodAmountUsdc} USDC / hour
+              </span>
+              , single-use per request, expires in{" "}
+              <span className="mono text-conduit-cyan">{expiryText}</span>.
             </p>
 
             {/* budget meter */}
@@ -381,6 +465,18 @@ export default function DemoPage() {
       </div>
     </main>
   );
+}
+
+function shorten(addr: string | null): string {
+  if (!addr) return "—";
+  return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
+}
+
+function errMsg(e: unknown): string {
+  if (e && typeof e === "object" && "shortMessage" in e) {
+    return String((e as { shortMessage: unknown }).shortMessage);
+  }
+  return e instanceof Error ? e.message : String(e);
 }
 
 function logColor(kind: LogKind): string {
