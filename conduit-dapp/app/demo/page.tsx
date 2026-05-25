@@ -8,6 +8,8 @@ import type { MetaMaskSmartAccount } from "@metamask/smart-accounts-kit";
 import { connectWallet } from "@/lib/wallet";
 import {
   BUDGET,
+  PERIOD_OPTIONS,
+  periodLabel,
   createCoordinatorAccount,
   grantBudget,
   type GrantResult,
@@ -54,6 +56,8 @@ export default function DemoPage() {
   const [account, setAccount] = useState<`0x${string}` | null>(null);
   const [granted, setGranted] = useState(false);
   const [grantResult, setGrantResult] = useState<GrantResult | null>(null);
+  const [amountInput, setAmountInput] = useState<string>(BUDGET.periodAmountUsdc);
+  const [periodSeconds, setPeriodSeconds] = useState<number>(BUDGET.periodDuration);
   const [revoked, setRevoked] = useState(false);
   const [busy, setBusy] = useState(false);
   const [spent, setSpent] = useState(0); // micro-USDC used this period
@@ -138,12 +142,16 @@ export default function DemoPage() {
 
       append(
         "info",
-        `Requesting ERC-7715 permission: ${BUDGET.periodAmountUsdc} USDC / hour…`
+        `Requesting ERC-7715 permission: ${amountInput} USDC / ${periodLabel(
+          periodSeconds
+        )}…`
       );
       const result = await grantBudget({
         walletClient: walletRef.current,
         chainId: config.chainId,
         coordinator,
+        amountUsdc: amountInput,
+        periodDuration: periodSeconds,
       });
       setGrantResult(result);
       setGranted(true);
@@ -246,6 +254,13 @@ export default function DemoPage() {
 
   const pct = Math.min(100, (spent / CAP) * 100);
 
+  // What the card/meter show: the granted values once granted, else the
+  // current dapp selection.
+  const displayAmount = grantResult ? grantResult.periodAmountUsdc : amountInput;
+  const displayPeriod = grantResult
+    ? grantResult.periodLabel
+    : periodLabel(periodSeconds);
+
   return (
     <main className="min-h-screen">
       {/* top bar */}
@@ -296,21 +311,60 @@ export default function DemoPage() {
               </span>
             </div>
 
-            <p className="mt-4 text-[15px] leading-relaxed">
-              Authorizing{" "}
-              <span className="font-semibold text-white">
-                up to {BUDGET.periodAmountUsdc} USDC / hour
-              </span>
-              , single-use per request, expires in{" "}
-              <span className="mono text-conduit-cyan">{expiryText}</span>.
-            </p>
+            {!granted ? (
+              <div className="mt-4 space-y-3">
+                <p className="text-[15px] leading-relaxed text-conduit-muted">
+                  Authorize an agent budget — single-use per request, revocable,
+                  expires after one period.
+                </p>
+                <div className="flex items-center gap-2 text-sm">
+                  <span className="text-white">up to</span>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    inputMode="decimal"
+                    value={amountInput}
+                    onChange={(e) => setAmountInput(e.target.value)}
+                    disabled={!connected || busy}
+                    className="mono w-24 rounded-lg border border-conduit-border bg-transparent px-2.5 py-1.5 text-white outline-none focus:border-conduit-cyan disabled:opacity-40"
+                  />
+                  <span className="text-white">USDC /</span>
+                  <select
+                    value={periodSeconds}
+                    onChange={(e) => setPeriodSeconds(Number(e.target.value))}
+                    disabled={!connected || busy}
+                    className="mono rounded-lg border border-conduit-border bg-conduit-panel px-2.5 py-1.5 text-white outline-none focus:border-conduit-cyan disabled:opacity-40"
+                  >
+                    {PERIOD_OPTIONS.map((o) => (
+                      <option
+                        key={o.seconds}
+                        value={o.seconds}
+                        className="bg-conduit-panel"
+                      >
+                        {o.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            ) : (
+              <p className="mt-4 text-[15px] leading-relaxed">
+                Authorizing{" "}
+                <span className="font-semibold text-white">
+                  up to {displayAmount} USDC / {displayPeriod}
+                </span>
+                , single-use per request, expires in{" "}
+                <span className="mono text-conduit-cyan">{expiryText}</span>.
+              </p>
+            )}
 
             {/* budget meter */}
             <div className="mt-5">
               <div className="flex justify-between text-xs text-conduit-muted">
-                <span>spent this hour</span>
+                <span>spent this {displayPeriod}</span>
                 <span className="mono">
-                  {(spent / 1e6).toFixed(2)} / 0.10 USDC
+                  {(spent / 1e6).toFixed(2)} / {displayAmount} USDC
                 </span>
               </div>
               <div className="mt-2 h-2 overflow-hidden rounded-full bg-white/5">

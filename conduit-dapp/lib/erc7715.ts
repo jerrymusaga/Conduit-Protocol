@@ -28,15 +28,25 @@ import { config } from "./config";
 export type Permission =
   NonNullable<RequestExecutionPermissionsReturnType>[number];
 
-/** The root agent budget the demo asks for. One place to tune the numbers. */
+/** Default agent budget — the starting values the user can adjust on /demo. */
 export const BUDGET = {
   /** Human-readable cap per period, in USDC. */
   periodAmountUsdc: "0.10",
   /** Period length in seconds (cap resets each period). */
   periodDuration: 3600, // 1 hour
-  /** How long the whole grant stays valid, in seconds. */
-  expirySeconds: 3600, // 1 hour
 } as const;
+
+/** Period choices offered in the dapp. The grant expires after one period. */
+export const PERIOD_OPTIONS = [
+  { label: "hour", seconds: 3600 },
+  { label: "day", seconds: 86400 },
+  { label: "week", seconds: 604800 },
+] as const;
+
+/** Human label for a period length (falls back to "Ns" for custom values). */
+export function periodLabel(seconds: number): string {
+  return PERIOD_OPTIONS.find((o) => o.seconds === seconds)?.label ?? `${seconds}s`;
+}
 
 /**
  * Create the coordinator session account. An ephemeral key lives only for the
@@ -65,8 +75,12 @@ export interface GrantResult {
   expiry: number;
   /** Period cap in token base units (micro-USDC). */
   periodAmount: bigint;
+  /** Same cap, human-readable (e.g. "0.10"). */
+  periodAmountUsdc: string;
   /** Period length in seconds. */
   periodDuration: number;
+  /** Human label for the period (e.g. "hour"). */
+  periodLabel: string;
 }
 
 /**
@@ -78,12 +92,20 @@ export async function grantBudget(params: {
   walletClient: WalletClient;
   chainId: number;
   coordinator: MetaMaskSmartAccount;
+  /** Human-readable cap per period, in USDC (default 0.10). */
+  amountUsdc?: string;
+  /** Period length in seconds; the grant expires after one period (default 1h). */
+  periodDuration?: number;
 }): Promise<GrantResult> {
   const { walletClient, chainId, coordinator } = params;
+  const amountUsdc = params.amountUsdc ?? BUDGET.periodAmountUsdc;
+  const periodDuration = params.periodDuration ?? BUDGET.periodDuration;
+
+  const periodAmount = parseUnits(amountUsdc, 6); // USDC has 6 decimals
+  if (periodAmount <= 0n) throw new Error("Budget amount must be greater than 0");
 
   const client = walletClient.extend(erc7715ProviderActions());
-  const expiry = Math.floor(Date.now() / 1000) + BUDGET.expirySeconds;
-  const periodAmount = parseUnits(BUDGET.periodAmountUsdc, 6); // USDC has 6 decimals
+  const expiry = Math.floor(Date.now() / 1000) + periodDuration;
 
   // smart-accounts-kit 1.x request shape: the permission is granted `to` the
   // session account; `isAdjustmentAllowed` lives inside the permission.
@@ -94,13 +116,17 @@ export async function grantBudget(params: {
       expiry,
       permission: {
         type: "erc20-token-periodic",
+        // Fixed (not wallet-adjustable) so the boundary the user sees in the
+        // dapp/MetaMask exactly equals what's enforced on-chain. The amount and
+        // period are chosen in the dapp before granting.
         isAdjustmentAllowed: false,
         data: {
           tokenAddress: config.usdc,
           periodAmount,
-          periodDuration: BUDGET.periodDuration,
-          justification:
-            "Conduit agent budget — up to 0.10 USDC per hour, single-use per request, revocable.",
+          periodDuration,
+          justification: `Conduit agent budget — up to ${amountUsdc} USDC per ${periodLabel(
+            periodDuration
+          )}, single-use per request, revocable.`,
         },
       },
     },
@@ -122,6 +148,8 @@ export async function grantBudget(params: {
     delegationManager,
     expiry,
     periodAmount,
-    periodDuration: BUDGET.periodDuration,
+    periodAmountUsdc: amountUsdc,
+    periodDuration,
+    periodLabel: periodLabel(periodDuration),
   };
 }
