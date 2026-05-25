@@ -4,8 +4,9 @@ cache/
 broadcast/
 !broadcast/*/dry-run/
 
-# Dependencies
-lib/
+# Dependencies — Foundry installs submodules into the repo-root lib/.
+# Anchored with a leading slash so it does NOT also ignore conduit-dapp/lib/.
+/lib/
 
 # Env
 .env
