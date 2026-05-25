@@ -1,0 +1,29 @@
+{
+  "name": "conduit-dapp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Conduit's demo + reference surface. A buyer dapp that drives the Conduit facilitator: MetaMask Advanced Permissions (ERC-7715), EIP-7702, redelegation with X402ReceiptEnforcer, and a coordinator → narrow-task-agents flow.",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@metamask/delegation-toolkit": "latest",
+    "next": "^14.2.5",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "viem": "^2.21.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.16.0",
+    "@types/react": "^18.3.5",
+    "@types/react-dom": "^18.3.0",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.45",
+    "tailwindcss": "^3.4.10",
+    "typescript": "^5.6.0"
+  }
+}

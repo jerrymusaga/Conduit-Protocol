@@ -1,0 +1,201 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ===========================================================================
+   Conduit design system
+   Pure-black canvas, self-luminous cyan/violet/magenta accents.
+   Bauhaus-meets-cyberpunk: sharp, confident, glowing.
+   =========================================================================== */
+
+:root {
+  --cyan: #00e5ff;
+  --violet: #7c3aed;
+  --magenta: #ec4899;
+  --bg: #000000;
+  --panel: #0a0a0f;
+  --border: #1b1b24;
+  --muted: #8a8a9a;
+}
+
+* {
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background: var(--bg);
+  color: #f5f5f7;
+  overflow-x: hidden;
+}
+
+/* Ambient background glow — a faint convergence of the brand colors,
+   fixed behind everything. Subtle, never loud. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background:
+    radial-gradient(60rem 40rem at 15% -10%, rgba(0, 229, 255, 0.10), transparent 60%),
+    radial-gradient(50rem 40rem at 110% 10%, rgba(124, 58, 237, 0.12), transparent 55%),
+    radial-gradient(40rem 30rem at 50% 120%, rgba(236, 72, 153, 0.10), transparent 60%);
+  pointer-events: none;
+}
+
+/* ---- Reusable utilities ---------------------------------------------- */
+
+@layer components {
+  /* Gradient brand text */
+  .text-gradient {
+    background: linear-gradient(100deg, #00e5ff 0%, #7c3aed 50%, #ec4899 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  /* Animated gradient text (slow shimmer) */
+  .text-gradient-anim {
+    background: linear-gradient(
+      100deg,
+      #00e5ff 0%,
+      #7c3aed 35%,
+      #ec4899 70%,
+      #00e5ff 100%
+    );
+    background-size: 200% auto;
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    animation: shimmer 8s linear infinite;
+  }
+
+  /* Glass panel */
+  .panel {
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.01));
+    border: 1px solid var(--border);
+    border-radius: 1rem;
+    backdrop-filter: blur(8px);
+  }
+
+  .panel-hover {
+    transition: border-color 0.3s ease, box-shadow 0.3s ease, transform 0.3s ease;
+  }
+  .panel-hover:hover {
+    border-color: rgba(0, 229, 255, 0.35);
+    box-shadow: 0 0 32px -8px rgba(0, 229, 255, 0.25);
+    transform: translateY(-2px);
+  }
+
+  /* Gradient hairline divider that echoes the logo's convergence beam */
+  .beam {
+    height: 1px;
+    background: linear-gradient(
+      90deg,
+      transparent,
+      rgba(0, 229, 255, 0.6) 25%,
+      rgba(255, 255, 255, 0.9) 50%,
+      rgba(236, 72, 153, 0.6) 75%,
+      transparent
+    );
+  }
+
+  /* Primary button — glowing gradient */
+  .btn-primary {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.75rem 1.4rem;
+    border-radius: 0.75rem;
+    font-weight: 600;
+    color: #000;
+    background: linear-gradient(100deg, #00e5ff, #7c3aed 60%, #ec4899);
+    box-shadow: 0 0 28px -6px rgba(0, 229, 255, 0.5);
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+  }
+  .btn-primary:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 0 36px -4px rgba(124, 58, 237, 0.6);
+  }
+
+  /* Secondary / ghost button */
+  .btn-ghost {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.75rem 1.4rem;
+    border-radius: 0.75rem;
+    font-weight: 600;
+    color: #f5f5f7;
+    border: 1px solid var(--border);
+    transition: border-color 0.2s ease, color 0.2s ease;
+  }
+  .btn-ghost:hover {
+    border-color: rgba(0, 229, 255, 0.4);
+    color: #00e5ff;
+  }
+
+  /* Small label / eyebrow */
+  .eyebrow {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.35rem 0.8rem;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: rgba(255, 255, 255, 0.02);
+    font-size: 0.78rem;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+    text-transform: uppercase;
+  }
+
+  .mono {
+    font-family: var(--font-mono), ui-monospace, monospace;
+  }
+}
+
+/* ---- Animations ------------------------------------------------------ */
+
+@keyframes shimmer {
+  to {
+    background-position: 200% center;
+  }
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-10px); }
+}
+
+@keyframes pulse-glow {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+
+@keyframes rise {
+  from { opacity: 0; transform: translateY(16px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Scroll/entrance reveal — applied to elements with .reveal; staggered
+   via inline animation-delay. Plays once on load for above-the-fold,
+   and is also safe to retrigger. */
+.reveal {
+  animation: rise 0.7s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.float-slow { animation: float 6s ease-in-out infinite; }
+.pulse-slow { animation: pulse-glow 4s ease-in-out infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .reveal, .float-slow, .pulse-slow, .text-gradient-anim {
+    animation: none !important;
+  }
+  html { scroll-behavior: auto; }
+}

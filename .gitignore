@@ -26,3 +26,5 @@ conduit-facilitator/.env
 # endpoint
 conduit-endpoint/node_modules
 conduit-endpoint/.env
+
+CONDUIT-HANDOFF.md
