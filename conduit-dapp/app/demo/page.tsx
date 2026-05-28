@@ -22,8 +22,9 @@ import {
   type Coordinator,
   type GrantResult,
 } from "@/lib/grant";
-import { fetch402, payAndClaim } from "@/lib/endpoint";
+import { fetch402, payAndClaim, type PaymentRequirements } from "@/lib/endpoint";
 import { buildPayment, type Eip7702Authorization } from "@/lib/payment";
+import { readUsdcBalance, fetchSettlementEvents, type SettlementEvents } from "@/lib/onchain";
 import { config } from "@/lib/config";
 import { publicClient } from "@/lib/chain";
 
@@ -106,6 +107,21 @@ export default function DemoPage() {
   }>(null);
   const [nowSec, setNowSec] = useState(() => Math.floor(Date.now() / 1000));
   const [copied, setCopied] = useState(false);
+  // Interactivity: live USDC balances (payer + seller), the x402 wire exchange,
+  // and the decoded on-chain settlement events.
+  const [bal, setBal] = useState<null | {
+    payerBefore: bigint;
+    sellerBefore: bigint;
+    payerAfter?: bigint;
+    sellerAfter?: bigint;
+  }>(null);
+  const [exchange, setExchange] = useState<null | {
+    req: PaymentRequirements;
+    payload: unknown;
+    response?: unknown;
+  }>(null);
+  const [events, setEvents] = useState<SettlementEvents | null>(null);
+  const [confirming, setConfirming] = useState(false);
   // The 7702 authorization, signed at grant time and bundled into the FIRST
   // redeem; cleared after a successful settle (subsequent runs don't need it).
   const [authorization, setAuthorization] = useState<Eip7702Authorization | null>(null);
@@ -181,6 +197,9 @@ export default function DemoPage() {
       setAgents(INITIAL_AGENTS);
       setLog([]);
       setReceipt(null);
+      setEvents(null);
+      setExchange(null);
+      setBal(null);
     }
   };
 
@@ -270,9 +289,10 @@ export default function DemoPage() {
   // REAL: discover (402) → execute (intent-bound redelegation → endpoint →
   // facilitator /verify + /settle) → claim. Surfaces the real on-chain receipt.
   const runFlow = async () => {
-    if (busy || revoked || !grantResult || !coordinatorRef.current) return;
+    if (busy || revoked || !grantResult || !coordinatorRef.current || !address) return;
     setBusy(true);
     setReceipt(null);
+    setEvents(null);
     try {
       append("agent", "Coordinator › preparing intent-bound redelegation");
 
@@ -285,7 +305,15 @@ export default function DemoPage() {
         "agent",
         `discover › 402 Payment Required · ${price} USDC → ${shorten(req.payTo)}`
       );
+      setExchange({ req, payload: null });
       setAgent("discover", "done");
+
+      // Snapshot balances BEFORE the payment (the visible "money moves" proof).
+      const [payerBefore, sellerBefore] = await Promise.all([
+        readUsdcBalance(address),
+        readUsdcBalance(req.payTo),
+      ]);
+      setBal({ payerBefore, sellerBefore });
 
       // --- execute: build + sign the bound redelegation, then pay --------
       setAgent("execute", "active");
@@ -297,10 +325,9 @@ export default function DemoPage() {
         grant: grantResult,
         coordinator: coordinatorRef.current,
         req,
-        // First run bundles the 7702 auth into the redeem; after settle we
-        // clear it (the account is now designated, subsequent runs skip it).
         authorization: authorization ?? undefined,
       });
+      setExchange((x) => (x ? { ...x, payload: built.paymentPayload } : x));
       append(
         "pay",
         `execute › intent ${shorten(built.intentHash)} · redeemer ${shorten(req.redeemer!)}`
@@ -312,15 +339,16 @@ export default function DemoPage() {
         append("reject", `Rejected on-chain · ${claim.error}`);
         return;
       }
-      const tx = claim.settlement?.transaction ?? null;
+      setExchange((x) =>
+        x ? { ...x, response: { data: claim.data, settlement: claim.settlement } } : x
+      );
+      const tx = (claim.settlement?.transaction ?? null) as `0x${string}` | null;
       append(
         "ok",
         `settled ✓ ${tx ? shorten(tx) : "(pending)"} · ${
           claim.settlement?.status ?? "submitted"
-        } · X402IntentSettled`
+        }`
       );
-      // Designation succeeded along with the payment — clear the auth so we
-      // don't re-bundle on subsequent runs (would conflict on nonce).
       if (authorization) setAuthorization(null);
       setSpent((s) => s + Number(built.amount));
       setAgent("execute", "done");
@@ -336,6 +364,29 @@ export default function DemoPage() {
         intent: built.intentHash,
         tx: tx ?? "(pending)",
       });
+
+      // --- confirm on-chain: decode the real events + balance deltas -----
+      if (tx) {
+        setConfirming(true);
+        append("info", "confirming on-chain · decoding events…");
+        try {
+          const ev = await fetchSettlementEvents(tx);
+          setEvents(ev);
+          const [payerAfter, sellerAfter] = await Promise.all([
+            readUsdcBalance(address),
+            readUsdcBalance(req.payTo),
+          ]);
+          setBal((b) => (b ? { ...b, payerAfter, sellerAfter } : b));
+          append(
+            "ok",
+            `confirmed ✓ ${ev.logCount} events · X402IntentSettled + USDC Transfer + ${ev.redemptions} redemptions`
+          );
+        } catch (e) {
+          append("info", `confirmation pending · ${errMsg(e)}`);
+        } finally {
+          setConfirming(false);
+        }
+      }
     } catch (e) {
       append("reject", `Run failed · ${errMsg(e)}`);
     } finally {
@@ -382,6 +433,9 @@ export default function DemoPage() {
   const reset = () => {
     setLog([]);
     setReceipt(null);
+    setEvents(null);
+    setExchange(null);
+    setBal(null);
     setSpent(0);
     setRevoked(false);
     setAgents(
@@ -589,6 +643,34 @@ export default function DemoPage() {
               ))}
             </div>
           </section>
+
+          {/* Live USDC balances — the visible "money moved" proof */}
+          {bal && (
+            <section className="panel reveal p-6">
+              <div className="flex items-center justify-between">
+                <h2 className="text-sm font-semibold uppercase tracking-wide text-conduit-muted">
+                  USDC balances
+                </h2>
+                <span className="mono text-[10px] uppercase text-conduit-muted">
+                  Base Sepolia
+                </span>
+              </div>
+              <div className="mt-4 space-y-3">
+                <BalanceRow
+                  label="you (payer)"
+                  before={bal.payerBefore}
+                  after={bal.payerAfter}
+                  good="down"
+                />
+                <BalanceRow
+                  label="seller"
+                  before={bal.sellerBefore}
+                  after={bal.sellerAfter}
+                  good="up"
+                />
+              </div>
+            </section>
+          )}
         </div>
 
         {/* RIGHT: activity log + controls + receipt */}
@@ -650,6 +732,52 @@ export default function DemoPage() {
             </div>
           </section>
 
+          {/* x402 exchange — the real wire protocol */}
+          {exchange && (
+            <section className="panel reveal p-0">
+              <div className="border-b border-conduit-border/60 px-5 py-3">
+                <h2 className="text-sm font-semibold uppercase tracking-wide text-conduit-muted">
+                  x402 exchange
+                </h2>
+              </div>
+              <div className="space-y-3 px-5 py-4">
+                <WirePanel
+                  method="GET /paid-data"
+                  status="402 Payment Required"
+                  statusColor="text-conduit-magenta"
+                  body={{
+                    scheme: exchange.req.scheme,
+                    network: exchange.req.network,
+                    maxAmountRequired: exchange.req.maxAmountRequired,
+                    payTo: exchange.req.payTo,
+                    asset: exchange.req.asset,
+                    extra: {
+                      assetTransferMethod: "erc7710",
+                      receiptEnforcer: exchange.req.receiptEnforcer,
+                      redeemer: exchange.req.redeemer,
+                    },
+                  }}
+                />
+                {exchange.payload != null && (
+                  <WirePanel
+                    method="GET /paid-data"
+                    status="X-PAYMENT →"
+                    statusColor="text-conduit-violet"
+                    body={exchange.payload}
+                  />
+                )}
+                {exchange.response != null && (
+                  <WirePanel
+                    method="200 OK"
+                    status="asset unlocked"
+                    statusColor="text-conduit-cyan"
+                    body={exchange.response}
+                  />
+                )}
+              </div>
+            </section>
+          )}
+
           {/* receipt */}
           {receipt && (
             <section className="panel reveal p-6">
@@ -677,6 +805,47 @@ export default function DemoPage() {
                   }
                 />
               </div>
+
+              {/* decoded on-chain events — the real settlement, not just a hash */}
+              <div className="mt-5 border-t border-conduit-border/60 pt-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-xs font-semibold uppercase tracking-wide text-conduit-muted">
+                    On-chain events
+                  </h3>
+                  {confirming && (
+                    <span className="mono text-[10px] uppercase text-conduit-muted">
+                      confirming…
+                    </span>
+                  )}
+                </div>
+                {events ? (
+                  <div className="mono mt-3 space-y-1.5 text-[12px] leading-relaxed">
+                    {events.intentSettled && (
+                      <div className="text-conduit-cyan">
+                        ✓ X402IntentSettled · {formatUnits(events.intentSettled.amount, 6)} USDC
+                        → {shorten(events.intentSettled.recipient)}
+                      </div>
+                    )}
+                    {events.transfer && (
+                      <div className="text-white">
+                        ✓ USDC Transfer · {shorten(events.transfer.from)} →{" "}
+                        {shorten(events.transfer.to)} · {formatUnits(events.transfer.value, 6)}
+                      </div>
+                    )}
+                    <div className="text-conduit-violet">
+                      ✓ DelegationManager · {events.redemptions} RedeemedDelegation
+                      {events.redemptions === 1 ? "" : "s"} (chain hops)
+                    </div>
+                    <div className="text-conduit-muted">
+                      {events.logCount} logs · status {events.status}
+                    </div>
+                  </div>
+                ) : (
+                  <p className="mono mt-3 text-[12px] text-conduit-muted">
+                    {confirming ? "decoding settlement logs…" : "—"}
+                  </p>
+                )}
+              </div>
             </section>
           )}
         </div>
@@ -688,6 +857,83 @@ export default function DemoPage() {
 function shorten(addr: string | null): string {
   if (!addr) return "—";
   return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
+}
+
+function fmtUsdc(v: bigint): string {
+  return formatUnits(v, 6);
+}
+
+/** A before → after USDC balance row with a coloured delta once settled. */
+function BalanceRow({
+  label,
+  before,
+  after,
+  good,
+}: {
+  label: string;
+  before: bigint;
+  after?: bigint;
+  good: "up" | "down";
+}) {
+  const delta = after != null ? after - before : null;
+  const deltaColor =
+    delta == null || delta === 0n
+      ? "text-conduit-muted"
+      : (good === "up") === delta > 0n
+        ? "text-conduit-cyan"
+        : "text-conduit-magenta";
+  return (
+    <div className="flex items-center justify-between text-sm">
+      <span className="text-conduit-muted">{label}</span>
+      <span className="mono flex items-center gap-2">
+        <span className={after != null ? "text-conduit-muted/60" : "text-white"}>
+          {fmtUsdc(before)}
+        </span>
+        {after != null && (
+          <>
+            <span className="text-conduit-muted/60">→</span>
+            <span className="text-white">{fmtUsdc(after)}</span>
+            {delta != null && delta !== 0n && (
+              <span className={deltaColor}>
+                ({delta > 0n ? "+" : ""}
+                {fmtUsdc(delta)})
+              </span>
+            )}
+          </>
+        )}
+      </span>
+    </div>
+  );
+}
+
+/** A single x402 wire step: method + status + pretty-printed JSON body. */
+function WirePanel({
+  method,
+  status,
+  statusColor,
+  body,
+}: {
+  method: string;
+  status: string;
+  statusColor: string;
+  body: unknown;
+}) {
+  return (
+    <div className="rounded-xl border border-conduit-border/60">
+      <div className="flex items-center justify-between border-b border-conduit-border/40 px-3 py-2">
+        <span className="mono text-[11px] text-conduit-muted">{method}</span>
+        <span className={`mono text-[11px] ${statusColor}`}>{status}</span>
+      </div>
+      <pre className="mono max-h-44 overflow-auto px-3 py-2 text-[11px] leading-relaxed text-conduit-muted/90">
+        {JSON.stringify(body, jsonReplacer, 2)}
+      </pre>
+    </div>
+  );
+}
+
+/** JSON.stringify can't serialize bigint; render them as decimal strings. */
+function jsonReplacer(_key: string, value: unknown): unknown {
+  return typeof value === "bigint" ? value.toString() : value;
 }
 
 function errMsg(e: unknown): string {

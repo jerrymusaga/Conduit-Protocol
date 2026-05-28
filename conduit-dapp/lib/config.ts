@@ -70,7 +70,8 @@ export const config = {
   erc20PeriodTransferEnforcer: defaults.erc20PeriodTransferEnforcer,
   idEnforcer: defaults.idEnforcer,
   eip7702Impl: defaults.eip7702Impl,
-  explorerUrl: defaults.explorerUrl,
+  // Hard fallback so a bad/missing chainId can never produce an "undefined/tx" link.
+  explorerUrl: defaults.explorerUrl ?? "https://sepolia.basescan.org",
   // Privy: app id is required (from dashboard.privy.io). Client ID optional.
   privyAppId: process.env.NEXT_PUBLIC_PRIVY_APP_ID ?? "",
   privyClientId: process.env.NEXT_PUBLIC_PRIVY_CLIENT_ID ?? "",
