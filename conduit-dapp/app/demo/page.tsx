@@ -25,6 +25,7 @@ import {
 import { fetch402, payAndClaim } from "@/lib/endpoint";
 import { buildPayment, type Eip7702Authorization } from "@/lib/payment";
 import { config } from "@/lib/config";
+import { publicClient } from "@/lib/chain";
 
 /* ===========================================================================
    Conduit demo.
@@ -194,38 +195,43 @@ export default function DemoPage() {
       coordinatorRef.current = coordinator;
       append("agent", `Coordinator account · ${shorten(coordinator.address)}`);
 
-      // EIP-7702 designation is OPTIONAL on testnet: the DelegationManager
-      // validates an EOA delegator via plain ECDSA, so the root delegation
-      // signed below settles without upgrading the account. The 7702 upgrade is
-      // the 1Shot *mainnet* track requirement and is done through 1Shot's
-      // relayer in that phase — so we only sign it here when the user has a
-      // Privy embedded wallet (whose first-class hook supports it). External
-      // wallets (Zerion, etc.) skip it cleanly.
+      // EIP-7702 designation is REQUIRED: redeemDelegations executes the USDC
+      // transfer by calling the delegator account's execution interface, which
+      // only exists if the account has code. A plain EOA reverts. So the user's
+      // account must be designated to EIP7702StatelessDeleGator, and the signed
+      // auth is bundled into the first redeem (relayer pays gas; account is
+      // upgraded in the same tx). Only the Privy embedded wallet can sign a 7702
+      // auth — external wallets (Zerion) can't, so the on-chain settle needs the
+      // embedded wallet.
       const embeddedWallet = getEmbeddedConnectedWallet(wallets);
       if (embeddedWallet) {
-        try {
-          append(
-            "info",
-            `Signing EIP-7702 authorization · designating ${shorten(config.eip7702Impl)}…`
-          );
-          const auth = await signAuthorization(
-            { contractAddress: config.eip7702Impl, chainId: config.chainId },
-            { address: embeddedWallet.address }
-          );
-          setAuthorization({
-            chainId: auth.chainId,
-            address: auth.address as `0x${string}`,
-            nonce: auth.nonce,
-            r: auth.r,
-            s: auth.s,
-            yParity: (auth.yParity === 1 ? 1 : 0) as 0 | 1,
-          });
-          append("ok", "EIP-7702 authorization signed · bundled into the first redeem");
-        } catch (e) {
-          append("info", `7702 designation skipped (${errMsg(e)}) · delegation still validates via ECDSA`);
-        }
+        append(
+          "info",
+          `Signing EIP-7702 authorization · designating ${shorten(config.eip7702Impl)}…`
+        );
+        // Sponsored relay (the relayer sends the tx, not the user), so the
+        // authorization nonce is the user account's CURRENT nonce.
+        const nonce = await publicClient.getTransactionCount({
+          address: embeddedWallet.address as `0x${string}`,
+        });
+        const auth = await signAuthorization(
+          { contractAddress: config.eip7702Impl, chainId: config.chainId, nonce },
+          { address: embeddedWallet.address }
+        );
+        setAuthorization({
+          chainId: auth.chainId,
+          address: auth.address as `0x${string}`,
+          nonce: auth.nonce,
+          r: auth.r,
+          s: auth.s,
+          yParity: (auth.yParity === 1 ? 1 : 0) as 0 | 1,
+        });
+        append("ok", "EIP-7702 authorization signed · designates the wallet on first redeem");
       } else {
-        append("info", "External wallet · 7702 designation deferred to the 1Shot mainnet phase");
+        append(
+          "reject",
+          "External wallet can't sign EIP-7702 — the on-chain settle needs a smart account. Sign out and sign in with email or GitHub (embedded wallet) for the full flow."
+        );
       }
 
       append(
