@@ -23,6 +23,8 @@ interface ChainDefaults {
   idEnforcer: `0x${string}`;
   /** EIP7702StatelessDeleGatorImpl — what we designate the user EOA to. */
   eip7702Impl: `0x${string}`;
+  /** Block explorer base URL (no trailing slash) for tx/address links. */
+  explorerUrl: string;
 }
 
 const CHAIN_DEFAULTS: Record<number, ChainDefaults> = {
@@ -34,6 +36,7 @@ const CHAIN_DEFAULTS: Record<number, ChainDefaults> = {
     erc20PeriodTransferEnforcer: "0x474e3Ae7E169e940607cC624Da8A15Eb120139aB",
     idEnforcer: "0xC8B5D93463c893401094cc70e66A206fb5987997",
     eip7702Impl: "0x63c0c19a282a1B52b07dD5a65b58948A07DAE32B",
+    explorerUrl: "https://sepolia.basescan.org",
   },
   // Base mainnet (final demo). Addresses confirmed before the mainnet swap.
   8453: {
@@ -43,6 +46,7 @@ const CHAIN_DEFAULTS: Record<number, ChainDefaults> = {
     erc20PeriodTransferEnforcer: "0x474e3Ae7E169e940607cC624Da8A15Eb120139aB",
     idEnforcer: "0xC8B5D93463c893401094cc70e66A206fb5987997",
     eip7702Impl: "0x63c0c19a282a1B52b07dD5a65b58948A07DAE32B",
+    explorerUrl: "https://basescan.org",
   },
 };
 
@@ -66,6 +70,7 @@ export const config = {
   erc20PeriodTransferEnforcer: defaults.erc20PeriodTransferEnforcer,
   idEnforcer: defaults.idEnforcer,
   eip7702Impl: defaults.eip7702Impl,
+  explorerUrl: defaults.explorerUrl,
   // Privy: app id is required (from dashboard.privy.io). Client ID optional.
   privyAppId: process.env.NEXT_PUBLIC_PRIVY_APP_ID ?? "",
   privyClientId: process.env.NEXT_PUBLIC_PRIVY_CLIENT_ID ?? "",

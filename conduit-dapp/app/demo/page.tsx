@@ -105,6 +105,7 @@ export default function DemoPage() {
     tx: string;
   }>(null);
   const [nowSec, setNowSec] = useState(() => Math.floor(Date.now() / 1000));
+  const [copied, setCopied] = useState(false);
   // The 7702 authorization, signed at grant time and bundled into the FIRST
   // redeem; cleared after a successful settle (subsequent runs don't need it).
   const [authorization, setAuthorization] = useState<Eip7702Authorization | null>(null);
@@ -140,6 +141,14 @@ export default function DemoPage() {
       logEndRef.current?.scrollIntoView({ behavior: "smooth" })
     );
   }, []);
+
+  const copyAddress = useCallback(() => {
+    if (!address) return;
+    navigator.clipboard?.writeText(address).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  }, [address]);
 
   const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
   const setAgent = (id: Agent["id"], state: AgentState) =>
@@ -405,9 +414,13 @@ export default function DemoPage() {
           </Link>
           {connected && address ? (
             <div className="flex items-center gap-2">
-              <span className="mono rounded-lg border border-conduit-border px-3 py-1.5 text-xs text-conduit-cyan">
-                {shorten(address)} · Base Sepolia
-              </span>
+              <button
+                onClick={copyAddress}
+                title={`${address} · click to copy`}
+                className="mono rounded-lg border border-conduit-border px-3 py-1.5 text-xs text-conduit-cyan transition-colors hover:border-conduit-cyan/50"
+              >
+                {copied ? "copied ✓" : `${shorten(address)} · Base Sepolia · copy`}
+              </button>
               <button
                 onClick={disconnect}
                 disabled={busy}
@@ -648,9 +661,21 @@ export default function DemoPage() {
               </div>
               <div className="mt-4 grid grid-cols-2 gap-4 text-sm">
                 <Field label="amount" value={receipt.amount} />
-                <Field label="recipient" value={receipt.recipient} />
+                <Field
+                  label="recipient"
+                  value={receipt.recipient}
+                  href={`${config.explorerUrl}/address/${receipt.recipient}`}
+                />
                 <Field label="intent" value={receipt.intent} />
-                <Field label="tx" value={receipt.tx} link />
+                <Field
+                  label="tx"
+                  value={receipt.tx}
+                  href={
+                    receipt.tx.startsWith("0x")
+                      ? `${config.explorerUrl}/tx/${receipt.tx}`
+                      : undefined
+                  }
+                />
               </div>
             </section>
           )}
@@ -694,13 +719,22 @@ function logColor(kind: LogKind): string {
   }
 }
 
-function Field({ label, value, link }: { label: string; value: string; link?: boolean }) {
+function Field({ label, value, href }: { label: string; value: string; href?: string }) {
   return (
     <div>
       <div className="text-xs uppercase tracking-wide text-conduit-muted">{label}</div>
-      <div className={`mono mt-1 break-all ${link ? "text-conduit-cyan underline-offset-4 hover:underline cursor-pointer" : ""}`}>
-        {value}
-      </div>
+      {href ? (
+        <a
+          href={href}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="mono mt-1 block break-all text-conduit-cyan underline-offset-4 hover:underline"
+        >
+          {value} ↗
+        </a>
+      ) : (
+        <div className="mono mt-1 break-all">{value}</div>
+      )}
     </div>
   );
 }
