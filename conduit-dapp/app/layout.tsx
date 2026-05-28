@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Inter, JetBrains_Mono } from "next/font/google";
+import { Providers } from "./providers";
 import "./globals.css";
 
 const inter = Inter({
@@ -13,6 +14,11 @@ const mono = JetBrains_Mono({
   variable: "--font-mono",
   display: "swap",
 });
+
+// PrivyProvider needs a real app ID and the wallet/window context — both only
+// exist at runtime. Skipping static prerender keeps the build green when the
+// env var isn't set at build time (e.g. in CI before secrets are wired).
+export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
   title: "Conduit — open x402 + ERC-7710 facilitator",
@@ -34,7 +40,9 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en" className={`${inter.variable} ${mono.variable}`}>
-      <body className="font-sans">{children}</body>
+      <body className="font-sans">
+        <Providers>{children}</Providers>
+      </body>
     </html>
   );
 }

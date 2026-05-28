@@ -30,8 +30,22 @@ import {
   type Hex,
 } from "viem";
 import { config } from "./config";
-import type { Coordinator, GrantResult } from "./erc7715";
+import type { Coordinator, GrantResult } from "./grant";
 import type { PaymentRequirements } from "./endpoint";
+
+/**
+ * EIP-7702 authorization tuple (Privy's `useSign7702Authorization` returns
+ * this exact shape). Bundled into the first redeem by the facilitator so the
+ * user's EOA is upgraded to a smart account in the same tx as the payment.
+ */
+export interface Eip7702Authorization {
+  chainId: number;
+  address: `0x${string}`;
+  nonce: number;
+  r: `0x${string}`;
+  s: `0x${string}`;
+  yParity: 0 | 1;
+}
 
 // Structural mirrors of the toolkit's Delegation/Caveat (the package doesn't
 // re-export them on a public subpath). Same shape → assignable to the helpers.
@@ -99,6 +113,8 @@ export async function buildPayment(params: {
   /** Override recipient/amount for the break-it tests; defaults to the honest values. */
   payToOverride?: `0x${string}`;
   amountOverride?: bigint;
+  /** Bundle a signed EIP-7702 authorization into the redeem (first run only). */
+  authorization?: Eip7702Authorization;
 }): Promise<BuiltPayment> {
   const { grant, coordinator, req } = params;
   if (!req.redeemer) {
@@ -178,6 +194,10 @@ export async function buildPayment(params: {
       delegator: rootDelegator,
       executionCallData,
       // mode omitted → facilitator defaults to single-call default-exec.
+      // Include the EIP-7702 auth when present; the facilitator bundles it
+      // into the redeem via `authorizationList`, designating the user EOA
+      // to the StatelessDeleGator in the same tx as the payment.
+      ...(params.authorization ? { authorization: params.authorization } : {}),
     },
   };
 

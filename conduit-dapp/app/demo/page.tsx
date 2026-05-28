@@ -3,8 +3,13 @@
 import Image from "next/image";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { formatUnits, type WalletClient } from "viem";
-import { connectWallet } from "@/lib/wallet";
+import { formatUnits } from "viem";
+import { useAccount, useWalletClient } from "wagmi";
+import {
+  usePrivy,
+  useLogin,
+  useSign7702Authorization,
+} from "@privy-io/react-auth";
 import {
   BUDGET,
   PERIOD_OPTIONS,
@@ -13,18 +18,18 @@ import {
   grantBudget,
   type Coordinator,
   type GrantResult,
-} from "@/lib/erc7715";
+} from "@/lib/grant";
 import { fetch402, payAndClaim } from "@/lib/endpoint";
-import { buildPayment } from "@/lib/payment";
+import { buildPayment, type Eip7702Authorization } from "@/lib/payment";
 import { config } from "@/lib/config";
 
 /* ===========================================================================
    Conduit demo.
-   The flow, the panels, and every judging-lens beat are here and animated.
-   WIRED (real): Connect (viem + MetaMask) and Grant (ERC-7715 erc20-token-
-   periodic; EIP-7702 upgrade handled by MetaMask).
-   Still MOCK (next): Run flow (redelegation + X402ReceiptEnforcer + facilitator
-   /verify + /settle), break-it buttons, kill-root (disableDelegation).
+   WIRED (real): Connect (Privy: email / GitHub / external wallet), Grant
+   (manual root delegation via signTypedData + EIP-7702 auth via Privy's
+   useSign7702Authorization), Run flow (intent-bound redelegation → facilitator
+   /verify + /settle, with the 7702 auth bundled into the first redeem).
+   Still MOCK: break-it buttons (next: real overrides), kill-root.
    =========================================================================== */
 
 type LogKind = "info" | "agent" | "pay" | "ok" | "reject";
@@ -54,8 +59,15 @@ const now = () =>
   new Date().toLocaleTimeString("en-US", { hour12: false });
 
 export default function DemoPage() {
-  const [connected, setConnected] = useState(false);
-  const [account, setAccount] = useState<`0x${string}` | null>(null);
+  // Privy (auth) + wagmi (wallet client). Privy drives the connect modal and
+  // 7702 signing; wagmi gives us a standard viem walletClient for delegations.
+  const { ready, authenticated, logout } = usePrivy();
+  const { login } = useLogin();
+  const { signAuthorization } = useSign7702Authorization();
+  const { address, isConnected } = useAccount();
+  const { data: walletClient } = useWalletClient();
+  const connected = ready && authenticated && isConnected && !!address;
+
   const [granted, setGranted] = useState(false);
   const [grantResult, setGrantResult] = useState<GrantResult | null>(null);
   const [amountInput, setAmountInput] = useState<string>(BUDGET.periodAmountUsdc);
@@ -72,8 +84,10 @@ export default function DemoPage() {
     tx: string;
   }>(null);
   const [nowSec, setNowSec] = useState(() => Math.floor(Date.now() / 1000));
+  // The 7702 authorization, signed at grant time and bundled into the FIRST
+  // redeem; cleared after a successful settle (subsequent runs don't need it).
+  const [authorization, setAuthorization] = useState<Eip7702Authorization | null>(null);
   const logEndRef = useRef<HTMLDivElement>(null);
-  const walletRef = useRef<WalletClient | null>(null);
   const coordinatorRef = useRef<Coordinator | null>(null);
 
   // Budget meter scales to the real granted cap once we have it.
@@ -112,28 +126,40 @@ export default function DemoPage() {
 
   // --- actions -----------------------------------------------------------
 
-  // REAL: viem walletClient over the injected provider; ensures Base Sepolia.
+  // Open Privy's login modal (email / GitHub / external wallet).
   const connect = async () => {
     if (busy) return;
-    setBusy(true);
-    append("info", "Connecting wallet…");
+    append("info", "Opening sign-in…");
     try {
-      const { address, walletClient } = await connectWallet();
-      walletRef.current = walletClient;
-      setAccount(address);
-      setConnected(true);
-      append("ok", `Wallet connected · ${shorten(address)} · Base Sepolia`);
+      login();
     } catch (e) {
-      append("reject", `Connect failed · ${errMsg(e)}`);
-    } finally {
-      setBusy(false);
+      append("reject", `Sign-in failed · ${errMsg(e)}`);
     }
   };
 
-  // REAL: ERC-7715 grant. Creates the coordinator session account, then opens
-  // MetaMask's Advanced Permissions dialog (MetaMask does the EIP-7702 upgrade).
+  // Sign-out: clear coordinator + grant + auth so the next session starts clean.
+  const disconnect = async () => {
+    try {
+      await logout();
+    } finally {
+      coordinatorRef.current = null;
+      setGranted(false);
+      setGrantResult(null);
+      setAuthorization(null);
+      setRevoked(false);
+      setSpent(0);
+      setAgents(INITIAL_AGENTS);
+      setLog([]);
+      setReceipt(null);
+    }
+  };
+
+  // Grant: (1) create the coordinator session EOA, (2) sign the 7702 auth via
+  // Privy (designating the user EOA to EIP7702StatelessDeleGator — required
+  // for the 1Shot track), (3) build + sign the root delegation off-chain via
+  // walletClient.signTypedData (no snap, no 403).
   const grant = async () => {
-    if (busy || !walletRef.current) return;
+    if (busy || !walletClient || !address) return;
     setBusy(true);
     try {
       append("info", "Creating coordinator session account…");
@@ -143,13 +169,32 @@ export default function DemoPage() {
 
       append(
         "info",
-        `Requesting ERC-7715 permission: ${amountInput} USDC / ${periodLabel(
-          periodSeconds
-        )}…`
+        `Signing EIP-7702 authorization · designating ${shorten(config.eip7702Impl)} (StatelessDeleGator)…`
+      );
+      const auth = await signAuthorization({
+        contractAddress: config.eip7702Impl,
+        chainId: config.chainId,
+        executor: "self",
+      });
+      // Privy returns yParity as number; the facilitator expects 0|1.
+      const authForFacilitator: Eip7702Authorization = {
+        chainId: auth.chainId,
+        address: auth.address as `0x${string}`,
+        nonce: auth.nonce,
+        r: auth.r,
+        s: auth.s,
+        yParity: (auth.yParity === 1 ? 1 : 0) as 0 | 1,
+      };
+      setAuthorization(authForFacilitator);
+      append("ok", "EIP-7702 authorization signed · bundled into the first redeem");
+
+      append(
+        "info",
+        `Asking for permission: ${amountInput} USDC / ${periodLabel(periodSeconds)}…`
       );
       const result = await grantBudget({
-        walletClient: walletRef.current,
-        chainId: config.chainId,
+        walletClient,
+        userAddress: address,
         coordinator,
         amountUsdc: amountInput,
         periodDuration: periodSeconds,
@@ -158,11 +203,9 @@ export default function DemoPage() {
       setGranted(true);
       setAgent("coordinator", "active");
       append("ok", "Permission granted · Coordinator holds the root policy");
-      append(
-        "info",
-        "EIP-7702 authorization handled by MetaMask · EOA → Smart Account"
-      );
     } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error("[conduit] grant failed →", e);
       append("reject", `Grant failed · ${errMsg(e)}`);
     } finally {
       setBusy(false);
@@ -192,10 +235,16 @@ export default function DemoPage() {
       // --- execute: build + sign the bound redelegation, then pay --------
       setAgent("execute", "active");
       append("pay", "execute › binding payment · X402ReceiptEnforcer + IdEnforcer");
+      if (authorization) {
+        append("pay", "execute › bundling EIP-7702 auth (first run · designates the EOA)");
+      }
       const built = await buildPayment({
         grant: grantResult,
         coordinator: coordinatorRef.current,
         req,
+        // First run bundles the 7702 auth into the redeem; after settle we
+        // clear it (the account is now designated, subsequent runs skip it).
+        authorization: authorization ?? undefined,
       });
       append(
         "pay",
@@ -215,6 +264,9 @@ export default function DemoPage() {
           claim.settlement?.status ?? "submitted"
         } · X402IntentSettled`
       );
+      // Designation succeeded along with the payment — clear the auth so we
+      // don't re-bundle on subsequent runs (would conflict on nonce).
+      if (authorization) setAuthorization(null);
       setSpent((s) => s + Number(built.amount));
       setAgent("execute", "done");
 
@@ -305,17 +357,26 @@ export default function DemoPage() {
               demo
             </span>
           </Link>
-          {connected && account ? (
-            <span className="mono rounded-lg border border-conduit-border px-3 py-1.5 text-xs text-conduit-cyan">
-              {shorten(account)} · Base Sepolia
-            </span>
+          {connected && address ? (
+            <div className="flex items-center gap-2">
+              <span className="mono rounded-lg border border-conduit-border px-3 py-1.5 text-xs text-conduit-cyan">
+                {shorten(address)} · Base Sepolia
+              </span>
+              <button
+                onClick={disconnect}
+                disabled={busy}
+                className="text-xs text-conduit-muted underline-offset-4 hover:text-white hover:underline disabled:opacity-40"
+              >
+                sign out
+              </button>
+            </div>
           ) : (
             <button
               onClick={connect}
-              disabled={busy}
+              disabled={!ready || busy}
               className="btn-primary text-sm disabled:opacity-40"
             >
-              {busy ? "Connecting…" : "Connect wallet"}
+              {ready ? "Sign in" : "Loading…"}
             </button>
           )}
         </div>
@@ -514,7 +575,7 @@ export default function DemoPage() {
                     ? granted
                       ? "Ready. Hit “Run the flow”."
                       : "Grant the permission to begin."
-                    : "Connect a wallet to begin."}
+                    : "Sign in to begin."}
                 </p>
               ) : (
                 <div className="space-y-1.5">
@@ -559,8 +620,20 @@ function shorten(addr: string | null): string {
 }
 
 function errMsg(e: unknown): string {
-  if (e && typeof e === "object" && "shortMessage" in e) {
-    return String((e as { shortMessage: unknown }).shortMessage);
+  if (e && typeof e === "object") {
+    const o = e as Record<string, unknown>;
+    // MetaMask snap RPC errors expose richer detail in nested fields; pick the
+    // most informative one we can reach.
+    const data = o.data as Record<string, unknown> | undefined;
+    const cause = o.cause as Record<string, unknown> | undefined;
+    const candidates = [
+      o.shortMessage,
+      data?.message,
+      cause?.shortMessage,
+      cause?.message,
+      o.message,
+    ];
+    for (const c of candidates) if (typeof c === "string" && c) return c;
   }
   return e instanceof Error ? e.message : String(e);
 }
