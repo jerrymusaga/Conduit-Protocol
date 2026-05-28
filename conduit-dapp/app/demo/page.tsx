@@ -9,7 +9,10 @@ import {
   usePrivy,
   useLogin,
   useSign7702Authorization,
+  useWallets,
+  getEmbeddedConnectedWallet,
 } from "@privy-io/react-auth";
+import { useSetActiveWallet } from "@privy-io/wagmi";
 import {
   BUDGET,
   PERIOD_OPTIONS,
@@ -64,9 +67,26 @@ export default function DemoPage() {
   const { ready, authenticated, logout } = usePrivy();
   const { login } = useLogin();
   const { signAuthorization } = useSign7702Authorization();
+  const { wallets } = useWallets();
+  const { setActiveWallet } = useSetActiveWallet();
   const { address, isConnected } = useAccount();
-  const { data: walletClient } = useWalletClient();
+  // Bind to the configured chain explicitly — useWalletClient() with no args
+  // returns null when the active wallet hasn't been put on that chain yet.
+  const { data: walletClient } = useWalletClient({ chainId: config.chainId });
   const connected = ready && authenticated && isConnected && !!address;
+
+  // Privy can return multiple wallets (Ethereum embedded + Solana embedded +
+  // any external the user connected). Force-bind the EMBEDDED Ethereum one
+  // to wagmi so useAccount/useWalletClient resolve to a usable signer.
+  useEffect(() => {
+    if (!authenticated || wallets.length === 0) return;
+    const embedded = getEmbeddedConnectedWallet(wallets);
+    const ethExternal = wallets.find((w) => w.chainId?.startsWith("eip155:"));
+    const target = embedded ?? ethExternal ?? wallets[0];
+    if (!target) return;
+    if (address && address.toLowerCase() === target.address.toLowerCase()) return;
+    void setActiveWallet(target);
+  }, [authenticated, wallets, address, setActiveWallet]);
 
   const [granted, setGranted] = useState(false);
   const [grantResult, setGrantResult] = useState<GrantResult | null>(null);
@@ -159,7 +179,14 @@ export default function DemoPage() {
   // for the 1Shot track), (3) build + sign the root delegation off-chain via
   // walletClient.signTypedData (no snap, no 403).
   const grant = async () => {
-    if (busy || !walletClient || !address) return;
+    if (busy) return;
+    if (!walletClient || !address) {
+      append(
+        "info",
+        `Waiting for wallet to bind… (walletClient=${!!walletClient}, address=${!!address}, wallets=${wallets.length})`
+      );
+      return;
+    }
     setBusy(true);
     try {
       append("info", "Creating coordinator session account…");
@@ -167,26 +194,39 @@ export default function DemoPage() {
       coordinatorRef.current = coordinator;
       append("agent", `Coordinator account · ${shorten(coordinator.address)}`);
 
-      append(
-        "info",
-        `Signing EIP-7702 authorization · designating ${shorten(config.eip7702Impl)} (StatelessDeleGator)…`
-      );
-      const auth = await signAuthorization({
-        contractAddress: config.eip7702Impl,
-        chainId: config.chainId,
-        executor: "self",
-      });
-      // Privy returns yParity as number; the facilitator expects 0|1.
-      const authForFacilitator: Eip7702Authorization = {
-        chainId: auth.chainId,
-        address: auth.address as `0x${string}`,
-        nonce: auth.nonce,
-        r: auth.r,
-        s: auth.s,
-        yParity: (auth.yParity === 1 ? 1 : 0) as 0 | 1,
-      };
-      setAuthorization(authForFacilitator);
-      append("ok", "EIP-7702 authorization signed · bundled into the first redeem");
+      // EIP-7702 designation is OPTIONAL on testnet: the DelegationManager
+      // validates an EOA delegator via plain ECDSA, so the root delegation
+      // signed below settles without upgrading the account. The 7702 upgrade is
+      // the 1Shot *mainnet* track requirement and is done through 1Shot's
+      // relayer in that phase — so we only sign it here when the user has a
+      // Privy embedded wallet (whose first-class hook supports it). External
+      // wallets (Zerion, etc.) skip it cleanly.
+      const embeddedWallet = getEmbeddedConnectedWallet(wallets);
+      if (embeddedWallet) {
+        try {
+          append(
+            "info",
+            `Signing EIP-7702 authorization · designating ${shorten(config.eip7702Impl)}…`
+          );
+          const auth = await signAuthorization(
+            { contractAddress: config.eip7702Impl, chainId: config.chainId },
+            { address: embeddedWallet.address }
+          );
+          setAuthorization({
+            chainId: auth.chainId,
+            address: auth.address as `0x${string}`,
+            nonce: auth.nonce,
+            r: auth.r,
+            s: auth.s,
+            yParity: (auth.yParity === 1 ? 1 : 0) as 0 | 1,
+          });
+          append("ok", "EIP-7702 authorization signed · bundled into the first redeem");
+        } catch (e) {
+          append("info", `7702 designation skipped (${errMsg(e)}) · delegation still validates via ECDSA`);
+        }
+      } else {
+        append("info", "External wallet · 7702 designation deferred to the 1Shot mainnet phase");
+      }
 
       append(
         "info",
