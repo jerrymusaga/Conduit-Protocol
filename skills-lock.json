@@ -6,6 +6,12 @@
       "sourceType": "github",
       "skillPath": "public-relayer/SKILL.md",
       "computedHash": "14b76a6c40a2b184f18d23add1b62d8c07310fe76424f2156f4a150dafaab938"
+    },
+    "webauthn-prf-wallet": {
+      "source": "1Shot-API/skills",
+      "sourceType": "github",
+      "skillPath": "webauthn-prf-wallet/SKILL.md",
+      "computedHash": "bcc503a08023feb27962219c6ef1accbe7eb249655ce0e2cead8e8b496de3dbc"
     }
   }
 }
