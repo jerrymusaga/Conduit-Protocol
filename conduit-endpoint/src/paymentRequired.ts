@@ -1,17 +1,18 @@
 import { config } from "./config.js";
 import { chainInfo } from "./chain.js";
 import type { ConduitCapabilities } from "./facilitatorClient.js";
+import type { Service } from "./services.js";
 
 /**
- * Builds the x402 V2 "402 Payment Required" envelope for the protected
- * resource. This is what tells the buyer how to pay: which scheme, network,
- * amount, asset, and — crucially for erc7710 — the facilitator, the
- * redeemer they must authorize, and the receipt enforcer they should bind
- * their redelegation to.
+ * Builds the x402 V2 "402 Payment Required" envelope for a given paid service.
+ * Tells the buyer how to pay: scheme, network, the service's price, asset, and
+ * — crucially for erc7710 — the facilitator, the redeemer they must authorize,
+ * and the receipt enforcer to bind their redelegation to.
  */
 export function buildPaymentRequired(
   resourceUrl: string,
   caps: ConduitCapabilities,
+  service: Service,
   error: string
 ) {
   return {
@@ -21,9 +22,9 @@ export function buildPaymentRequired(
       {
         scheme: "exact",
         network: chainInfo.caip2,
-        maxAmountRequired: config.priceBaseUnits.toString(),
+        maxAmountRequired: service.priceBaseUnits.toString(),
         resource: resourceUrl,
-        description: config.resourceDescription,
+        description: service.description,
         mimeType: "application/json",
         payTo: config.payTo,
         maxTimeoutSeconds: 60,
@@ -31,6 +32,9 @@ export function buildPaymentRequired(
         extra: {
           assetTransferMethod: "erc7710",
           facilitator: config.facilitatorUrl,
+          // Which catalog service this 402 is for (the console label).
+          service: service.id,
+          serviceLabel: service.label,
           // Everything the buyer's wallet needs to construct a valid,
           // intent-bound redelegation:
           delegationManager: caps.delegationManager,

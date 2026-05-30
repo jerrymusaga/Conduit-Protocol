@@ -8,6 +8,7 @@ import {
   type ConduitCapabilities,
 } from "./facilitatorClient.js";
 import { buildPaymentRequired } from "./paymentRequired.js";
+import { SERVICES, LEGACY_SERVICE, getService, type Service } from "./services.js";
 
 const app = express();
 app.use(express.json({ limit: "5mb" }));
@@ -42,8 +43,46 @@ app.get("/health", (_req, res) => {
   });
 });
 
-// The protected resource.
-app.get("/paid-data", async (req: Request, res: Response) => {
+// GET /services — the catalog the coordinator chooses from.
+app.get("/services", (_req, res) => {
+  res.json({
+    services: SERVICES.map((s) => ({
+      id: s.id,
+      label: s.label,
+      description: s.description,
+      kind: s.kind,
+      priceUsdc: s.priceUsdc,
+      priceBaseUnits: s.priceBaseUnits.toString(),
+      resource: `/services/${s.id}`,
+    })),
+  });
+});
+
+/** Produce the success payload for a settled service (placeholder products;
+ * Venice generation gets wired in the Venice layer). */
+function serviceResult(service: Service): Record<string, unknown> {
+  switch (service.kind) {
+    case "image":
+      return { type: "image", note: "image generation placeholder (Venice next)",
+        prompt: service.label };
+    case "text":
+      return { type: "text", content: `Generated copy for: ${service.label}` };
+    default:
+      return { type: "data", content: { service: service.id, sample: true } };
+  }
+}
+
+/**
+ * The paid resource handler, shared by every catalog service and the legacy
+ * /paid-data. Runs the x402 exchange: 402 → X-PAYMENT → verify → settle →
+ * serve. Forwards a `meta` block to the facilitator so the live console feed is
+ * labeled with the service + the requesting agent (X-AGENT header).
+ */
+async function handlePaidResource(
+  service: Service,
+  req: Request,
+  res: Response
+) {
   const resourceUrl = `${req.protocol}://${req.get("host")}${req.originalUrl}`;
 
   let caps: ConduitCapabilities;
@@ -57,21 +96,12 @@ app.get("/paid-data", async (req: Request, res: Response) => {
   }
 
   const paymentHeader = req.header("X-PAYMENT");
-
-  // --- No payment yet: return the 402 envelope -------------------------
   if (!paymentHeader) {
     return res
       .status(402)
-      .json(
-        buildPaymentRequired(
-          resourceUrl,
-          caps,
-          "X-PAYMENT header required"
-        )
-      );
+      .json(buildPaymentRequired(resourceUrl, caps, service, "X-PAYMENT header required"));
   }
 
-  // --- Decode the X-PAYMENT header (base64 JSON per x402 spec) ---------
   let paymentPayload: unknown;
   try {
     paymentPayload = JSON.parse(
@@ -81,25 +111,36 @@ app.get("/paid-data", async (req: Request, res: Response) => {
     return res.status(400).json({ error: "X-PAYMENT is not valid base64 JSON" });
   }
 
+  // Labels for the Conduit console event feed. The agent name comes from an
+  // optional X-AGENT header the caller sets; correlationId ties the events of
+  // this one payment together (we reuse the x402 intent hash if present).
+  const meta = {
+    service: service.id,
+    agent: req.header("X-AGENT") ?? undefined,
+    resource: resourceUrl,
+    amount: service.priceBaseUnits.toString(),
+    correlationId: req.header("X-CORRELATION-ID") ?? undefined,
+  };
+
   const facilitatorRequest = {
     x402Version: 2,
     paymentPayload,
-    paymentRequirements: buildPaymentRequired(resourceUrl, caps, "").accepts[0],
+    paymentRequirements: buildPaymentRequired(resourceUrl, caps, service, "").accepts[0],
+    meta,
   };
 
-  // --- Verify (simulation) --------------------------------------------
   const verification = await verify(facilitatorRequest);
   if (!verification.isValid) {
     return res.status(402).json(
       buildPaymentRequired(
         resourceUrl,
         caps,
+        service,
         `payment verification failed: ${verification.invalidReason ?? "unknown"}`
       )
     );
   }
 
-  // --- Settle (relay submission) --------------------------------------
   const settlement = await settle(facilitatorRequest);
   if (!settlement.success) {
     return res.status(502).json({
@@ -108,10 +149,6 @@ app.get("/paid-data", async (req: Request, res: Response) => {
     });
   }
 
-  // --- Serve the resource, attach settlement info ----------------------
-  // X-PAYMENT-RESPONSE carries the settlement receipt back to the buyer
-  // (base64 JSON per x402 convention). The job continues confirming in the
-  // facilitator; the buyer can poll the facilitator's GET /jobs/:id.
   const paymentResponse = Buffer.from(
     JSON.stringify({
       jobId: settlement.jobId,
@@ -122,7 +159,8 @@ app.get("/paid-data", async (req: Request, res: Response) => {
 
   res.setHeader("X-PAYMENT-RESPONSE", paymentResponse);
   res.json({
-    data: "🎉 This is the paid resource. Payment authorized via x402 + ERC-7710.",
+    service: service.id,
+    data: serviceResult(service),
     servedAt: new Date().toISOString(),
     settlement: {
       jobId: settlement.jobId,
@@ -130,13 +168,25 @@ app.get("/paid-data", async (req: Request, res: Response) => {
       transaction: settlement.transaction ?? null,
     },
   });
+}
+
+// Per-service paid resource.
+app.get("/services/:id", async (req: Request, res: Response) => {
+  const service = getService(req.params.id ?? "");
+  if (!service) return res.status(404).json({ error: "unknown service" });
+  return handlePaidResource(service, req, res);
 });
+
+// Legacy single resource (kept for back-compat with the earlier demo flow).
+app.get("/paid-data", (req: Request, res: Response) =>
+  handlePaidResource(LEGACY_SERVICE, req, res)
+);
 
 app.listen(config.port, () => {
   console.log(`conduit-endpoint listening on :${config.port}`);
   console.log(`  network:     ${chainInfo.caip2}`);
   console.log(`  facilitator: ${config.facilitatorUrl}`);
   console.log(`  payTo:       ${config.payTo}`);
-  console.log(`  price:       ${config.priceUsdc} USDC`);
-  console.log(`  resource:    GET /paid-data`);
+  console.log(`  services:    ${SERVICES.map((s) => s.id).join(", ")}`);
+  console.log(`  catalog:     GET /services`);
 });
