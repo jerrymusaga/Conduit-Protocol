@@ -72,9 +72,13 @@ export const config = {
   eip7702Impl: defaults.eip7702Impl,
   // Hard fallback so a bad/missing chainId can never produce an "undefined/tx" link.
   explorerUrl: defaults.explorerUrl ?? "https://sepolia.basescan.org",
-  // Privy: app id is required (from dashboard.privy.io). Client ID optional.
+  // Privy (commented-out fallback signer — kept in case we revert from MM
+  // Embedded Wallets). App id from dashboard.privy.io.
   privyAppId: process.env.NEXT_PUBLIC_PRIVY_APP_ID ?? "",
   privyClientId: process.env.NEXT_PUBLIC_PRIVY_CLIENT_ID ?? "",
+  // MetaMask Embedded Wallets (Web3Auth) — the active signer. Client id from
+  // dashboard.web3auth.io / developer.metamask.io.
+  web3authClientId: process.env.NEXT_PUBLIC_WEB3AUTH_CLIENT_ID ?? "",
 } as const;
 
 export type AppConfig = typeof config;

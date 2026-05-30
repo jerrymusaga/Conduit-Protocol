@@ -4,15 +4,19 @@ import Image from "next/image";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { formatUnits } from "viem";
+import { privateKeyToAccount } from "viem/accounts";
 import { useAccount, useWalletClient } from "wagmi";
+// MetaMask Embedded Wallets (Web3Auth) — the active signer.
 import {
-  usePrivy,
-  useLogin,
-  useSign7702Authorization,
-  useWallets,
-  getEmbeddedConnectedWallet,
-} from "@privy-io/react-auth";
-import { useSetActiveWallet } from "@privy-io/wagmi";
+  useWeb3AuthConnect,
+  useWeb3AuthDisconnect,
+  useWeb3Auth,
+} from "@web3auth/modal/react";
+import { WALLET_CONNECTORS } from "@web3auth/modal";
+// FALLBACK (Privy) — kept commented in case we revert:
+// import { usePrivy, useLogin, useSign7702Authorization, useWallets,
+//   getEmbeddedConnectedWallet } from "@privy-io/react-auth";
+// import { useSetActiveWallet } from "@privy-io/wagmi";
 import {
   BUDGET,
   PERIOD_OPTIONS,
@@ -64,31 +68,19 @@ const now = () =>
   new Date().toLocaleTimeString("en-US", { hour12: false });
 
 export default function DemoPage() {
-  // Privy (auth) + wagmi (wallet client). Privy drives the connect modal and
-  // 7702 signing; wagmi gives us a standard viem walletClient for delegations.
-  const { ready, authenticated, logout } = usePrivy();
-  const { login } = useLogin();
-  const { signAuthorization } = useSign7702Authorization();
-  const { wallets } = useWallets();
-  const { setActiveWallet } = useSetActiveWallet();
-  const { address, isConnected } = useAccount();
-  // Bind to the configured chain explicitly — useWalletClient() with no args
-  // returns null when the active wallet hasn't been put on that chain yet.
+  // MetaMask Embedded Wallets (Web3Auth) drives the connect modal + the signer.
+  // wagmi (via Web3Auth's WagmiProvider) exposes the connected wallet as a
+  // standard viem walletClient for signing delegations.
+  const { connect, isConnected, connectorName, loading: connecting } =
+    useWeb3AuthConnect();
+  const { disconnect } = useWeb3AuthDisconnect();
+  const { web3Auth } = useWeb3Auth();
+  const { address } = useAccount();
   const { data: walletClient } = useWalletClient({ chainId: config.chainId });
-  const connected = ready && authenticated && isConnected && !!address;
-
-  // Privy can return multiple wallets (Ethereum embedded + Solana embedded +
-  // any external the user connected). Force-bind the EMBEDDED Ethereum one
-  // to wagmi so useAccount/useWalletClient resolve to a usable signer.
-  useEffect(() => {
-    if (!authenticated || wallets.length === 0) return;
-    const embedded = getEmbeddedConnectedWallet(wallets);
-    const ethExternal = wallets.find((w) => w.chainId?.startsWith("eip155:"));
-    const target = embedded ?? ethExternal ?? wallets[0];
-    if (!target) return;
-    if (address && address.toLowerCase() === target.address.toLowerCase()) return;
-    void setActiveWallet(target);
-  }, [authenticated, wallets, address, setActiveWallet]);
+  const connected = isConnected && !!address;
+  // The "auth" connector = email/GitHub embedded wallet (key extractable → can
+  // sign EIP-7702). Anything else (metamask, wallet_connect…) is external.
+  const isEmbedded = connectorName === WALLET_CONNECTORS.AUTH;
 
   const [granted, setGranted] = useState(false);
   const [grantResult, setGrantResult] = useState<GrantResult | null>(null);
@@ -170,23 +162,56 @@ export default function DemoPage() {
   const setAgent = (id: Agent["id"], state: AgentState) =>
     setAgents((a) => a.map((x) => (x.id === id ? { ...x, state } : x)));
 
+  // Extract the embedded wallet's key and sign an EIP-7702 authorization as a
+  // viem local account (the only account type that can produce a *detached*
+  // authorization for the relayer to bundle). The key never leaves the browser.
+  const signEmbedded7702 = async (
+    userAddress: `0x${string}`
+  ): Promise<Eip7702Authorization> => {
+    if (!web3Auth?.provider) throw new Error("Embedded wallet provider unavailable");
+    const raw = (await web3Auth.provider.request({
+      method: "eth_private_key",
+    })) as string;
+    const pk = (raw.startsWith("0x") ? raw : `0x${raw}`) as `0x${string}`;
+    const account = privateKeyToAccount(pk);
+    if (account.address.toLowerCase() !== userAddress.toLowerCase()) {
+      throw new Error("Embedded key/address mismatch");
+    }
+    // Sponsored relay (relayer sends the tx, not the user) → nonce = the
+    // account's CURRENT on-chain nonce.
+    const nonce = await publicClient.getTransactionCount({ address: userAddress });
+    const auth = await account.signAuthorization({
+      address: config.eip7702Impl,
+      chainId: config.chainId,
+      nonce,
+    });
+    return {
+      chainId: auth.chainId ?? config.chainId,
+      address: config.eip7702Impl,
+      nonce: auth.nonce ?? nonce,
+      r: auth.r,
+      s: auth.s,
+      yParity: (auth.yParity === 1 ? 1 : 0) as 0 | 1,
+    };
+  };
+
   // --- actions -----------------------------------------------------------
 
-  // Open Privy's login modal (email / GitHub / external wallet).
-  const connect = async () => {
-    if (busy) return;
+  // Open the MetaMask Embedded Wallets modal (email / GitHub / external MetaMask).
+  const handleConnect = async () => {
+    if (connecting) return;
     append("info", "Opening sign-in…");
     try {
-      login();
+      await connect();
     } catch (e) {
       append("reject", `Sign-in failed · ${errMsg(e)}`);
     }
   };
 
   // Sign-out: clear coordinator + grant + auth so the next session starts clean.
-  const disconnect = async () => {
+  const handleDisconnect = async () => {
     try {
-      await logout();
+      await disconnect();
     } finally {
       coordinatorRef.current = null;
       setGranted(false);
@@ -212,7 +237,7 @@ export default function DemoPage() {
     if (!walletClient || !address) {
       append(
         "info",
-        `Waiting for wallet to bind… (walletClient=${!!walletClient}, address=${!!address}, wallets=${wallets.length})`
+        `Waiting for wallet to bind… (walletClient=${!!walletClient}, address=${!!address})`
       );
       return;
     }
@@ -225,41 +250,34 @@ export default function DemoPage() {
 
       // EIP-7702 designation is REQUIRED: redeemDelegations executes the USDC
       // transfer by calling the delegator account's execution interface, which
-      // only exists if the account has code. A plain EOA reverts. So the user's
-      // account must be designated to EIP7702StatelessDeleGator, and the signed
-      // auth is bundled into the first redeem (relayer pays gas; account is
-      // upgraded in the same tx). Only the Privy embedded wallet can sign a 7702
-      // auth — external wallets (Zerion) can't, so the on-chain settle needs the
-      // embedded wallet.
-      const embeddedWallet = getEmbeddedConnectedWallet(wallets);
-      if (embeddedWallet) {
+      // only exists if the account has code. So the user's account must be a
+      // smart account. Three cases:
+      //   • embedded (email/GitHub) → extract its key, sign a 7702 auth, bundle
+      //     it into the first redeem (relayer upgrades + pays in one tx).
+      //   • external MetaMask already a smart account (has code) → nothing to do.
+      //   • external MetaMask plain EOA → can't produce a detached 7702 auth;
+      //     ask the user to upgrade MetaMask to a smart account.
+      if (isEmbedded) {
         append(
           "info",
           `Signing EIP-7702 authorization · designating ${shorten(config.eip7702Impl)}…`
         );
-        // Sponsored relay (the relayer sends the tx, not the user), so the
-        // authorization nonce is the user account's CURRENT nonce.
-        const nonce = await publicClient.getTransactionCount({
-          address: embeddedWallet.address as `0x${string}`,
-        });
-        const auth = await signAuthorization(
-          { contractAddress: config.eip7702Impl, chainId: config.chainId, nonce },
-          { address: embeddedWallet.address }
-        );
-        setAuthorization({
-          chainId: auth.chainId,
-          address: auth.address as `0x${string}`,
-          nonce: auth.nonce,
-          r: auth.r,
-          s: auth.s,
-          yParity: (auth.yParity === 1 ? 1 : 0) as 0 | 1,
-        });
+        const auth = await signEmbedded7702(address);
+        setAuthorization(auth);
         append("ok", "EIP-7702 authorization signed · designates the wallet on first redeem");
       } else {
-        append(
-          "reject",
-          "External wallet can't sign EIP-7702 — the on-chain settle needs a smart account. Sign out and sign in with email or GitHub (embedded wallet) for the full flow."
-        );
+        // External wallet (MetaMask). Only proceed if it's already a smart account.
+        const code = await publicClient.getCode({ address });
+        const isSmartAccount = !!code && code !== "0x";
+        if (!isSmartAccount) {
+          append(
+            "reject",
+            "Your MetaMask account isn't a smart account yet. Upgrade it to a MetaMask smart account, then grant again."
+          );
+          setBusy(false);
+          return;
+        }
+        append("ok", "MetaMask smart account detected · no upgrade needed");
       }
 
       append(
@@ -462,9 +480,7 @@ export default function DemoPage() {
           <Link href="/" className="flex items-center gap-2.5">
             <Image src="/images/conduit-logo.png" alt="Conduit" width={28} height={28} className="h-7 w-7" />
             <span className="font-semibold tracking-tight">Conduit</span>
-            <span className="mono ml-2 rounded-md border border-conduit-border px-2 py-0.5 text-[11px] text-conduit-muted">
-              demo
-            </span>
+            
           </Link>
           {connected && address ? (
             <div className="flex items-center gap-2">
@@ -476,7 +492,7 @@ export default function DemoPage() {
                 {copied ? "copied ✓" : `${shorten(address)} · Base Sepolia · copy`}
               </button>
               <button
-                onClick={disconnect}
+                onClick={handleDisconnect}
                 disabled={busy}
                 className="text-xs text-conduit-muted underline-offset-4 hover:text-white hover:underline disabled:opacity-40"
               >
@@ -485,11 +501,11 @@ export default function DemoPage() {
             </div>
           ) : (
             <button
-              onClick={connect}
-              disabled={!ready || busy}
+              onClick={handleConnect}
+              disabled={connecting || busy}
               className="btn-primary text-sm disabled:opacity-40"
             >
-              {ready ? "Sign in" : "Loading…"}
+              {connecting ? "Connecting…" : "Sign in"}
             </button>
           )}
         </div>
