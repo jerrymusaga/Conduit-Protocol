@@ -11,6 +11,16 @@ const backend = selectRelayBackend();
 const app = express();
 app.use(express.json({ limit: "5mb" }));
 
+// CORS — the Conduit console (a browser app on another origin) subscribes to
+// the SSE event stream and may call the facilitator directly.
+app.use((req, res, next) => {
+  res.header("Access-Control-Allow-Origin", "*");
+  res.header("Access-Control-Allow-Headers", "Content-Type");
+  res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  if (req.method === "OPTIONS") return res.sendStatus(204);
+  next();
+});
+
 // Health check
 app.get("/health", (_req, res) => {
   res.json({

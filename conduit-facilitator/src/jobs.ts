@@ -34,6 +34,20 @@ export function createJob(): Job {
   return job;
 }
 
+const settledWaiters = new Map<string, ((job: Job) => void)[]>();
+
+/** Resolve when a job reaches a terminal state (confirmed | failed). */
+export function onJobSettled(id: string, cb: (job: Job) => void): void {
+  const job = jobs.get(id);
+  if (job && (job.status === "confirmed" || job.status === "failed")) {
+    cb(job);
+    return;
+  }
+  const list = settledWaiters.get(id) ?? [];
+  list.push(cb);
+  settledWaiters.set(id, list);
+}
+
 export function updateJob(
   id: string,
   patch: Partial<Pick<Job, "status" | "txHash" | "error">>
@@ -41,6 +55,13 @@ export function updateJob(
   const job = jobs.get(id);
   if (!job) return undefined;
   Object.assign(job, patch, { updatedAt: Date.now() });
+  if (job.status === "confirmed" || job.status === "failed") {
+    const waiters = settledWaiters.get(id);
+    if (waiters) {
+      settledWaiters.delete(id);
+      for (const cb of waiters) cb(job);
+    }
+  }
   return job;
 }
 

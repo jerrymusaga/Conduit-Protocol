@@ -9,6 +9,7 @@ import {
 import { chainConfig, publicClient } from "../chain.js";
 import type { RelayBackend } from "../relayers/index.js";
 import { facilitatorRequestSchema, toRelayParams } from "../x402.js";
+import { emitEvent } from "../events.js";
 
 /**
  * POST /verify
@@ -41,6 +42,12 @@ export function verifyRouter(backend: RelayBackend): Router {
 
     const relayParams = toRelayParams(parsed.data.paymentPayload);
     const payload = parsed.data.paymentPayload.payload;
+    const meta = parsed.data.meta ?? {};
+    const correlationId = meta.correlationId;
+
+    // Stage 1: an x402 payment arrived for verification.
+    emitEvent({ stage: "request", correlationId, service: meta.service,
+      agent: meta.agent, resource: meta.resource, amount: meta.amount });
 
     // If the payment bundles an EIP-7702 authorization, the redemption only
     // works because that auth designates the delegator (the user EOA) to a
@@ -75,12 +82,19 @@ export function verifyRouter(backend: RelayBackend): Router {
         ...(stateOverride ? { stateOverride } : {}),
       });
 
+      // Stage 2: the erc7710 caveat chain accepts this payment.
+      emitEvent({ stage: "permission", correlationId, service: meta.service,
+        agent: meta.agent, allowed: true, reason: null });
       res.json({ isValid: true, invalidReason: null });
     } catch (err) {
       // Log the full error server-side, and decode the on-chain revert reason
       // (custom error name / require string) so the buyer sees WHY it failed.
       console.error("[verify] redeemDelegations simulation reverted:\n", err);
-      res.json({ isValid: false, invalidReason: decodeRevert(err) });
+      const reason = decodeRevert(err);
+      // Stage 2 (denied): a caveat rejected it — the safety property, on screen.
+      emitEvent({ stage: "permission", correlationId, service: meta.service,
+        agent: meta.agent, allowed: false, reason });
+      res.json({ isValid: false, invalidReason: reason });
     }
   });
 

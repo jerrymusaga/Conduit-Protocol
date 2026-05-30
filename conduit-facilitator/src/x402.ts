@@ -44,12 +44,25 @@ export const paymentPayloadSchema = z.object({
   payload: erc7710PayloadSchema,
 });
 
+/** Optional descriptive labels for the operations-console event feed. */
+export const eventMetaSchema = z
+  .object({
+    service: z.string().optional(),
+    agent: z.string().optional(),
+    resource: z.string().optional(),
+    amount: z.string().optional(),
+    correlationId: z.string().optional(),
+  })
+  .optional();
+
 export const facilitatorRequestSchema = z.object({
   x402Version: z.number().int().optional(),
   paymentPayload: paymentPayloadSchema,
   // paymentRequirements is echoed by callers; we don't strictly need it for
   // erc7710 verification (simulation is self-contained), so accept anything.
   paymentRequirements: z.unknown().optional(),
+  // Conduit extension: labels for the live console feed (who/what is paying).
+  meta: eventMetaSchema,
 });
 
 export type PaymentPayload = z.infer<typeof paymentPayloadSchema>;

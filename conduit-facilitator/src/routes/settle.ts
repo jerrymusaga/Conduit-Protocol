@@ -1,7 +1,8 @@
 import { Router, type Request, type Response } from "express";
-import { getJob } from "../jobs.js";
+import { getJob, onJobSettled } from "../jobs.js";
 import type { RelayBackend } from "../relayers/index.js";
 import { facilitatorRequestSchema, toRelayParams } from "../x402.js";
+import { emitEvent, recentEvents, subscribe } from "../events.js";
 
 /**
  * POST /settle  — submit the redemption through the active relay backend.
@@ -25,7 +26,46 @@ export function settleRouter(backend: RelayBackend): Router {
     }
 
     const relayParams = toRelayParams(parsed.data.paymentPayload);
+    const meta = parsed.data.meta ?? {};
+    const correlationId = meta.correlationId;
     const result = await backend.submit(relayParams);
+
+    // Stage 3: the redemption was submitted to the relay (tx hash, if any).
+    emitEvent({
+      stage: "settle",
+      correlationId,
+      service: meta.service,
+      agent: meta.agent,
+      jobId: result.jobId,
+      status: result.status,
+      txHash: result.txHash ?? null,
+    });
+
+    // Stage 4: emit when the tx reaches a terminal state (confirmed | failed).
+    if (result.jobId && result.status !== "failed") {
+      onJobSettled(result.jobId, (job) => {
+        emitEvent({
+          stage: "settled",
+          correlationId,
+          service: meta.service,
+          agent: meta.agent,
+          jobId: job.id,
+          status: job.status,
+          txHash: job.txHash ?? null,
+          reason: job.error ?? null,
+        });
+      });
+    } else if (result.status === "failed") {
+      emitEvent({
+        stage: "settled",
+        correlationId,
+        service: meta.service,
+        agent: meta.agent,
+        jobId: result.jobId,
+        status: "failed",
+        reason: result.error ?? null,
+      });
+    }
 
     const httpStatus = result.status === "failed" ? 502 : 202;
     res.status(httpStatus).json({
@@ -36,6 +76,18 @@ export function settleRouter(backend: RelayBackend): Router {
       relayBackend: backend.name,
       error: result.error ?? null,
     });
+  });
+
+  // GET /events — Server-Sent Events stream of the live payment lifecycle.
+  // The operations console subscribes here.
+  router.get("/events", (req: Request, res: Response) => {
+    const unsubscribe = subscribe(res);
+    req.on("close", unsubscribe);
+  });
+
+  // GET /events/recent — the ring buffer, for a console that connects mid-stream.
+  router.get("/events/recent", (_req: Request, res: Response) => {
+    res.json({ events: recentEvents() });
   });
 
   router.get("/jobs/:id", (req: Request, res: Response) => {
