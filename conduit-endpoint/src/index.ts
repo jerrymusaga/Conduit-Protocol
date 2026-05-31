@@ -17,7 +17,10 @@ app.use(express.json({ limit: "5mb" }));
 // endpoint directly. Allow the X-PAYMENT header and answer preflight.
 app.use((req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*");
-  res.header("Access-Control-Allow-Headers", "Content-Type, X-PAYMENT");
+  res.header(
+    "Access-Control-Allow-Headers",
+    "Content-Type, X-PAYMENT, X-AGENT, X-CORRELATION-ID"
+  );
   res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.header("Access-Control-Expose-Headers", "X-PAYMENT-RESPONSE");
   if (req.method === "OPTIONS") return res.sendStatus(204);
