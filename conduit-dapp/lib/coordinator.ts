@@ -36,6 +36,11 @@ export interface PlanItem {
   rationale: string;
 }
 
+/** A plan item with its assigned correlation id (ties client card ↔ SSE events). */
+export interface PlannedItem extends PlanItem {
+  correlationId: string;
+}
+
 /** The A2A message envelope the coordinator hands to each specialist. */
 export interface A2ATask {
   from: "coordinator";
@@ -90,8 +95,10 @@ export const stubPlanner: Planner = {
 export type A2AMode = "looped" | "a2a";
 
 export interface RunHooks {
-  /** Coordinator reasoning / planning narration. */
-  onPlan?: (items: PlanItem[]) => void;
+  /** Coordinator reasoning / planning narration (each item has a correlationId). */
+  onPlan?: (items: PlannedItem[]) => void;
+  /** A payment is about to be attempted (card → "paying"). */
+  onPayStart?: (correlationId: string) => void;
   /** An A2A task handed to a specialist (the envelope). */
   onTask?: (task: A2ATask, agentAddress: Hex) => void;
   /** A service purchase result (settled or rejected). */
@@ -101,6 +108,7 @@ export interface RunHooks {
 }
 
 export interface ServiceResult {
+  correlationId: string;
   service: CatalogService;
   agent: string;
   ok: boolean;
@@ -140,7 +148,13 @@ export async function runCampaign(params: {
   const catalog = await fetchCatalog();
 
   log("coordinator › reasoning over the prompt…");
-  const plan = await planner.plan(prompt, catalog);
+  const rawPlan = await planner.plan(prompt, catalog);
+  // Assign a stable correlation id per item so the client cards and the SSE
+  // events from the facilitator line up.
+  const plan: PlannedItem[] = rawPlan.map((i) => ({
+    ...i,
+    correlationId: crypto.randomUUID(),
+  }));
   hooks.onPlan?.(plan);
   log(`coordinator › plan: ${plan.map((i) => i.service.id).join(", ")}`);
 
@@ -149,8 +163,7 @@ export async function runCampaign(params: {
   let auth = params.authorization ?? undefined;
 
   for (const item of plan) {
-    const { service, agent } = item;
-    const correlationId = crypto.randomUUID();
+    const { service, agent, correlationId } = item;
 
     // A2A: spin up a real specialist key and hand it the task envelope.
     let subAgent: Agent | undefined;
@@ -181,6 +194,7 @@ export async function runCampaign(params: {
         subAgent,
         authorization: auth,
       });
+      hooks.onPayStart?.(correlationId);
       const claim = await payAndClaim(built.paymentPayload, {
         path: service.resource,
         agent,
@@ -190,13 +204,13 @@ export async function runCampaign(params: {
         auth = undefined; // designation done on the first successful settle
         totalSpent += built.amount;
         result = {
-          service, agent, ok: true, intentHash, amount: built.amount,
+          correlationId, service, agent, ok: true, intentHash, amount: built.amount,
           txHash: claim.settlement?.transaction ?? null,
         };
         log(`${agent} › settled ${service.label} · ${formatUnits(built.amount, 6)} USDC`);
       } else {
         result = {
-          service, agent, ok: false, intentHash, amount: built.amount,
+          correlationId, service, agent, ok: false, intentHash, amount: built.amount,
           error: claim.error,
         };
         log(`${agent} › rejected · ${claim.error}`);
@@ -204,7 +218,8 @@ export async function runCampaign(params: {
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       result = {
-        service, agent, ok: false, intentHash: "0x" as Hex, amount: 0n, error: msg,
+        correlationId, service, agent, ok: false, intentHash: "0x" as Hex,
+        amount: 0n, error: msg,
       };
       log(`${agent} › failed · ${msg}`);
     }

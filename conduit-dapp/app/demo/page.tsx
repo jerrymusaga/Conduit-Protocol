@@ -22,64 +22,59 @@ import {
   type Coordinator,
   type GrantResult,
 } from "@/lib/grant";
-import { fetch402, payAndClaim, type PaymentRequirements } from "@/lib/endpoint";
-import { buildPayment, type Eip7702Authorization } from "@/lib/payment";
-import { readUsdcBalance, fetchSettlementEvents, type SettlementEvents } from "@/lib/onchain";
+import { runCampaign, type A2AMode, type PlannedItem } from "@/lib/coordinator";
+import type { Eip7702Authorization } from "@/lib/payment";
+import { useFacilitatorEvents } from "@/lib/useFacilitatorEvents";
 import { config } from "@/lib/config";
 import { publicClient } from "@/lib/chain";
 
 /* ===========================================================================
-   Conduit demo.
-   WIRED (real): Connect (Privy: email / GitHub / external wallet), Grant
-   (manual root delegation via signTypedData + EIP-7702 auth via Privy's
-   useSign7702Authorization), Run flow (intent-bound redelegation → facilitator
-   /verify + /settle, with the 7702 auth bundled into the first redeem).
-   Still MOCK: break-it buttons (next: real overrides), kill-root.
+   Conduit — facilitator operations console.
+   Conduit is the star: a live feed of x402 payments flowing through the
+   facilitator (request → permission → settle → released), each authorized
+   against ONE erc7715 permission, multiple agents draining one budget.
+   Client coordinator narrates each card instantly; the facilitator's SSE
+   stream annotates/confirms them (smoothest UX).
    =========================================================================== */
 
-type LogKind = "info" | "agent" | "pay" | "ok" | "reject";
-interface LogLine {
-  t: string;
-  kind: LogKind;
-  text: string;
-}
+type CardStage = "queued" | "requested" | "allowed" | "denied" | "settling" | "settled" | "failed";
 
-type AgentState = "idle" | "active" | "done" | "dark";
-interface Agent {
-  id: "coordinator" | "discover" | "execute" | "claim";
+interface FeedCard {
+  correlationId: string;
+  service: string;
   label: string;
-  scope: string;
-  accent: string;
-  state: AgentState;
+  agent: string;
+  priceUsdc: string;
+  rationale: string;
+  stage: CardStage;
+  reason?: string | null;
+  txHash?: string | null;
 }
 
-const INITIAL_AGENTS: Agent[] = [
-  { id: "coordinator", label: "Coordinator", scope: "root policy · 0.10 USDC/hr", accent: "#ffffff", state: "idle" },
-  { id: "discover", label: "discover", scope: "read 402 · no spend", accent: "#00E5FF", state: "idle" },
-  { id: "execute", label: "execute", scope: "pay 1 bound intent", accent: "#7C3AED", state: "idle" },
-  { id: "claim", label: "claim", scope: "fetch the asset", accent: "#EC4899", state: "idle" },
-];
+const STAGE_LABEL: Record<CardStage, string> = {
+  queued: "queued",
+  requested: "x402 request",
+  allowed: "permission ✓",
+  denied: "DENIED",
+  settling: "settling…",
+  settled: "settled ✓",
+  failed: "failed",
+};
 
-const now = () =>
-  new Date().toLocaleTimeString("en-US", { hour12: false });
+const now = () => new Date().toLocaleTimeString("en-US", { hour12: false });
 
 export default function DemoPage() {
-  // Privy (auth) + wagmi (wallet client). Privy drives the connect modal and
-  // 7702 signing; wagmi gives us a standard viem walletClient for delegations.
+  // Privy (auth) + wagmi (wallet client).
   const { ready, authenticated, logout } = usePrivy();
   const { login } = useLogin();
   const { signAuthorization } = useSign7702Authorization();
   const { wallets } = useWallets();
   const { setActiveWallet } = useSetActiveWallet();
   const { address, isConnected } = useAccount();
-  // Bind to the configured chain explicitly — useWalletClient() with no args
-  // returns null when the active wallet hasn't been put on that chain yet.
   const { data: walletClient } = useWalletClient({ chainId: config.chainId });
   const connected = ready && authenticated && isConnected && !!address;
 
-  // Privy can return multiple wallets (Ethereum embedded + Solana embedded +
-  // any external the user connected). Force-bind the EMBEDDED Ethereum one
-  // to wagmi so useAccount/useWalletClient resolve to a usable signer.
+  // Bind the embedded Ethereum wallet to wagmi after login.
   useEffect(() => {
     if (!authenticated || wallets.length === 0) return;
     const embedded = getEmbeddedConnectedWallet(wallets);
@@ -90,73 +85,77 @@ export default function DemoPage() {
     void setActiveWallet(target);
   }, [authenticated, wallets, address, setActiveWallet]);
 
+  // Grant / permission state.
   const [granted, setGranted] = useState(false);
   const [grantResult, setGrantResult] = useState<GrantResult | null>(null);
   const [amountInput, setAmountInput] = useState<string>(BUDGET.periodAmountUsdc);
   const [periodSeconds, setPeriodSeconds] = useState<number>(BUDGET.periodDuration);
-  const [revoked, setRevoked] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [spent, setSpent] = useState(0); // micro-USDC used this period
-  const [agents, setAgents] = useState<Agent[]>(INITIAL_AGENTS);
-  const [log, setLog] = useState<LogLine[]>([]);
-  const [receipt, setReceipt] = useState<null | {
-    amount: string;
-    recipient: string;
-    intent: string;
-    tx: string;
-  }>(null);
-  const [nowSec, setNowSec] = useState(() => Math.floor(Date.now() / 1000));
-  const [copied, setCopied] = useState(false);
-  // Interactivity: live USDC balances (payer + seller), the x402 wire exchange,
-  // and the decoded on-chain settlement events.
-  const [bal, setBal] = useState<null | {
-    payerBefore: bigint;
-    sellerBefore: bigint;
-    payerAfter?: bigint;
-    sellerAfter?: bigint;
-  }>(null);
-  const [exchange, setExchange] = useState<null | {
-    req: PaymentRequirements;
-    payload: unknown;
-    response?: unknown;
-  }>(null);
-  const [events, setEvents] = useState<SettlementEvents | null>(null);
-  const [confirming, setConfirming] = useState(false);
-  // The 7702 authorization, signed at grant time and bundled into the FIRST
-  // redeem; cleared after a successful settle (subsequent runs don't need it).
   const [authorization, setAuthorization] = useState<Eip7702Authorization | null>(null);
-  const logEndRef = useRef<HTMLDivElement>(null);
   const coordinatorRef = useRef<Coordinator | null>(null);
 
-  // Budget meter scales to the real granted cap once we have it.
-  const CAP = grantResult ? Number(grantResult.periodAmount) : 100_000; // micro-USDC
+  // Console state.
+  const [prompt, setPrompt] = useState("Launch my new product: a visual, a tagline, and competitor research.");
+  const [mode, setMode] = useState<A2AMode>("a2a");
+  const [busy, setBusy] = useState(false);
+  const [spent, setSpent] = useState(0); // micro-USDC settled
+  const [cards, setCards] = useState<FeedCard[]>([]);
+  const [log, setLog] = useState<{ t: string; text: string }[]>([]);
+  const [nowSec, setNowSec] = useState(() => Math.floor(Date.now() / 1000));
+  const [copied, setCopied] = useState(false);
+  const logEndRef = useRef<HTMLDivElement>(null);
 
-  // Tick the expiry countdown while a grant is live.
-  useEffect(() => {
-    if (!grantResult || revoked) return;
-    const id = setInterval(
-      () => setNowSec(Math.floor(Date.now() / 1000)),
-      1000
-    );
-    return () => clearInterval(id);
-  }, [grantResult, revoked]);
+  // Live SSE feed from the facilitator (server-truth annotation).
+  const { events, connected: sseConnected } = useFacilitatorEvents(connected);
+  const seenEvents = useRef(new Set<string>());
 
-  const remaining = grantResult
-    ? Math.max(0, grantResult.expiry - nowSec)
-    : null;
+  const CAP = grantResult ? Number(grantResult.periodAmount) : 100_000;
+  const pct = Math.min(100, (spent / CAP) * 100);
+  const remaining = grantResult ? Math.max(0, grantResult.expiry - nowSec) : null;
   const expiryText =
     remaining == null
       ? "—"
-      : `${String(Math.floor(remaining / 60)).padStart(2, "0")}:${String(
-          remaining % 60
-        ).padStart(2, "0")}`;
+      : `${String(Math.floor(remaining / 60)).padStart(2, "0")}:${String(remaining % 60).padStart(2, "0")}`;
+  const displayAmount = grantResult ? grantResult.periodAmountUsdc : amountInput;
+  const displayPeriod = grantResult ? grantResult.periodLabel : periodLabel(periodSeconds);
 
-  const append = useCallback((kind: LogKind, text: string) => {
-    setLog((l) => [...l, { t: now(), kind, text }]);
-    requestAnimationFrame(() =>
-      logEndRef.current?.scrollIntoView({ behavior: "smooth" })
-    );
+  const append = useCallback((text: string) => {
+    setLog((l) => [...l, { t: now(), text }]);
+    requestAnimationFrame(() => logEndRef.current?.scrollIntoView({ behavior: "smooth" }));
   }, []);
+
+  // Tick the expiry countdown.
+  useEffect(() => {
+    if (!grantResult) return;
+    const id = setInterval(() => setNowSec(Math.floor(Date.now() / 1000)), 1000);
+    return () => clearInterval(id);
+  }, [grantResult]);
+
+  // Annotate feed cards from the facilitator's SSE stream (server-truth). The
+  // client narration sets the optimistic stage; SSE confirms permission/settle.
+  useEffect(() => {
+    for (const ev of events) {
+      if (seenEvents.current.has(ev.id)) continue;
+      seenEvents.current.add(ev.id);
+      if (!ev.correlationId) continue;
+      setCards((cs) =>
+        cs.map((c) => {
+          if (c.correlationId !== ev.correlationId) return c;
+          if (ev.stage === "permission") {
+            return ev.allowed
+              ? { ...c, stage: c.stage === "settled" ? c.stage : "allowed" }
+              : { ...c, stage: "denied", reason: ev.reason };
+          }
+          if (ev.stage === "settle") return { ...c, stage: "settling", txHash: ev.txHash };
+          if (ev.stage === "settled") {
+            return ev.status === "confirmed"
+              ? { ...c, stage: "settled", txHash: ev.txHash }
+              : { ...c, stage: "failed", reason: ev.reason };
+          }
+          return c;
+        })
+      );
+    }
+  }, [events]);
 
   const copyAddress = useCallback(() => {
     if (!address) return;
@@ -166,24 +165,21 @@ export default function DemoPage() {
     });
   }, [address]);
 
-  const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-  const setAgent = (id: Agent["id"], state: AgentState) =>
-    setAgents((a) => a.map((x) => (x.id === id ? { ...x, state } : x)));
+  const setCardStage = (correlationId: string, patch: Partial<FeedCard>) =>
+    setCards((cs) => cs.map((c) => (c.correlationId === correlationId ? { ...c, ...patch } : c)));
 
   // --- actions -----------------------------------------------------------
 
-  // Open Privy's login modal (email / GitHub / external wallet).
   const connect = async () => {
     if (busy) return;
-    append("info", "Opening sign-in…");
+    append("Opening sign-in…");
     try {
       login();
     } catch (e) {
-      append("reject", `Sign-in failed · ${errMsg(e)}`);
+      append(`Sign-in failed · ${errMsg(e)}`);
     }
   };
 
-  // Sign-out: clear coordinator + grant + auth so the next session starts clean.
   const disconnect = async () => {
     try {
       await logout();
@@ -192,53 +188,29 @@ export default function DemoPage() {
       setGranted(false);
       setGrantResult(null);
       setAuthorization(null);
-      setRevoked(false);
       setSpent(0);
-      setAgents(INITIAL_AGENTS);
+      setCards([]);
       setLog([]);
-      setReceipt(null);
-      setEvents(null);
-      setExchange(null);
-      setBal(null);
     }
   };
 
-  // Grant: (1) create the coordinator session EOA, (2) sign the 7702 auth via
-  // Privy (designating the user EOA to EIP7702StatelessDeleGator — required
-  // for the 1Shot track), (3) build + sign the root delegation off-chain via
-  // walletClient.signTypedData (no snap, no 403).
+  // Grant: coordinator EOA + 7702 auth (embedded wallet) + root delegation.
   const grant = async () => {
     if (busy) return;
     if (!walletClient || !address) {
-      append(
-        "info",
-        `Waiting for wallet to bind… (walletClient=${!!walletClient}, address=${!!address}, wallets=${wallets.length})`
-      );
+      append(`Waiting for wallet to bind… (wallets=${wallets.length})`);
       return;
     }
     setBusy(true);
     try {
-      append("info", "Creating coordinator session account…");
+      append("Creating coordinator session account…");
       const coordinator = createCoordinatorAccount();
       coordinatorRef.current = coordinator;
-      append("agent", `Coordinator account · ${shorten(coordinator.address)}`);
+      append(`Coordinator account · ${shorten(coordinator.address)}`);
 
-      // EIP-7702 designation is REQUIRED: redeemDelegations executes the USDC
-      // transfer by calling the delegator account's execution interface, which
-      // only exists if the account has code. A plain EOA reverts. So the user's
-      // account must be designated to EIP7702StatelessDeleGator, and the signed
-      // auth is bundled into the first redeem (relayer pays gas; account is
-      // upgraded in the same tx). Only the Privy embedded wallet can sign a 7702
-      // auth — external wallets (Zerion) can't, so the on-chain settle needs the
-      // embedded wallet.
       const embeddedWallet = getEmbeddedConnectedWallet(wallets);
       if (embeddedWallet) {
-        append(
-          "info",
-          `Signing EIP-7702 authorization · designating ${shorten(config.eip7702Impl)}…`
-        );
-        // Sponsored relay (the relayer sends the tx, not the user), so the
-        // authorization nonce is the user account's CURRENT nonce.
+        append(`Signing EIP-7702 authorization · designating ${shorten(config.eip7702Impl)}…`);
         const nonce = await publicClient.getTransactionCount({
           address: embeddedWallet.address as `0x${string}`,
         });
@@ -254,18 +226,12 @@ export default function DemoPage() {
           s: auth.s,
           yParity: (auth.yParity === 1 ? 1 : 0) as 0 | 1,
         });
-        append("ok", "EIP-7702 authorization signed · designates the wallet on first redeem");
+        append("EIP-7702 authorization signed · bundled into the first redeem");
       } else {
-        append(
-          "reject",
-          "External wallet can't sign EIP-7702 — the on-chain settle needs a smart account. Sign out and sign in with email or GitHub (embedded wallet) for the full flow."
-        );
+        append("External wallet can't sign EIP-7702 — sign in with email/GitHub for the full flow.");
       }
 
-      append(
-        "info",
-        `Asking for permission: ${amountInput} USDC / ${periodLabel(periodSeconds)}…`
-      );
+      append(`Requesting permission: up to ${amountInput} USDC / ${periodLabel(periodSeconds)}…`);
       const result = await grantBudget({
         walletClient,
         userAddress: address,
@@ -275,300 +241,221 @@ export default function DemoPage() {
       });
       setGrantResult(result);
       setGranted(true);
-      setAgent("coordinator", "active");
-      append("ok", "Permission granted · Coordinator holds the root policy");
+      append("Permission granted · the coordinator holds the root policy");
     } catch (e) {
-      // eslint-disable-next-line no-console
       console.error("[conduit] grant failed →", e);
-      append("reject", `Grant failed · ${errMsg(e)}`);
+      append(`Grant failed · ${errMsg(e)}`);
     } finally {
       setBusy(false);
     }
   };
 
-  // REAL: discover (402) → execute (intent-bound redelegation → endpoint →
-  // facilitator /verify + /settle) → claim. Surfaces the real on-chain receipt.
-  const runFlow = async () => {
-    if (busy || revoked || !grantResult || !coordinatorRef.current || !address) return;
+  // Run the prompt: coordinator plans, then pays each service through Conduit.
+  const run = async () => {
+    if (busy || !granted || !grantResult || !coordinatorRef.current) return;
     setBusy(true);
-    setReceipt(null);
-    setEvents(null);
+    setCards([]);
     try {
-      append("agent", "Coordinator › preparing intent-bound redelegation");
-
-      // --- discover: read the 402 requirements (no spend) ----------------
-      setAgent("discover", "active");
-      append("agent", "discover › GET /paid-data");
-      const req = await fetch402();
-      const price = formatUnits(BigInt(req.maxAmountRequired), 6);
-      append(
-        "agent",
-        `discover › 402 Payment Required · ${price} USDC → ${shorten(req.payTo)}`
-      );
-      setExchange({ req, payload: null });
-      setAgent("discover", "done");
-
-      // Snapshot balances BEFORE the payment (the visible "money moves" proof).
-      const [payerBefore, sellerBefore] = await Promise.all([
-        readUsdcBalance(address),
-        readUsdcBalance(req.payTo),
-      ]);
-      setBal({ payerBefore, sellerBefore });
-
-      // --- execute: build + sign the bound redelegation, then pay --------
-      setAgent("execute", "active");
-      append("pay", "execute › binding payment · X402ReceiptEnforcer + IdEnforcer");
-      if (authorization) {
-        append("pay", "execute › bundling EIP-7702 auth (first run · designates the EOA)");
-      }
-      const built = await buildPayment({
+      await runCampaign({
+        prompt,
         grant: grantResult,
         coordinator: coordinatorRef.current,
-        req,
-        authorization: authorization ?? undefined,
+        mode,
+        authorization,
+        hooks: {
+          log: append,
+          onPlan: (items: PlannedItem[]) => {
+            setCards(
+              items.map((i) => ({
+                correlationId: i.correlationId,
+                service: i.service.id,
+                label: i.service.label,
+                agent: i.agent,
+                priceUsdc: i.service.priceUsdc,
+                rationale: i.rationale,
+                stage: "queued",
+              }))
+            );
+          },
+          onPayStart: (cid) => setCardStage(cid, { stage: "requested" }),
+          onResult: (r) => {
+            if (r.ok) {
+              setSpent((s) => s + Number(r.amount));
+              setCardStage(r.correlationId, {
+                stage: "settled",
+                txHash: r.txHash ?? null,
+              });
+            } else {
+              setCardStage(r.correlationId, { stage: "denied", reason: r.error });
+            }
+          },
+        },
       });
-      setExchange((x) => (x ? { ...x, payload: built.paymentPayload } : x));
-      append(
-        "pay",
-        `execute › intent ${shorten(built.intentHash)} · redeemer ${shorten(req.redeemer!)}`
-      );
-      append("pay", "execute › X-PAYMENT → facilitator /verify → /settle…");
-      const claim = await payAndClaim(built.paymentPayload);
-      if (!claim.ok) {
-        setAgent("execute", "idle");
-        append("reject", `Rejected on-chain · ${claim.error}`);
-        return;
-      }
-      setExchange((x) =>
-        x ? { ...x, response: { data: claim.data, settlement: claim.settlement } } : x
-      );
-      const tx = (claim.settlement?.transaction ?? null) as `0x${string}` | null;
-      append(
-        "ok",
-        `settled ✓ ${tx ? shorten(tx) : "(pending)"} · ${
-          claim.settlement?.status ?? "submitted"
-        }`
-      );
-      if (authorization) setAuthorization(null);
-      setSpent((s) => s + Number(built.amount));
-      setAgent("execute", "done");
-
-      // --- claim: the asset is now unlocked ------------------------------
-      setAgent("claim", "active");
-      append("agent", "claim › GET /paid-data → 200 OK, asset unlocked");
-      setAgent("claim", "done");
-
-      setReceipt({
-        amount: `${formatUnits(built.amount, 6)} USDC`,
-        recipient: built.payTo,
-        intent: built.intentHash,
-        tx: tx ?? "(pending)",
-      });
-
-      // --- confirm on-chain: decode the real events + balance deltas -----
-      if (tx) {
-        setConfirming(true);
-        append("info", "confirming on-chain · decoding events…");
-        try {
-          const ev = await fetchSettlementEvents(tx);
-          setEvents(ev);
-          const [payerAfter, sellerAfter] = await Promise.all([
-            readUsdcBalance(address),
-            readUsdcBalance(req.payTo),
-          ]);
-          setBal((b) => (b ? { ...b, payerAfter, sellerAfter } : b));
-          append(
-            "ok",
-            `confirmed ✓ ${ev.logCount} events · X402IntentSettled + USDC Transfer + ${ev.redemptions} redemptions`
-          );
-        } catch (e) {
-          append("info", `confirmation pending · ${errMsg(e)}`);
-        } finally {
-          setConfirming(false);
-        }
-      }
+      // Clear the auth after the first run consumed it for designation.
+      setAuthorization(null);
     } catch (e) {
-      append("reject", `Run failed · ${errMsg(e)}`);
+      append(`Run failed · ${errMsg(e)}`);
     } finally {
       setBusy(false);
     }
   };
-
-  const tryBreak = async (kind: "redirect" | "overspend" | "replay") => {
-    if (busy || revoked) return;
-    setBusy(true);
-    const msgs: Record<typeof kind, string> = {
-      redirect: "rogue execute › attempting transfer to its OWN address…",
-      overspend: "rogue execute › attempting 5.00 USDC (over the bound amount)…",
-      replay: "rogue execute › replaying the completed payment…",
-    };
-    const reverts: Record<typeof kind, string> = {
-      redirect: "Rejected on-chain · X402Receipt: wrong-recipient",
-      overspend: "Rejected on-chain · X402Receipt: amount-exceeds-cap",
-      replay: "Rejected on-chain · IdEnforcer: id already used",
-    };
-    append("agent", msgs[kind]);
-    await wait(900);
-    append("reject", reverts[kind]);
-    setBusy(false);
-  };
-
-  const killRoot = async () => {
-    if (busy) return;
-    setBusy(true);
-    append("info", "User › disableDelegation(root) …");
-    await wait(700);
-    // cascade: every downstream agent goes dark
-    for (const id of ["claim", "execute", "discover", "coordinator"] as const) {
-      setAgent(id, "dark");
-      await wait(180);
-    }
-    append("reject", "Root killed · every downstream agent's rights died at once");
-    setRevoked(true);
-    setBusy(false);
-  };
-
-  // Soft reset: clears the run (log / receipt / spent), keeps the wallet
-  // connection and the live grant so you can run again with a fresh intent.
-  const reset = () => {
-    setLog([]);
-    setReceipt(null);
-    setEvents(null);
-    setExchange(null);
-    setBal(null);
-    setSpent(0);
-    setRevoked(false);
-    setAgents(
-      INITIAL_AGENTS.map((a) =>
-        a.id === "coordinator" && granted ? { ...a, state: "active" } : a
-      )
-    );
-  };
-
-  const pct = Math.min(100, (spent / CAP) * 100);
-
-  // What the card/meter show: the granted values once granted, else the
-  // current dapp selection.
-  const displayAmount = grantResult ? grantResult.periodAmountUsdc : amountInput;
-  const displayPeriod = grantResult
-    ? grantResult.periodLabel
-    : periodLabel(periodSeconds);
 
   return (
     <main className="min-h-screen">
       {/* top bar */}
       <div className="border-b border-conduit-border/60">
-        <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
+        <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
           <Link href="/" className="flex items-center gap-2.5">
             <Image src="/images/conduit-logo.png" alt="Conduit" width={28} height={28} className="h-7 w-7" />
             <span className="font-semibold tracking-tight">Conduit</span>
             <span className="mono ml-2 rounded-md border border-conduit-border px-2 py-0.5 text-[11px] text-conduit-muted">
-              demo
+              facilitator console
             </span>
           </Link>
-          {connected && address ? (
-            <div className="flex items-center gap-2">
+          <div className="flex items-center gap-3">
+            {connected && (
+              <span className="mono flex items-center gap-1.5 text-[11px] text-conduit-muted">
+                <span
+                  className="h-1.5 w-1.5 rounded-full"
+                  style={{ background: sseConnected ? "#00E5FF" : "#666" }}
+                />
+                {sseConnected ? "live" : "connecting"}
+              </span>
+            )}
+            {connected && address ? (
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={copyAddress}
+                  title={`${address} · click to copy`}
+                  className="mono rounded-lg border border-conduit-border px-3 py-1.5 text-xs text-conduit-cyan transition-colors hover:border-conduit-cyan/50"
+                >
+                  {copied ? "copied ✓" : `${shorten(address)} · Base Sepolia · copy`}
+                </button>
+                <button
+                  onClick={disconnect}
+                  disabled={busy}
+                  className="text-xs text-conduit-muted underline-offset-4 hover:text-white hover:underline disabled:opacity-40"
+                >
+                  sign out
+                </button>
+              </div>
+            ) : (
               <button
-                onClick={copyAddress}
-                title={`${address} · click to copy`}
-                className="mono rounded-lg border border-conduit-border px-3 py-1.5 text-xs text-conduit-cyan transition-colors hover:border-conduit-cyan/50"
+                onClick={connect}
+                disabled={!ready || busy}
+                className="btn-primary text-sm disabled:opacity-40"
               >
-                {copied ? "copied ✓" : `${shorten(address)} · Base Sepolia · copy`}
+                {ready ? "Sign in" : "Loading…"}
               </button>
-              <button
-                onClick={disconnect}
-                disabled={busy}
-                className="text-xs text-conduit-muted underline-offset-4 hover:text-white hover:underline disabled:opacity-40"
-              >
-                sign out
-              </button>
-            </div>
-          ) : (
-            <button
-              onClick={connect}
-              disabled={!ready || busy}
-              className="btn-primary text-sm disabled:opacity-40"
-            >
-              {ready ? "Sign in" : "Loading…"}
-            </button>
-          )}
+            )}
+          </div>
         </div>
       </div>
 
-      <div className="mx-auto grid max-w-6xl gap-6 px-6 py-8 lg:grid-cols-12">
-        {/* LEFT: permission + roster */}
-        <div className="space-y-6 lg:col-span-4">
-          {/* Permission card */}
+      <div className="mx-auto grid max-w-7xl gap-6 px-6 py-8 lg:grid-cols-12">
+        {/* LEFT: prompt + permission + budget */}
+        <div className="space-y-6 lg:col-span-3">
+          {/* Prompt */}
+          <section className="panel p-6">
+            <h2 className="text-sm font-semibold uppercase tracking-wide text-conduit-muted">
+              Prompt
+            </h2>
+            <textarea
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              disabled={busy}
+              rows={3}
+              className="mono mt-3 w-full resize-none rounded-lg border border-conduit-border bg-transparent px-3 py-2 text-[13px] text-white outline-none focus:border-conduit-cyan disabled:opacity-40"
+            />
+            <div className="mt-3 flex items-center gap-2 text-xs">
+              <span className="text-conduit-muted">A2A:</span>
+              <button
+                onClick={() => setMode("a2a")}
+                disabled={busy}
+                className={`mono rounded-md px-2 py-1 ${mode === "a2a" ? "bg-conduit-cyan/15 text-conduit-cyan" : "border border-conduit-border text-conduit-muted"}`}
+              >
+                3-hop sub-agents
+              </button>
+              <button
+                onClick={() => setMode("looped")}
+                disabled={busy}
+                className={`mono rounded-md px-2 py-1 ${mode === "looped" ? "bg-conduit-cyan/15 text-conduit-cyan" : "border border-conduit-border text-conduit-muted"}`}
+              >
+                looped
+              </button>
+            </div>
+            <button
+              onClick={run}
+              disabled={!granted || busy}
+              className="btn-primary mt-4 w-full justify-center text-sm disabled:opacity-40"
+            >
+              {busy ? "Running…" : "Run"}
+            </button>
+          </section>
+
+          {/* Permission */}
           <section className="panel p-6">
             <div className="flex items-center justify-between">
               <h2 className="text-sm font-semibold uppercase tracking-wide text-conduit-muted">
                 Permission
               </h2>
               <span
-                className={`mono rounded-md px-2 py-0.5 text-[11px] ${
-                  revoked
-                    ? "bg-conduit-magenta/15 text-conduit-magenta"
-                    : granted
-                      ? "bg-conduit-cyan/15 text-conduit-cyan"
-                      : "border border-conduit-border text-conduit-muted"
-                }`}
+                className={`mono rounded-md px-2 py-0.5 text-[11px] ${granted ? "bg-conduit-cyan/15 text-conduit-cyan" : "border border-conduit-border text-conduit-muted"}`}
               >
-                {revoked ? "revoked" : granted ? "active" : "not granted"}
+                {granted ? "active" : "not granted"}
               </span>
             </div>
 
             {!granted ? (
               <div className="mt-4 space-y-3">
-                <p className="text-[15px] leading-relaxed text-conduit-muted">
-                  Authorize an agent budget — single-use per request, revocable,
-                  expires after one period.
+                <p className="text-[13px] leading-relaxed text-conduit-muted">
+                  Authorize an agent budget — erc7715, single-use per request, expires after one period.
                 </p>
                 <div className="flex items-center gap-2 text-sm">
                   <span className="text-white">up to</span>
                   <input
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    inputMode="decimal"
+                    type="number" min="0" step="0.01" inputMode="decimal"
                     value={amountInput}
                     onChange={(e) => setAmountInput(e.target.value)}
                     disabled={!connected || busy}
-                    className="mono w-24 rounded-lg border border-conduit-border bg-transparent px-2.5 py-1.5 text-white outline-none focus:border-conduit-cyan disabled:opacity-40"
+                    className="mono w-20 rounded-lg border border-conduit-border bg-transparent px-2 py-1.5 text-white outline-none focus:border-conduit-cyan disabled:opacity-40"
                   />
-                  <span className="text-white">USDC /</span>
+                  <span className="text-white">/</span>
                   <select
                     value={periodSeconds}
                     onChange={(e) => setPeriodSeconds(Number(e.target.value))}
                     disabled={!connected || busy}
-                    className="mono rounded-lg border border-conduit-border bg-conduit-panel px-2.5 py-1.5 text-white outline-none focus:border-conduit-cyan disabled:opacity-40"
+                    className="mono rounded-lg border border-conduit-border bg-conduit-panel px-2 py-1.5 text-white outline-none focus:border-conduit-cyan disabled:opacity-40"
                   >
                     {PERIOD_OPTIONS.map((o) => (
-                      <option
-                        key={o.seconds}
-                        value={o.seconds}
-                        className="bg-conduit-panel"
-                      >
+                      <option key={o.seconds} value={o.seconds} className="bg-conduit-panel">
                         {o.label}
                       </option>
                     ))}
                   </select>
                 </div>
+                <button
+                  onClick={grant}
+                  disabled={!connected || busy}
+                  className="btn-primary mt-1 w-full justify-center text-sm disabled:opacity-40"
+                >
+                  Grant permission
+                </button>
               </div>
             ) : (
-              <p className="mt-4 text-[15px] leading-relaxed">
+              <p className="mt-4 text-[13px] leading-relaxed text-conduit-muted">
                 Authorizing{" "}
                 <span className="font-semibold text-white">
                   up to {displayAmount} USDC / {displayPeriod}
                 </span>
-                , single-use per request, expires in{" "}
-                <span className="mono text-conduit-cyan">{expiryText}</span>.
+                . Expires in <span className="mono text-conduit-cyan">{expiryText}</span>.
               </p>
             )}
 
             {/* budget meter */}
             <div className="mt-5">
               <div className="flex justify-between text-xs text-conduit-muted">
-                <span>spent this {displayPeriod}</span>
+                <span>spent</span>
                 <span className="mono">
                   {(spent / 1e6).toFixed(2)} / {displayAmount} USDC
                 </span>
@@ -576,154 +463,63 @@ export default function DemoPage() {
               <div className="mt-2 h-2 overflow-hidden rounded-full bg-white/5">
                 <div
                   className="h-full rounded-full transition-all duration-500"
-                  style={{
-                    width: `${pct}%`,
-                    background: "linear-gradient(90deg,#00E5FF,#7C3AED,#EC4899)",
-                  }}
+                  style={{ width: `${pct}%`, background: "linear-gradient(90deg,#00E5FF,#7C3AED,#EC4899)" }}
                 />
               </div>
-            </div>
-
-            {!granted ? (
-              <button
-                onClick={grant}
-                disabled={!connected || busy}
-                className="btn-primary mt-6 w-full justify-center text-sm disabled:opacity-40"
-              >
-                Grant permission
-              </button>
-            ) : (
-              <button
-                onClick={killRoot}
-                disabled={busy || revoked}
-                className="mt-6 w-full justify-center rounded-xl border border-conduit-magenta/50 px-4 py-2.5 text-sm font-semibold text-conduit-magenta transition-colors hover:bg-conduit-magenta/10 disabled:opacity-40"
-              >
-                Kill root delegation
-              </button>
-            )}
-          </section>
-
-          {/* Agent roster */}
-          <section className="panel p-6">
-            <h2 className="text-sm font-semibold uppercase tracking-wide text-conduit-muted">
-              Agents
-            </h2>
-            <div className="mt-4 space-y-2.5">
-              {agents.map((a) => (
-                <div
-                  key={a.id}
-                  className={`flex items-center gap-3 rounded-xl border px-3 py-2.5 transition-all duration-300 ${
-                    a.state === "dark"
-                      ? "border-conduit-border/40 opacity-30"
-                      : "border-conduit-border"
-                  }`}
-                >
-                  <span
-                    className="h-2.5 w-2.5 rounded-full transition-all"
-                    style={{
-                      background: a.state === "dark" ? "#333" : a.accent,
-                      boxShadow:
-                        a.state === "active"
-                          ? `0 0 12px ${a.accent}`
-                          : "none",
-                    }}
-                  />
-                  <div className="flex-1">
-                    <div className="text-sm font-medium">
-                      {a.id === "coordinator" ? a.label : `${a.label} agent`}
-                    </div>
-                    <div className="mono text-[11px] text-conduit-muted">
-                      {a.scope}
-                    </div>
-                  </div>
-                  <span className="mono text-[10px] uppercase text-conduit-muted">
-                    {a.state}
-                  </span>
-                </div>
-              ))}
-            </div>
-          </section>
-
-          {/* Live USDC balances — the visible "money moved" proof */}
-          {bal && (
-            <section className="panel reveal p-6">
-              <div className="flex items-center justify-between">
-                <h2 className="text-sm font-semibold uppercase tracking-wide text-conduit-muted">
-                  USDC balances
-                </h2>
-                <span className="mono text-[10px] uppercase text-conduit-muted">
-                  Base Sepolia
+              <div className="mt-1 text-right text-[11px] text-conduit-muted">
+                remaining{" "}
+                <span className="mono text-white">
+                  {((CAP - spent) / 1e6).toFixed(2)} USDC
                 </span>
               </div>
-              <div className="mt-4 space-y-3">
-                <BalanceRow
-                  label="you (payer)"
-                  before={bal.payerBefore}
-                  after={bal.payerAfter}
-                  good="down"
-                />
-                <BalanceRow
-                  label="seller"
-                  before={bal.sellerBefore}
-                  after={bal.sellerAfter}
-                  good="up"
-                />
-              </div>
-            </section>
-          )}
+            </div>
+          </section>
         </div>
 
-        {/* RIGHT: activity log + controls + receipt */}
-        <div className="space-y-6 lg:col-span-8">
-          {/* controls */}
-          <section className="panel flex flex-wrap items-center gap-3 p-5">
-            <button
-              onClick={runFlow}
-              disabled={!granted || busy || revoked}
-              className="btn-primary text-sm disabled:opacity-40"
-            >
-              {busy ? "Running…" : "Run the flow"}
-            </button>
-            <span className="text-conduit-border">·</span>
-            <span className="text-xs uppercase tracking-wide text-conduit-muted">
-              try to break it
-            </span>
-            <button onClick={() => tryBreak("redirect")} disabled={!granted || busy || revoked} className="btn-ghost text-xs disabled:opacity-40">
-              Redirect funds
-            </button>
-            <button onClick={() => tryBreak("overspend")} disabled={!granted || busy || revoked} className="btn-ghost text-xs disabled:opacity-40">
-              Overspend
-            </button>
-            <button onClick={() => tryBreak("replay")} disabled={!granted || busy || revoked} className="btn-ghost text-xs disabled:opacity-40">
-              Replay
-            </button>
-            <button onClick={reset} className="ml-auto text-xs text-conduit-muted underline-offset-4 hover:underline">
-              reset
-            </button>
-          </section>
-
-          {/* activity log */}
+        {/* CENTER: the live event feed — the star */}
+        <div className="lg:col-span-6">
           <section className="panel p-0">
-            <div className="border-b border-conduit-border/60 px-5 py-3">
+            <div className="flex items-center justify-between border-b border-conduit-border/60 px-5 py-3">
               <h2 className="text-sm font-semibold uppercase tracking-wide text-conduit-muted">
-                Agent activity
+                Live payment feed
               </h2>
+              <span className="mono text-[11px] text-conduit-muted">
+                via Conduit facilitator · erc7710
+              </span>
             </div>
-            <div className="h-[320px] overflow-y-auto px-5 py-4">
-              {log.length === 0 ? (
-                <p className="mono text-sm text-conduit-muted">
+            <div className="min-h-[460px] space-y-3 px-5 py-5">
+              {cards.length === 0 ? (
+                <p className="mono pt-16 text-center text-sm text-conduit-muted">
                   {connected
                     ? granted
-                      ? "Ready. Hit “Run the flow”."
-                      : "Grant the permission to begin."
+                      ? "Enter a prompt and hit Run — agents will consume paid services through Conduit."
+                      : "Grant a permission to begin."
                     : "Sign in to begin."}
                 </p>
               ) : (
+                cards.map((c) => <PaymentCard key={c.correlationId} card={c} />)
+              )}
+            </div>
+          </section>
+        </div>
+
+        {/* RIGHT: activity log */}
+        <div className="lg:col-span-3">
+          <section className="panel p-0">
+            <div className="border-b border-conduit-border/60 px-5 py-3">
+              <h2 className="text-sm font-semibold uppercase tracking-wide text-conduit-muted">
+                Activity
+              </h2>
+            </div>
+            <div className="h-[460px] overflow-y-auto px-4 py-3">
+              {log.length === 0 ? (
+                <p className="mono text-xs text-conduit-muted">—</p>
+              ) : (
                 <div className="space-y-1.5">
                   {log.map((l, i) => (
-                    <div key={i} className="mono flex gap-3 text-[13px] leading-relaxed">
-                      <span className="shrink-0 text-conduit-muted/60">{l.t}</span>
-                      <span className={logColor(l.kind)}>{l.text}</span>
+                    <div key={i} className="mono flex gap-2 text-[11px] leading-relaxed">
+                      <span className="shrink-0 text-conduit-muted/50">{l.t}</span>
+                      <span className="text-conduit-muted">{l.text}</span>
                     </div>
                   ))}
                   <div ref={logEndRef} />
@@ -731,256 +527,89 @@ export default function DemoPage() {
               )}
             </div>
           </section>
-
-          {/* x402 exchange — the real wire protocol */}
-          {exchange && (
-            <section className="panel reveal p-0">
-              <div className="border-b border-conduit-border/60 px-5 py-3">
-                <h2 className="text-sm font-semibold uppercase tracking-wide text-conduit-muted">
-                  x402 exchange
-                </h2>
-              </div>
-              <div className="space-y-3 px-5 py-4">
-                <WirePanel
-                  method="GET /paid-data"
-                  status="402 Payment Required"
-                  statusColor="text-conduit-magenta"
-                  body={{
-                    scheme: exchange.req.scheme,
-                    network: exchange.req.network,
-                    maxAmountRequired: exchange.req.maxAmountRequired,
-                    payTo: exchange.req.payTo,
-                    asset: exchange.req.asset,
-                    extra: {
-                      assetTransferMethod: "erc7710",
-                      receiptEnforcer: exchange.req.receiptEnforcer,
-                      redeemer: exchange.req.redeemer,
-                    },
-                  }}
-                />
-                {exchange.payload != null && (
-                  <WirePanel
-                    method="GET /paid-data"
-                    status="X-PAYMENT →"
-                    statusColor="text-conduit-violet"
-                    body={exchange.payload}
-                  />
-                )}
-                {exchange.response != null && (
-                  <WirePanel
-                    method="200 OK"
-                    status="asset unlocked"
-                    statusColor="text-conduit-cyan"
-                    body={exchange.response}
-                  />
-                )}
-              </div>
-            </section>
-          )}
-
-          {/* receipt */}
-          {receipt && (
-            <section className="panel reveal p-6">
-              <div className="flex items-center gap-2">
-                <span className="h-2 w-2 rounded-full bg-conduit-cyan shadow-glow" />
-                <h2 className="text-sm font-semibold uppercase tracking-wide text-conduit-cyan">
-                  Receipt · X402IntentSettled
-                </h2>
-              </div>
-              <div className="mt-4 grid grid-cols-2 gap-4 text-sm">
-                <Field label="amount" value={receipt.amount} />
-                <Field
-                  label="recipient"
-                  value={receipt.recipient}
-                  href={`${config.explorerUrl}/address/${receipt.recipient}`}
-                />
-                <Field label="intent" value={receipt.intent} />
-                <Field
-                  label="tx"
-                  value={receipt.tx}
-                  href={
-                    receipt.tx.startsWith("0x")
-                      ? `${config.explorerUrl}/tx/${receipt.tx}`
-                      : undefined
-                  }
-                />
-              </div>
-
-              {/* decoded on-chain events — the real settlement, not just a hash */}
-              <div className="mt-5 border-t border-conduit-border/60 pt-4">
-                <div className="flex items-center justify-between">
-                  <h3 className="text-xs font-semibold uppercase tracking-wide text-conduit-muted">
-                    On-chain events
-                  </h3>
-                  {confirming && (
-                    <span className="mono text-[10px] uppercase text-conduit-muted">
-                      confirming…
-                    </span>
-                  )}
-                </div>
-                {events ? (
-                  <div className="mono mt-3 space-y-1.5 text-[12px] leading-relaxed">
-                    {events.intentSettled && (
-                      <div className="text-conduit-cyan">
-                        ✓ X402IntentSettled · {formatUnits(events.intentSettled.amount, 6)} USDC
-                        → {shorten(events.intentSettled.recipient)}
-                      </div>
-                    )}
-                    {events.transfer && (
-                      <div className="text-white">
-                        ✓ USDC Transfer · {shorten(events.transfer.from)} →{" "}
-                        {shorten(events.transfer.to)} · {formatUnits(events.transfer.value, 6)}
-                      </div>
-                    )}
-                    <div className="text-conduit-violet">
-                      ✓ DelegationManager · {events.redemptions} RedeemedDelegation
-                      {events.redemptions === 1 ? "" : "s"} (chain hops)
-                    </div>
-                    <div className="text-conduit-muted">
-                      {events.logCount} logs · status {events.status}
-                    </div>
-                  </div>
-                ) : (
-                  <p className="mono mt-3 text-[12px] text-conduit-muted">
-                    {confirming ? "decoding settlement logs…" : "—"}
-                  </p>
-                )}
-              </div>
-            </section>
-          )}
         </div>
       </div>
     </main>
   );
 }
 
+// --- payment card ----------------------------------------------------------
+
+function PaymentCard({ card }: { card: FeedCard }) {
+  const denied = card.stage === "denied" || card.stage === "failed";
+  const done = card.stage === "settled";
+  const accent = denied ? "#EC4899" : done ? "#00E5FF" : "#7C3AED";
+
+  return (
+    <div
+      className="reveal rounded-xl border px-4 py-3 transition-all"
+      style={{ borderColor: `${accent}40` }}
+    >
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2.5">
+          <span className="h-2 w-2 rounded-full" style={{ background: accent, boxShadow: `0 0 10px ${accent}` }} />
+          <span className="text-sm font-medium">{card.label}</span>
+          <span className="mono rounded border border-conduit-border px-1.5 py-0.5 text-[10px] text-conduit-muted">
+            {card.agent} agent
+          </span>
+        </div>
+        <span className="mono text-xs text-conduit-muted">{card.priceUsdc} USDC</span>
+      </div>
+
+      {/* stage pipeline */}
+      <div className="mono mt-2.5 flex items-center gap-1.5 text-[11px]">
+        <Step on={["requested", "allowed", "settling", "settled"].includes(card.stage)} label="request" />
+        <Arrow />
+        <Step
+          on={["allowed", "settling", "settled"].includes(card.stage)}
+          bad={denied}
+          label={denied ? "denied" : "permission"}
+        />
+        <Arrow />
+        <Step on={["settling", "settled"].includes(card.stage)} label="settle" />
+        <Arrow />
+        <Step on={done} label="released" />
+      </div>
+
+      {card.reason && (
+        <p className="mono mt-2 text-[11px] text-conduit-magenta">on-chain: {card.reason}</p>
+      )}
+      {card.txHash && card.txHash.startsWith("0x") && (
+        <a
+          href={`${config.explorerUrl}/tx/${card.txHash}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="mono mt-2 inline-block text-[11px] text-conduit-cyan underline-offset-4 hover:underline"
+        >
+          {shorten(card.txHash)} ↗
+        </a>
+      )}
+    </div>
+  );
+}
+
+function Step({ on, bad, label }: { on: boolean; bad?: boolean; label: string }) {
+  const color = bad ? "text-conduit-magenta" : on ? "text-conduit-cyan" : "text-conduit-muted/40";
+  return <span className={color}>{on || bad ? "●" : "○"} {label}</span>;
+}
+function Arrow() {
+  return <span className="text-conduit-muted/30">→</span>;
+}
+
+// --- helpers ---------------------------------------------------------------
+
 function shorten(addr: string | null): string {
   if (!addr) return "—";
   return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
 }
 
-function fmtUsdc(v: bigint): string {
-  return formatUnits(v, 6);
-}
-
-/** A before → after USDC balance row with a coloured delta once settled. */
-function BalanceRow({
-  label,
-  before,
-  after,
-  good,
-}: {
-  label: string;
-  before: bigint;
-  after?: bigint;
-  good: "up" | "down";
-}) {
-  const delta = after != null ? after - before : null;
-  const deltaColor =
-    delta == null || delta === 0n
-      ? "text-conduit-muted"
-      : (good === "up") === delta > 0n
-        ? "text-conduit-cyan"
-        : "text-conduit-magenta";
-  return (
-    <div className="flex items-center justify-between text-sm">
-      <span className="text-conduit-muted">{label}</span>
-      <span className="mono flex items-center gap-2">
-        <span className={after != null ? "text-conduit-muted/60" : "text-white"}>
-          {fmtUsdc(before)}
-        </span>
-        {after != null && (
-          <>
-            <span className="text-conduit-muted/60">→</span>
-            <span className="text-white">{fmtUsdc(after)}</span>
-            {delta != null && delta !== 0n && (
-              <span className={deltaColor}>
-                ({delta > 0n ? "+" : ""}
-                {fmtUsdc(delta)})
-              </span>
-            )}
-          </>
-        )}
-      </span>
-    </div>
-  );
-}
-
-/** A single x402 wire step: method + status + pretty-printed JSON body. */
-function WirePanel({
-  method,
-  status,
-  statusColor,
-  body,
-}: {
-  method: string;
-  status: string;
-  statusColor: string;
-  body: unknown;
-}) {
-  return (
-    <div className="rounded-xl border border-conduit-border/60">
-      <div className="flex items-center justify-between border-b border-conduit-border/40 px-3 py-2">
-        <span className="mono text-[11px] text-conduit-muted">{method}</span>
-        <span className={`mono text-[11px] ${statusColor}`}>{status}</span>
-      </div>
-      <pre className="mono max-h-44 overflow-auto px-3 py-2 text-[11px] leading-relaxed text-conduit-muted/90">
-        {JSON.stringify(body, jsonReplacer, 2)}
-      </pre>
-    </div>
-  );
-}
-
-/** JSON.stringify can't serialize bigint; render them as decimal strings. */
-function jsonReplacer(_key: string, value: unknown): unknown {
-  return typeof value === "bigint" ? value.toString() : value;
-}
-
 function errMsg(e: unknown): string {
   if (e && typeof e === "object") {
     const o = e as Record<string, unknown>;
-    // MetaMask snap RPC errors expose richer detail in nested fields; pick the
-    // most informative one we can reach.
     const data = o.data as Record<string, unknown> | undefined;
     const cause = o.cause as Record<string, unknown> | undefined;
-    const candidates = [
-      o.shortMessage,
-      data?.message,
-      cause?.shortMessage,
-      cause?.message,
-      o.message,
-    ];
+    const candidates = [o.shortMessage, data?.message, cause?.shortMessage, cause?.message, o.message];
     for (const c of candidates) if (typeof c === "string" && c) return c;
   }
   return e instanceof Error ? e.message : String(e);
-}
-
-function logColor(kind: LogKind): string {
-  switch (kind) {
-    case "ok": return "text-conduit-cyan";
-    case "pay": return "text-white";
-    case "agent": return "text-conduit-violet";
-    case "reject": return "text-conduit-magenta font-semibold";
-    default: return "text-conduit-muted";
-  }
-}
-
-function Field({ label, value, href }: { label: string; value: string; href?: string }) {
-  return (
-    <div>
-      <div className="text-xs uppercase tracking-wide text-conduit-muted">{label}</div>
-      {href ? (
-        <a
-          href={href}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="mono mt-1 block break-all text-conduit-cyan underline-offset-4 hover:underline"
-        >
-          {value} ↗
-        </a>
-      ) : (
-        <div className="mono mt-1 break-all">{value}</div>
-      )}
-    </div>
-  );
 }
