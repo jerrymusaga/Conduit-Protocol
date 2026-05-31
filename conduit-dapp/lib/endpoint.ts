@@ -7,6 +7,26 @@ import { config } from "./config";
 
 const RESOURCE_PATH = "/paid-data";
 
+/** A service in the endpoint's x402 catalog (GET /services). */
+export interface CatalogService {
+  id: string;
+  label: string;
+  description: string;
+  kind: "image" | "text" | "data";
+  priceUsdc: string;
+  priceBaseUnits: string;
+  /** Relative resource path, e.g. "/services/venice-image". */
+  resource: string;
+}
+
+/** Fetch the seller's service catalog. */
+export async function fetchCatalog(): Promise<CatalogService[]> {
+  const res = await fetch(`${config.endpointUrl}/services`);
+  if (!res.ok) throw new Error(`catalog fetch failed: HTTP ${res.status}`);
+  const body = (await res.json()) as { services: CatalogService[] };
+  return body.services;
+}
+
 /** The bits of the x402 402-envelope (`accepts[0]`) the dapp needs to pay. */
 export interface PaymentRequirements {
   scheme: string;
@@ -20,11 +40,17 @@ export interface PaymentRequirements {
   receiptEnforcer: `0x${string}`;
   /** Who submits redeemDelegations — must be the leaf delegate. */
   redeemer: `0x${string}` | null;
+  /** Catalog service id this 402 is for (when paying a catalog service). */
+  service?: string;
 }
 
-/** GET the protected resource with no payment → parse the 402 requirements. */
-export async function fetch402(): Promise<PaymentRequirements> {
-  const res = await fetch(`${config.endpointUrl}${RESOURCE_PATH}`);
+/**
+ * GET a protected resource with no payment → parse the 402 requirements.
+ * `path` defaults to the legacy /paid-data; pass a catalog service's resource
+ * path (e.g. "/services/venice-image") to pay for a specific service.
+ */
+export async function fetch402(path: string = RESOURCE_PATH): Promise<PaymentRequirements> {
+  const res = await fetch(`${config.endpointUrl}${path}`);
   if (res.status !== 402) {
     throw new Error(`expected 402 Payment Required, got HTTP ${res.status}`);
   }
@@ -42,6 +68,7 @@ export async function fetch402(): Promise<PaymentRequirements> {
     delegationManager: extra.delegationManager,
     receiptEnforcer: extra.receiptEnforcer,
     redeemer: extra.redeemer ?? null,
+    service: extra.service,
   };
 }
 
@@ -58,11 +85,21 @@ export interface ClaimResult {
  * Re-GET the resource with the X-PAYMENT header (base64 JSON per x402). The
  * endpoint verifies (simulation) then settles (relayer submits the redemption)
  * and, on success, returns the asset + settlement info.
+ *
+ * `opts.path` targets a catalog service; `opts.agent`/`opts.correlationId` are
+ * forwarded as headers so the facilitator's live event feed is labeled with
+ * who/what is paying.
  */
-export async function payAndClaim(paymentPayload: unknown): Promise<ClaimResult> {
+export async function payAndClaim(
+  paymentPayload: unknown,
+  opts: { path?: string; agent?: string; correlationId?: string } = {}
+): Promise<ClaimResult> {
   const header = btoa(JSON.stringify(paymentPayload));
-  const res = await fetch(`${config.endpointUrl}${RESOURCE_PATH}`, {
-    headers: { "X-PAYMENT": header },
+  const headers: Record<string, string> = { "X-PAYMENT": header };
+  if (opts.agent) headers["X-AGENT"] = opts.agent;
+  if (opts.correlationId) headers["X-CORRELATION-ID"] = opts.correlationId;
+  const res = await fetch(`${config.endpointUrl}${opts.path ?? RESOURCE_PATH}`, {
+    headers,
   });
   const body = await res.json().catch(() => ({}) as Record<string, unknown>);
 

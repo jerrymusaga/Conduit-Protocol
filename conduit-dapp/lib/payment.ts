@@ -115,8 +115,17 @@ export async function buildPayment(params: {
   amountOverride?: bigint;
   /** Bundle a signed EIP-7702 authorization into the redeem (first run only). */
   authorization?: Eip7702Authorization;
+  /**
+   * Optional specialist agent for a real 3-hop A2A chain. When present, the
+   * coordinator redelegates to this sub-agent (no caveats — scope-narrowing
+   * happens on the sub-agent's hop), and the sub-agent signs the intent-bound
+   * redelegation to the relayer. Chain becomes
+   * [subChild, coordChild, ...grantedContext]. When absent, the coordinator
+   * pays directly (2-hop), which is the looped-payments path.
+   */
+  subAgent?: Coordinator;
 }): Promise<BuiltPayment> {
-  const { grant, coordinator, req } = params;
+  const { grant, coordinator, req, subAgent } = params;
   if (!req.redeemer) {
     throw new Error("facilitator advertised no redeemer (not on viem-direct?)");
   }
@@ -147,21 +156,51 @@ export async function buildPayment(params: {
     args: "0x",
   };
 
-  // ---- child delegation: coordinator -> facilitator relayer ------------------
   const parentChain = decodeDelegations(grant.context);
   const immediateParent = parentChain[0]; // chain is [leaf..root]; redelegate off the leaf
   const rootDelegator = parentChain[parentChain.length - 1].delegator; // the payer (user SA)
 
+  // The intent-bound, relayer-targeted leaf is signed by whoever spends:
+  //   - 3-hop (A2A): the sub-agent signs it, authority = the coordinator's hop.
+  //   - 2-hop: the coordinator signs it, authority = the granted root's leaf.
+  const extraHops: Delegation[] = [];
+  let leafSigner = coordinator;
+  let leafAuthority = hashDelegation(immediateParent);
+
+  if (subAgent) {
+    // Coordinator → sub-agent hop (open redelegation; scope rides the next hop).
+    const unsignedCoordHop: Omit<Delegation, "signature"> = {
+      delegate: subAgent.address,
+      delegator: coordinator.address,
+      authority: hashDelegation(immediateParent),
+      caveats: [],
+      salt: intentHash,
+    };
+    const coordSig = await signDelegation({
+      privateKey: coordinator.privateKey,
+      delegation: unsignedCoordHop,
+      delegationManager: grant.delegationManager,
+      chainId: config.chainId,
+      name: "DelegationManager",
+      version: "1",
+    });
+    const coordHop: Delegation = { ...unsignedCoordHop, signature: coordSig };
+    extraHops.push(coordHop);
+    leafSigner = subAgent;
+    leafAuthority = hashDelegation(coordHop);
+  }
+
+  // ---- leaf delegation: (sub-agent | coordinator) -> facilitator relayer -----
   const unsignedChild: Omit<Delegation, "signature"> = {
     delegate: req.redeemer,
-    delegator: coordinator.address,
-    authority: hashDelegation(immediateParent),
+    delegator: leafSigner.address,
+    authority: leafAuthority,
     caveats: [idCaveat, x402Caveat],
     salt: intentHash, // unique per run
   };
 
   const signature = await signDelegation({
-    privateKey: coordinator.privateKey,
+    privateKey: leafSigner.privateKey,
     delegation: unsignedChild,
     delegationManager: grant.delegationManager,
     chainId: config.chainId,
@@ -170,7 +209,8 @@ export async function buildPayment(params: {
   });
   const child: Delegation = { ...unsignedChild, signature };
 
-  const permissionContext = encodeDelegations([child, ...parentChain]);
+  // Chain order is [leaf, …, root]: leaf first, then any A2A hops, then root.
+  const permissionContext = encodeDelegations([child, ...extraHops, ...parentChain]);
 
   // ---- execution: USDC.transfer(execPayTo, execAmount) -----------------------
   const execution = createExecution({
