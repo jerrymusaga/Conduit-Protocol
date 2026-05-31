@@ -13,7 +13,7 @@
  *     relayer (3-hop). The literal "agents delegating to agents".
  */
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
-import { formatUnits, type Hex } from "viem";
+import { formatUnits, parseUnits, type Hex } from "viem";
 import { fetchCatalog, fetch402, payAndClaim, type CatalogService } from "./endpoint";
 import { buildPayment, freshIntentHash } from "./payment";
 import { publicClient } from "./chain";
@@ -246,4 +246,115 @@ export async function runCampaign(params: {
   }
 
   return { plan, results, totalSpent };
+}
+
+// --- The compromised-agent beat (real on-chain rejections) -----------------
+
+export type RogueKind = "redirect" | "overspend" | "replay";
+
+export interface RogueAttempt {
+  correlationId: string;
+  kind: RogueKind;
+  label: string;
+  rationale: string;
+  service: CatalogService;
+}
+
+const ROGUE_META: Record<RogueKind, { label: string; rationale: string }> = {
+  redirect: {
+    label: "Redirect funds",
+    rationale: "A hijacked agent tries to send the payment to its OWN address.",
+  },
+  overspend: {
+    label: "Overspend",
+    rationale: "A hijacked agent tries to pay far more than the bound amount.",
+  },
+  replay: {
+    label: "Replay",
+    rationale: "A hijacked agent replays an already-used payment intent.",
+  },
+};
+
+/**
+ * Attempt a deliberately-malicious payment and let Conduit reject it ON-CHAIN.
+ * This is the safety thesis made visible: the agent is "compromised" but the
+ * caveats make misuse impossible.
+ *   - redirect : execution pays a rogue address ≠ the bound recipient
+ *                → X402ReceiptEnforcer: wrong-recipient
+ *   - overspend: execution amount > the bound maxAmount
+ *                → X402ReceiptEnforcer: amount-exceeds-cap
+ *   - replay   : reuse a prior intentHash (one-shot id already consumed)
+ *                → IdEnforcer: id already used
+ */
+export async function attemptRogue(params: {
+  kind: RogueKind;
+  grant: GrantResult;
+  coordinator: Coordinator;
+  /** A prior successful intentHash, required for the replay attempt. */
+  priorIntentHash?: Hex;
+  hooks?: RunHooks;
+}): Promise<ServiceResult> {
+  const { kind, grant, coordinator } = params;
+  const hooks = params.hooks ?? {};
+  const log = hooks.log ?? (() => {});
+  const correlationId = crypto.randomUUID();
+
+  const catalog = await fetchCatalog();
+  // Use the cheapest service as the target of the attack.
+  const service = [...catalog].sort(
+    (a, b) => Number(a.priceBaseUnits) - Number(b.priceBaseUnits)
+  )[0];
+  const meta = ROGUE_META[kind];
+
+  const result = (over: Partial<ServiceResult>): ServiceResult => ({
+    correlationId, service, agent: "rogue", ok: false,
+    intentHash: "0x" as Hex, amount: 0n, ...over,
+  });
+
+  try {
+    const req = await fetch402(service.resource);
+    // The malicious twist per attack kind:
+    const rogueAddress = privateKeyToAccount(generatePrivateKey()).address;
+    const intentHash =
+      kind === "replay" ? params.priorIntentHash : freshIntentHash(req);
+    if (kind === "replay" && !intentHash) {
+      return result({ error: "run a successful payment first, then replay it" });
+    }
+
+    const built = await buildPayment({
+      grant,
+      coordinator,
+      req,
+      intentHash,
+      // redirect: execution target ≠ bound recipient.
+      payToOverride: kind === "redirect" ? rogueAddress : undefined,
+      // overspend: execution amount far above the bound cap.
+      amountOverride:
+        kind === "overspend" ? parseUnits("5", 6) : undefined,
+    });
+
+    hooks.onPayStart?.(correlationId);
+    log(`rogue › ${meta.label} — submitting a malicious redemption…`);
+    const claim = await payAndClaim(built.paymentPayload, {
+      path: service.resource,
+      agent: "rogue",
+      correlationId,
+    });
+
+    if (claim.ok) {
+      // Should never happen — surfaced loudly if it ever does.
+      log(`⚠ rogue › UNEXPECTEDLY SETTLED — investigate the caveats`);
+      return result({ ok: true, intentHash: intentHash!, txHash: claim.settlement?.transaction ?? null });
+    }
+    log(`rogue › BLOCKED on-chain · ${claim.error}`);
+    return result({ error: claim.error, intentHash: intentHash ?? ("0x" as Hex) });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    log(`rogue › blocked · ${msg}`);
+    return result({ error: msg });
+  }
+}
+
+export function rogueCard(kind: RogueKind, correlationId: string) {
+  return { ...ROGUE_META[kind], kind, correlationId };
 }

@@ -22,7 +22,14 @@ import {
   type Coordinator,
   type GrantResult,
 } from "@/lib/grant";
-import { runCampaign, type A2AMode, type PlannedItem } from "@/lib/coordinator";
+import {
+  runCampaign,
+  attemptRogue,
+  type A2AMode,
+  type PlannedItem,
+  type RogueKind,
+} from "@/lib/coordinator";
+import type { Hex } from "viem";
 import type { Eip7702Authorization } from "@/lib/payment";
 import { useFacilitatorEvents } from "@/lib/useFacilitatorEvents";
 import { config } from "@/lib/config";
@@ -100,6 +107,8 @@ export default function DemoPage() {
   const [spent, setSpent] = useState(0); // micro-USDC settled
   const [cards, setCards] = useState<FeedCard[]>([]);
   const [log, setLog] = useState<{ t: string; text: string }[]>([]);
+  // The last settled intentHash — fuel for the "replay" rogue attempt.
+  const lastIntentRef = useRef<Hex | null>(null);
   const [nowSec, setNowSec] = useState(() => Math.floor(Date.now() / 1000));
   const [copied, setCopied] = useState(false);
   const logEndRef = useRef<HTMLDivElement>(null);
@@ -281,6 +290,7 @@ export default function DemoPage() {
           onResult: (r) => {
             if (r.ok) {
               setSpent((s) => s + Number(r.amount));
+              lastIntentRef.current = r.intentHash; // fuel a replay attempt
               setCardStage(r.correlationId, {
                 stage: "settled",
                 txHash: r.txHash ?? null,
@@ -295,6 +305,64 @@ export default function DemoPage() {
       setAuthorization(null);
     } catch (e) {
       append(`Run failed · ${errMsg(e)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // The compromised-agent beat: submit a real malicious payment and let Conduit
+  // reject it on-chain. Appends a rogue card that goes magenta/denied.
+  const tryRogue = async (kind: RogueKind) => {
+    if (busy || !granted || !grantResult || !coordinatorRef.current) return;
+    if (kind === "replay" && !lastIntentRef.current) {
+      append("Run a successful payment first, then Replay can reuse its intent.");
+      return;
+    }
+    setBusy(true);
+    const correlationId = crypto.randomUUID();
+    const ROGUE_LABEL: Record<RogueKind, string> = {
+      redirect: "Redirect funds",
+      overspend: "Overspend",
+      replay: "Replay",
+    };
+    const ROGUE_WHY: Record<RogueKind, string> = {
+      redirect: "A hijacked agent tries to send the payment to its OWN address.",
+      overspend: "A hijacked agent tries to pay far more than the bound amount.",
+      replay: "A hijacked agent replays an already-used payment intent.",
+    };
+    // Add the rogue card immediately (red-tinted, requesting).
+    setCards((cs) => [
+      ...cs,
+      {
+        correlationId,
+        service: "rogue",
+        label: ROGUE_LABEL[kind],
+        agent: "rogue",
+        priceUsdc: "—",
+        rationale: ROGUE_WHY[kind],
+        stage: "requested",
+      },
+    ]);
+    try {
+      const r = await attemptRogue({
+        kind,
+        grant: grantResult,
+        coordinator: coordinatorRef.current,
+        priorIntentHash: lastIntentRef.current ?? undefined,
+        hooks: {
+          log: append,
+          // Map the attempt onto OUR card (attemptRogue uses its own id).
+          onPayStart: () => setCardStage(correlationId, { stage: "requested" }),
+        },
+      });
+      // Real on-chain rejection (the happy path for this button).
+      setCardStage(correlationId, {
+        stage: r.ok ? "settled" : "denied",
+        reason: r.ok ? null : r.error,
+        txHash: r.txHash ?? null,
+      });
+    } catch (e) {
+      setCardStage(correlationId, { stage: "denied", reason: errMsg(e) });
     } finally {
       setBusy(false);
     }
@@ -391,6 +459,28 @@ export default function DemoPage() {
             >
               {busy ? "Running…" : "Run"}
             </button>
+
+            {/* The compromised-agent beat — real on-chain rejections. */}
+            <div className="mt-5 border-t border-conduit-border/60 pt-4">
+              <p className="text-[11px] uppercase tracking-wide text-conduit-muted">
+                Simulate a hijacked agent
+              </p>
+              <p className="mt-1 text-[11px] leading-relaxed text-conduit-muted/70">
+                Conduit rejects each one on-chain — the budget can&apos;t be misused.
+              </p>
+              <div className="mt-2.5 flex flex-wrap gap-2">
+                {(["redirect", "overspend", "replay"] as const).map((k) => (
+                  <button
+                    key={k}
+                    onClick={() => tryRogue(k)}
+                    disabled={!granted || busy}
+                    className="rounded-lg border border-conduit-magenta/40 px-2.5 py-1.5 text-xs font-medium text-conduit-magenta transition-colors hover:bg-conduit-magenta/10 disabled:opacity-40"
+                  >
+                    {k === "redirect" ? "Redirect funds" : k === "overspend" ? "Overspend" : "Replay"}
+                  </button>
+                ))}
+              </div>
+            </div>
           </section>
 
           {/* Permission */}
@@ -552,6 +642,13 @@ export default function DemoPage() {
 // Plain-English narration of what Conduit is doing at each stage.
 function caption(card: FeedCard): { text: string; tone: "muted" | "work" | "ok" | "bad" } {
   const price = `${card.priceUsdc} USDC`;
+  const isRogue = card.agent === "rogue";
+  if (isRogue && (card.stage === "requested" || card.stage === "settling")) {
+    return { text: "Hijacked agent submitting a malicious payment to Conduit…", tone: "work" };
+  }
+  if (isRogue && card.stage === "denied") {
+    return { text: "Conduit BLOCKED it on-chain — the caveat rejected it. No money moved. ✓", tone: "bad" };
+  }
   switch (card.stage) {
     case "queued":
       return { text: `${card.agent} agent queued — needs to pay ${price} for this`, tone: "muted" };
