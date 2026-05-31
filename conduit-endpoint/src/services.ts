@@ -15,7 +15,9 @@ export type ServiceKind = "image" | "text" | "data";
 
 export interface Service {
   id: string;
+  /** The selling AGENT's name — these are agents that get paid through Conduit. */
   label: string;
+  /** What this agent sells. */
   description: string;
   kind: ServiceKind;
   /** Human price in USDC. */
@@ -42,19 +44,21 @@ function svc(
 }
 
 /**
- * Starter catalog. Prices are tiny (testnet) but distinct so the console shows
- * varied costs draining one budget. PRICE_USDC env still sets the default used
- * by the legacy /paid-data route.
+ * The catalog is a set of AGENTS that sell a capability and get paid through
+ * Conduit — the recipient side of agent-to-agent commerce. A coordinator agent
+ * hires them; each is paid (x402+erc7710) through the facilitator, which earns
+ * its fee on every hop. Prices are tiny (testnet) but distinct so the console
+ * shows varied costs draining one budget.
  */
 export const SERVICES: Service[] = [
-  svc("venice-image", "Premium image generation", "image", "0.04",
-    "Generate a high-quality image (Venice AI)."),
-  svc("copywriting", "Marketing copy", "text", "0.02",
-    "Generate marketing copy / taglines."),
-  svc("market-data", "Market data lookup", "data", "0.01",
-    "Fetch a gated market-data snapshot."),
-  svc("competitor-scan", "Competitor scan", "data", "0.03",
-    "Fetch a gated competitor-analysis dataset."),
+  svc("venice-image", "ImageForge Agent", "image", "0.04",
+    "Sells premium image generation (Venice AI)."),
+  svc("copywriting", "Wordsmith Agent", "text", "0.02",
+    "Sells marketing copy / taglines."),
+  svc("market-data", "DataFeed Agent", "data", "0.01",
+    "Sells a gated market-data snapshot."),
+  svc("competitor-scan", "Recon Agent", "data", "0.03",
+    "Sells a gated competitor-analysis dataset."),
 ];
 
 export function getService(id: string): Service | undefined {

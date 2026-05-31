@@ -107,8 +107,8 @@ export default function DemoPage() {
   const [spent, setSpent] = useState(0); // micro-USDC settled
   const [cards, setCards] = useState<FeedCard[]>([]);
   const [log, setLog] = useState<{ t: string; text: string }[]>([]);
-  // The last settled intentHash — fuel for the "replay" rogue attempt.
-  const lastIntentRef = useRef<Hex | null>(null);
+  // The last settled payment (exact payload + path) — fuel for a REAL replay.
+  const lastSettledRef = useRef<{ payload: unknown; resourcePath: string } | null>(null);
   const [nowSec, setNowSec] = useState(() => Math.floor(Date.now() / 1000));
   const [copied, setCopied] = useState(false);
   const logEndRef = useRef<HTMLDivElement>(null);
@@ -290,7 +290,13 @@ export default function DemoPage() {
           onResult: (r) => {
             if (r.ok) {
               setSpent((s) => s + Number(r.amount));
-              lastIntentRef.current = r.intentHash; // fuel a replay attempt
+              // Stash the exact settled payload to fuel a real replay attempt.
+              if (r.settledPayload && r.resourcePath) {
+                lastSettledRef.current = {
+                  payload: r.settledPayload,
+                  resourcePath: r.resourcePath,
+                };
+              }
               setCardStage(r.correlationId, {
                 stage: "settled",
                 txHash: r.txHash ?? null,
@@ -314,8 +320,8 @@ export default function DemoPage() {
   // reject it on-chain. Appends a rogue card that goes magenta/denied.
   const tryRogue = async (kind: RogueKind) => {
     if (busy || !granted || !grantResult || !coordinatorRef.current) return;
-    if (kind === "replay" && !lastIntentRef.current) {
-      append("Run a successful payment first, then Replay can reuse its intent.");
+    if (kind === "replay" && !lastSettledRef.current) {
+      append("Run a successful payment first, then Replay can re-submit it.");
       return;
     }
     setBusy(true);
@@ -348,7 +354,7 @@ export default function DemoPage() {
         kind,
         grant: grantResult,
         coordinator: coordinatorRef.current,
-        priorIntentHash: lastIntentRef.current ?? undefined,
+        priorSettled: lastSettledRef.current ?? undefined,
         hooks: {
           log: append,
           // Map the attempt onto OUR card (attemptRogue uses its own id).
@@ -596,9 +602,10 @@ export default function DemoPage() {
               ) : (
                 <>
                   <p className="text-[12px] leading-relaxed text-conduit-muted">
-                    Each card is one agent paying for one service. Watch it flow
+                    Each card is one agent <span className="text-white">paying another agent</span> for a
+                    service. Watch it flow
                     <span className="text-conduit-cyan"> 402 request → permission → settle → delivered</span>,
-                    all authorized by Conduit against your single budget.
+                    all authorized + settled by Conduit against your single budget.
                   </p>
                   {cards.map((c) => <PaymentCard key={c.correlationId} card={c} />)}
                 </>
@@ -686,17 +693,24 @@ function PaymentCard({ card }: { card: FeedCard }) {
       className="reveal rounded-xl border px-4 py-3.5 transition-all"
       style={{ borderColor: `${accent}55`, background: `${accent}0a` }}
     >
-      {/* header: what's being bought, by which agent, for how much */}
+      {/* header: which agent pays which agent, for how much */}
       <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2.5">
+        <div className="flex items-center gap-2">
           <span
             className={`h-2.5 w-2.5 rounded-full ${working ? "animate-pulse" : ""}`}
             style={{ background: accent, boxShadow: `0 0 10px ${accent}` }}
           />
-          <span className="text-sm font-semibold">{card.label}</span>
-          <span className="mono rounded border border-conduit-border px-1.5 py-0.5 text-[10px] text-conduit-muted">
-            {card.agent} agent
-          </span>
+          {card.agent === "rogue" ? (
+            <span className="text-sm font-semibold text-conduit-magenta">
+              {card.label} · rogue agent
+            </span>
+          ) : (
+            <span className="mono flex items-center gap-1.5 text-[12px]">
+              <span className="text-conduit-muted">{card.agent} agent</span>
+              <span className="text-conduit-muted/40">pays →</span>
+              <span className="font-semibold text-white">{card.label}</span>
+            </span>
+          )}
         </div>
         <span className="mono text-xs font-semibold text-white">{card.priceUsdc} USDC</span>
       </div>

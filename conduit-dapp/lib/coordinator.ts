@@ -117,6 +117,11 @@ export interface ServiceResult {
   amount: bigint;
   txHash?: string | null;
   error?: string;
+  /** The exact x402 payload that settled — fuel for a REAL replay attempt
+   *  (re-POSTing this verbatim is what IdEnforcer rejects as id-already-used). */
+  settledPayload?: unknown;
+  /** The catalog resource path the payload was paid against. */
+  resourcePath?: string;
 }
 
 export interface RunResult {
@@ -207,6 +212,8 @@ export async function runCampaign(params: {
         result = {
           correlationId, service, agent, ok: true, intentHash, amount: built.amount,
           txHash: claim.settlement?.transaction ?? null,
+          settledPayload: built.paymentPayload,
+          resourcePath: service.resource,
         };
         log(`${agent} › settled ${service.label} · ${formatUnits(built.amount, 6)} USDC`);
         // If this payment carried the EIP-7702 designation, the next payments
@@ -290,21 +297,56 @@ export async function attemptRogue(params: {
   kind: RogueKind;
   grant: GrantResult;
   coordinator: Coordinator;
-  /** A prior successful intentHash, required for the replay attempt. */
-  priorIntentHash?: Hex;
+  /** The EXACT payload + path from a prior settled payment (for replay). */
+  priorSettled?: { payload: unknown; resourcePath: string };
   hooks?: RunHooks;
 }): Promise<ServiceResult> {
   const { kind, grant, coordinator } = params;
   const hooks = params.hooks ?? {};
   const log = hooks.log ?? (() => {});
   const correlationId = crypto.randomUUID();
+  const meta = ROGUE_META[kind];
 
+  // --- replay: re-POST the EXACT payload that already settled --------------
+  // IdEnforcer keys used-ids by (DelegationManager, delegator, id). A genuine
+  // replay reuses the same signed delegation (same delegator + id), which the
+  // enforcer rejects as id-already-used. (Rebuilding a fresh delegation would
+  // get a NEW delegator/id and wrongly succeed — that was the earlier bug.)
+  if (kind === "replay") {
+    if (!params.priorSettled) {
+      return {
+        correlationId, service: undefined as never, agent: "rogue", ok: false,
+        intentHash: "0x" as Hex, amount: 0n,
+        error: "run a successful payment first, then replay it",
+      };
+    }
+    hooks.onPayStart?.(correlationId);
+    log("rogue › Replay — re-submitting an already-used payment verbatim…");
+    const claim = await payAndClaim(params.priorSettled.payload, {
+      path: params.priorSettled.resourcePath,
+      agent: "rogue",
+      correlationId,
+    });
+    if (claim.ok) {
+      log("⚠ rogue › UNEXPECTEDLY SETTLED — investigate IdEnforcer");
+      return {
+        correlationId, service: undefined as never, agent: "rogue", ok: true,
+        intentHash: "0x" as Hex, amount: 0n,
+        txHash: claim.settlement?.transaction ?? null,
+      };
+    }
+    log(`rogue › BLOCKED on-chain · ${claim.error}`);
+    return {
+      correlationId, service: undefined as never, agent: "rogue", ok: false,
+      intentHash: "0x" as Hex, amount: 0n, error: claim.error,
+    };
+  }
+
+  // --- redirect / overspend: build a fresh malicious payment ---------------
   const catalog = await fetchCatalog();
-  // Use the cheapest service as the target of the attack.
   const service = [...catalog].sort(
     (a, b) => Number(a.priceBaseUnits) - Number(b.priceBaseUnits)
   )[0];
-  const meta = ROGUE_META[kind];
 
   const result = (over: Partial<ServiceResult>): ServiceResult => ({
     correlationId, service, agent: "rogue", ok: false,
@@ -313,24 +355,16 @@ export async function attemptRogue(params: {
 
   try {
     const req = await fetch402(service.resource);
-    // The malicious twist per attack kind:
     const rogueAddress = privateKeyToAccount(generatePrivateKey()).address;
-    const intentHash =
-      kind === "replay" ? params.priorIntentHash : freshIntentHash(req);
-    if (kind === "replay" && !intentHash) {
-      return result({ error: "run a successful payment first, then replay it" });
-    }
-
     const built = await buildPayment({
       grant,
       coordinator,
       req,
-      intentHash,
+      intentHash: freshIntentHash(req),
       // redirect: execution target ≠ bound recipient.
       payToOverride: kind === "redirect" ? rogueAddress : undefined,
       // overspend: execution amount far above the bound cap.
-      amountOverride:
-        kind === "overspend" ? parseUnits("5", 6) : undefined,
+      amountOverride: kind === "overspend" ? parseUnits("5", 6) : undefined,
     });
 
     hooks.onPayStart?.(correlationId);
@@ -342,12 +376,11 @@ export async function attemptRogue(params: {
     });
 
     if (claim.ok) {
-      // Should never happen — surfaced loudly if it ever does.
       log(`⚠ rogue › UNEXPECTEDLY SETTLED — investigate the caveats`);
-      return result({ ok: true, intentHash: intentHash!, txHash: claim.settlement?.transaction ?? null });
+      return result({ ok: true, txHash: claim.settlement?.transaction ?? null });
     }
     log(`rogue › BLOCKED on-chain · ${claim.error}`);
-    return result({ error: claim.error, intentHash: intentHash ?? ("0x" as Hex) });
+    return result({ error: claim.error });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     log(`rogue › blocked · ${msg}`);
