@@ -183,6 +183,9 @@ export async function buildPayment(params: {
       chainId: config.chainId,
       name: "DelegationManager",
       version: "1",
+      // This hop intentionally carries no caveats — the intent binding lives on
+      // the sub-agent's leaf hop. Opt in so the kit signs the open redelegation.
+      allowInsecureUnrestrictedDelegation: true,
     });
     const coordHop: Delegation = { ...unsignedCoordHop, signature: coordSig };
     extraHops.push(coordHop);
