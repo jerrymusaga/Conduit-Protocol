@@ -23,6 +23,28 @@ const eip7702AuthorizationSchema = z.object({
   yParity: z.union([z.literal(0), z.literal(1)]),
 });
 
+/** A structured delegation (1Shot's shape) — accepted loosely; the relayer
+ *  validates it. Used only on the oneshot-pl path. */
+const oneshotDelegationSchema = z.object({
+  delegate: address,
+  delegator: address,
+  authority: z.string(),
+  caveats: z.array(
+    z.object({ enforcer: address, terms: z.string(), args: z.string() })
+  ),
+  salt: z.string(),
+  signature: z.string(),
+});
+
+/** Structured payload for the oneshot-pl backend: the buyer-signed fee
+ *  delegation + the intent-bound work delegation/execution. */
+const oneshotSubmitSchema = z.object({
+  paymentToken: address,
+  workDelegation: oneshotDelegationSchema,
+  workExecution: z.object({ target: address, value: z.string(), data: hex }),
+  feeDelegation: oneshotDelegationSchema,
+});
+
 /** The erc7710-specific payment payload. */
 const erc7710PayloadSchema = z.object({
   delegationManager: address,
@@ -35,6 +57,8 @@ const erc7710PayloadSchema = z.object({
   executionCallData: hex,
   // Optional EIP-7702 authorization to bundle (mainnet flow).
   authorization: eip7702AuthorizationSchema.optional(),
+  // Optional structured payload for the 1Shot (oneshot-pl) relay path.
+  oneshot: oneshotSubmitSchema.optional(),
 });
 
 export const paymentPayloadSchema = z.object({
@@ -82,5 +106,7 @@ export function toRelayParams(p: PaymentPayload): RelaySubmitParams {
     modes: [(payload.mode ?? ZERO_MODE) as Hex],
     executionCallDatas: [payload.executionCallData as Hex],
     authorization: payload.authorization as Eip7702Authorization | undefined,
+    // Pass the structured 1Shot payload through to the oneshot-pl backend.
+    oneshot: payload.oneshot as RelaySubmitParams["oneshot"],
   };
 }

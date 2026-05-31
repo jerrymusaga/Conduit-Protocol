@@ -31,6 +31,8 @@ export function supportedRouter(backend: RelayBackend): Router {
               delegationManager: chainConfig.delegationManager,
               relayBackend: backend.name,
               redeemer: backend.redeemer,
+              // oneshot-pl only: where the buyer pays the relayer's gas fee.
+              feeCollector: backend.feeCollector ?? null,
             },
             erc7710PermissionContext:
               "permissionContext must be a 0x-prefixed hex string (ABI-encoded delegation chain). Base64 is not accepted.",

@@ -43,8 +43,8 @@ app.listen(config.port, () => {
   console.log(`  receipt enforcer: ${config.receiptEnforcer}`);
   console.log(`  delegation mgr:   ${chainConfig.delegationManager}`);
   if (backend.name === "oneshot-pl") {
-    console.warn(
-      "  ⚠  oneshot-pl backend is a stub — settle() will fail until implemented"
+    console.log(
+      "  relaying through the 1Shot Permissionless Relayer (gas paid in stablecoin)"
     );
   }
 });
