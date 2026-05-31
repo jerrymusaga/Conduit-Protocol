@@ -489,15 +489,29 @@ export default function DemoPage() {
             </div>
             <div className="min-h-[460px] space-y-3 px-5 py-5">
               {cards.length === 0 ? (
-                <p className="mono pt-16 text-center text-sm text-conduit-muted">
-                  {connected
-                    ? granted
-                      ? "Enter a prompt and hit Run — agents will consume paid services through Conduit."
-                      : "Grant a permission to begin."
-                    : "Sign in to begin."}
-                </p>
+                <div className="pt-12 text-center">
+                  <p className="mono text-sm text-conduit-muted">
+                    {connected
+                      ? granted
+                        ? "Enter a prompt and hit Run."
+                        : "Grant a permission to begin."
+                      : "Sign in to begin."}
+                  </p>
+                  <p className="mx-auto mt-3 max-w-md text-[12px] leading-relaxed text-conduit-muted/70">
+                    Each agent that needs a paid service hits a paywall, asks Conduit
+                    to authorize the payment against your one permission, and Conduit
+                    settles it on-chain — or blocks it if it breaks the rules.
+                  </p>
+                </div>
               ) : (
-                cards.map((c) => <PaymentCard key={c.correlationId} card={c} />)
+                <>
+                  <p className="text-[12px] leading-relaxed text-conduit-muted">
+                    Each card is one agent paying for one service. Watch it flow
+                    <span className="text-conduit-cyan"> 402 request → permission → settle → delivered</span>,
+                    all authorized by Conduit against your single budget.
+                  </p>
+                  {cards.map((c) => <PaymentCard key={c.correlationId} card={c} />)}
+                </>
               )}
             </div>
           </section>
@@ -535,53 +549,95 @@ export default function DemoPage() {
 
 // --- payment card ----------------------------------------------------------
 
+// Plain-English narration of what Conduit is doing at each stage.
+function caption(card: FeedCard): { text: string; tone: "muted" | "work" | "ok" | "bad" } {
+  const price = `${card.priceUsdc} USDC`;
+  switch (card.stage) {
+    case "queued":
+      return { text: `${card.agent} agent queued — needs to pay ${price} for this`, tone: "muted" };
+    case "requested":
+      return { text: `Hit a paywall (HTTP 402). Asking Conduit to authorize ${price}…`, tone: "work" };
+    case "allowed":
+      return { text: `Conduit checked the permission — within budget, bound to this exact request ✓`, tone: "ok" };
+    case "settling":
+      return { text: `Authorized. Settling on-chain via Conduit's relayer…`, tone: "work" };
+    case "settled":
+      return { text: `Paid ${price} on-chain. Service unlocked and delivered.`, tone: "ok" };
+    case "denied":
+      return { text: `Conduit BLOCKED this payment — it broke the permission. No money moved.`, tone: "bad" };
+    case "failed":
+      return { text: `Settlement failed on-chain. No money moved.`, tone: "bad" };
+  }
+}
+
+const TONE: Record<"muted" | "work" | "ok" | "bad", string> = {
+  muted: "text-conduit-muted",
+  work: "text-conduit-violet",
+  ok: "text-conduit-cyan",
+  bad: "text-conduit-magenta",
+};
+
 function PaymentCard({ card }: { card: FeedCard }) {
   const denied = card.stage === "denied" || card.stage === "failed";
   const done = card.stage === "settled";
+  const working = card.stage === "requested" || card.stage === "settling";
   const accent = denied ? "#EC4899" : done ? "#00E5FF" : "#7C3AED";
+  const cap = caption(card);
 
   return (
     <div
-      className="reveal rounded-xl border px-4 py-3 transition-all"
-      style={{ borderColor: `${accent}40` }}
+      className="reveal rounded-xl border px-4 py-3.5 transition-all"
+      style={{ borderColor: `${accent}55`, background: `${accent}0a` }}
     >
+      {/* header: what's being bought, by which agent, for how much */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2.5">
-          <span className="h-2 w-2 rounded-full" style={{ background: accent, boxShadow: `0 0 10px ${accent}` }} />
-          <span className="text-sm font-medium">{card.label}</span>
+          <span
+            className={`h-2.5 w-2.5 rounded-full ${working ? "animate-pulse" : ""}`}
+            style={{ background: accent, boxShadow: `0 0 10px ${accent}` }}
+          />
+          <span className="text-sm font-semibold">{card.label}</span>
           <span className="mono rounded border border-conduit-border px-1.5 py-0.5 text-[10px] text-conduit-muted">
             {card.agent} agent
           </span>
         </div>
-        <span className="mono text-xs text-conduit-muted">{card.priceUsdc} USDC</span>
+        <span className="mono text-xs font-semibold text-white">{card.priceUsdc} USDC</span>
       </div>
 
-      {/* stage pipeline */}
-      <div className="mono mt-2.5 flex items-center gap-1.5 text-[11px]">
-        <Step on={["requested", "allowed", "settling", "settled"].includes(card.stage)} label="request" />
+      {/* why the agent wants it (the coordinator's reasoning) */}
+      <p className="mt-1.5 text-[12px] italic text-conduit-muted">“{card.rationale}”</p>
+
+      {/* the 4-stage pipeline, with readable labels */}
+      <div className="mono mt-3 flex items-center gap-1.5 text-[11px]">
+        <Step on={["requested", "allowed", "settling", "settled"].includes(card.stage)} label="402 request" />
         <Arrow />
         <Step
           on={["allowed", "settling", "settled"].includes(card.stage)}
           bad={denied}
-          label={denied ? "denied" : "permission"}
+          label={denied ? "permission ✗" : "permission ✓"}
         />
         <Arrow />
         <Step on={["settling", "settled"].includes(card.stage)} label="settle" />
         <Arrow />
-        <Step on={done} label="released" />
+        <Step on={done} label="delivered" />
       </div>
 
+      {/* plain-English caption of the current step */}
+      <p className={`mt-2.5 text-[12px] leading-relaxed ${TONE[cap.tone]}`}>{cap.text}</p>
+
       {card.reason && (
-        <p className="mono mt-2 text-[11px] text-conduit-magenta">on-chain: {card.reason}</p>
+        <p className="mono mt-1.5 text-[11px] text-conduit-magenta/80">
+          revert reason: {card.reason}
+        </p>
       )}
       {card.txHash && card.txHash.startsWith("0x") && (
         <a
           href={`${config.explorerUrl}/tx/${card.txHash}`}
           target="_blank"
           rel="noopener noreferrer"
-          className="mono mt-2 inline-block text-[11px] text-conduit-cyan underline-offset-4 hover:underline"
+          className="mono mt-2 inline-flex items-center gap-1 text-[11px] text-conduit-cyan underline-offset-4 hover:underline"
         >
-          {shorten(card.txHash)} ↗
+          view settlement tx {shorten(card.txHash)} ↗
         </a>
       )}
     </div>
@@ -590,7 +646,11 @@ function PaymentCard({ card }: { card: FeedCard }) {
 
 function Step({ on, bad, label }: { on: boolean; bad?: boolean; label: string }) {
   const color = bad ? "text-conduit-magenta" : on ? "text-conduit-cyan" : "text-conduit-muted/40";
-  return <span className={color}>{on || bad ? "●" : "○"} {label}</span>;
+  return (
+    <span className={color}>
+      {bad ? "✗" : on ? "●" : "○"} {label}
+    </span>
+  );
 }
 function Arrow() {
   return <span className="text-conduit-muted/30">→</span>;
