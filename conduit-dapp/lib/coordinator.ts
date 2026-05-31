@@ -16,6 +16,7 @@ import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { formatUnits, type Hex } from "viem";
 import { fetchCatalog, fetch402, payAndClaim, type CatalogService } from "./endpoint";
 import { buildPayment, freshIntentHash } from "./payment";
+import { publicClient } from "./chain";
 import type { Coordinator, GrantResult } from "./grant";
 import type { Eip7702Authorization } from "./payment";
 
@@ -194,6 +195,7 @@ export async function runCampaign(params: {
         subAgent,
         authorization: auth,
       });
+      const carriesDesignation = !!auth;
       hooks.onPayStart?.(correlationId);
       const claim = await payAndClaim(built.paymentPayload, {
         path: service.resource,
@@ -201,13 +203,29 @@ export async function runCampaign(params: {
         correlationId,
       });
       if (claim.ok) {
-        auth = undefined; // designation done on the first successful settle
         totalSpent += built.amount;
         result = {
           correlationId, service, agent, ok: true, intentHash, amount: built.amount,
           txHash: claim.settlement?.transaction ?? null,
         };
         log(`${agent} › settled ${service.label} · ${formatUnits(built.amount, 6)} USDC`);
+        // If this payment carried the EIP-7702 designation, the next payments
+        // depend on the account actually HAVING code on-chain. /settle returns
+        // 'pending' before the tx mines, so wait for that tx to confirm before
+        // firing subsequent redeems (else they hit a still-code-less EOA).
+        if (carriesDesignation) {
+          auth = undefined;
+          const tx = claim.settlement?.transaction as Hex | undefined;
+          if (tx) {
+            log("coordinator › awaiting 7702 designation confirmation…");
+            try {
+              await publicClient.waitForTransactionReceipt({ hash: tx });
+              log("coordinator › account upgraded to a smart account ✓");
+            } catch {
+              /* best effort — the per-payment verify will still gate correctness */
+            }
+          }
+        }
       } else {
         result = {
           correlationId, service, agent, ok: false, intentHash, amount: built.amount,
