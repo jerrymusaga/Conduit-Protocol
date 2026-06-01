@@ -42,6 +42,10 @@ export function buildPaymentRequired(
           // The buyer must restrict redemption to this address (Redeemer
           // caveat) — it's who actually submits the redeemDelegations tx.
           redeemer: caps.redeemer,
+          // Which relay backend is active + (oneshot-pl) the fee recipient, so
+          // the buyer knows whether to build a bounded fee delegation.
+          relayBackend: caps.relayBackend,
+          feeCollector: caps.feeCollector ?? null,
         },
       },
     ],

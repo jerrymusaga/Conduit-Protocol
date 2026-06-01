@@ -13,6 +13,8 @@ export interface ConduitCapabilities {
   delegationManager: `0x${string}`;
   redeemer: `0x${string}` | null;
   relayBackend: string;
+  /** oneshot-pl only: where the buyer pays the relayer's gas fee. */
+  feeCollector?: `0x${string}` | null;
 }
 
 export interface VerifyResult {
@@ -44,6 +46,7 @@ export async function fetchCapabilities(): Promise<ConduitCapabilities> {
           delegationManager: `0x${string}`;
           redeemer: `0x${string}` | null;
           relayBackend: string;
+          feeCollector?: `0x${string}` | null;
         };
       };
     }>;

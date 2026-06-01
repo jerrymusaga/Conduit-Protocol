@@ -40,9 +40,9 @@ const oneshotDelegationSchema = z.object({
  *  delegation + the intent-bound work delegation/execution. */
 const oneshotSubmitSchema = z.object({
   paymentToken: address,
-  workDelegation: oneshotDelegationSchema,
+  workChain: z.array(oneshotDelegationSchema),
   workExecution: z.object({ target: address, value: z.string(), data: hex }),
-  feeDelegation: oneshotDelegationSchema,
+  feeChain: z.array(oneshotDelegationSchema),
 });
 
 /** The erc7710-specific payment payload. */

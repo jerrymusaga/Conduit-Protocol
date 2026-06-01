@@ -15,7 +15,7 @@
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { formatUnits, parseUnits, type Hex } from "viem";
 import { fetchCatalog, fetch402, payAndClaim, type CatalogService } from "./endpoint";
-import { buildPayment, freshIntentHash } from "./payment";
+import { buildPayment, buildOneshotPayment, freshIntentHash } from "./payment";
 import { publicClient } from "./chain";
 import type { Coordinator, GrantResult } from "./grant";
 import type { Eip7702Authorization } from "./payment";

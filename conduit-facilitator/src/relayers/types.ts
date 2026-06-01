@@ -58,9 +58,11 @@ export interface OneshotExecution {
  */
 export interface OneshotSubmit {
   paymentToken: Address;
-  workDelegation: OneshotDelegation;
+  /** The work delegation CHAIN [leaf, …, root] (intent-bound payment). */
+  workChain: OneshotDelegation[];
   workExecution: OneshotExecution;
-  feeDelegation: OneshotDelegation;
+  /** The fee delegation CHAIN [leaf, …, root] (bounded fee payment). */
+  feeChain: OneshotDelegation[];
 }
 
 export type RelayStatus = "submitted" | "pending" | "confirmed" | "failed";

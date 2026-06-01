@@ -246,3 +246,144 @@ export async function buildPayment(params: {
 
   return { paymentPayload, intentHash, amount: execAmount, payTo: execPayTo };
 }
+
+// --- 1Shot (oneshot-pl) path -----------------------------------------------
+
+/** Ceiling the bounded fee delegation allows 1Shot to charge (USDC atoms).
+ *  The real fee comes from a live quote ≤ this; binding a cap keeps it
+ *  Conduit-style (can only ever pay feeCollector, never above the cap). */
+const FEE_CAP_ATOMS = 50_000n; // 0.05 USDC
+
+/** Build + sign ONE intent-bound redelegation CHAIN [leaf,…,root], structured
+ *  (not hex-encoded) for 1Shot. The leaf is bound by X402ReceiptEnforcer to
+ *  (token, recipient, maxAmount, intentHash) + IdEnforcer(one-shot). */
+async function buildBoundChain(params: {
+  grant: GrantResult;
+  coordinator: Coordinator;
+  redeemer: Hex;
+  token: Hex;
+  recipient: Hex;
+  maxAmount: bigint;
+  intentHash: Hex;
+}): Promise<Delegation[]> {
+  const { grant, coordinator, redeemer, token, recipient, maxAmount, intentHash } = params;
+  const idCaveat: Caveat = {
+    enforcer: idEnforcer(config.chainId),
+    terms: encodeAbiParameters([{ type: "uint256" }], [BigInt(intentHash)]),
+    args: "0x",
+  };
+  const x402Caveat: Caveat = {
+    enforcer: config.receiptEnforcer as Hex,
+    terms: encodePacked(
+      ["bytes32", "address", "address", "uint128", "uint8"],
+      [intentHash, token, recipient, maxAmount, 0]
+    ),
+    args: "0x",
+  };
+  const parentChain = decodeDelegations(grant.context);
+  const immediateParent = parentChain[0];
+  const unsignedChild: Omit<Delegation, "signature"> = {
+    delegate: redeemer,
+    delegator: coordinator.address,
+    authority: hashDelegation(immediateParent),
+    caveats: [idCaveat, x402Caveat],
+    salt: intentHash,
+  };
+  const signature = await signDelegation({
+    privateKey: coordinator.privateKey,
+    delegation: unsignedChild,
+    delegationManager: grant.delegationManager,
+    chainId: config.chainId,
+    name: "DelegationManager",
+    version: "1",
+  });
+  return [{ ...unsignedChild, signature }, ...parentChain];
+}
+
+export interface BuiltOneshotPayment {
+  paymentPayload: unknown;
+  intentHash: Hex;
+  amount: bigint;
+  payTo: `0x${string}`;
+}
+
+/**
+ * Build the x402 payload for the oneshot-pl (1Shot) backend: TWO bounded
+ * delegation chains rooted in the same grant —
+ *   - WORK: pay the seller (req.payTo, req.maxAmountRequired), the real intent.
+ *   - FEE:  pay 1Shot's feeCollector, capped at FEE_CAP (the backend fills the
+ *           exact quoted amount ≤ cap). Both bound by X402ReceiptEnforcer, so
+ *           even the gas payment can't be redirected.
+ * The work execution is included; the backend builds the fee execution from the
+ * live quote. The 7702 auth (first run) bundles into the relayer's tx.
+ */
+export async function buildOneshotPayment(params: {
+  grant: GrantResult;
+  coordinator: Coordinator;
+  req: PaymentRequirements;
+  intentHash?: Hex;
+  authorization?: Eip7702Authorization;
+}): Promise<BuiltOneshotPayment> {
+  const { grant, coordinator, req } = params;
+  if (!req.redeemer) throw new Error("402 advertised no redeemer (targetAddress)");
+  if (!req.feeCollector) throw new Error("402 advertised no feeCollector (oneshot-pl)");
+
+  const token = req.asset;
+  const payTo = req.payTo;
+  const workAmount = BigInt(req.maxAmountRequired);
+  const workIntent = params.intentHash ?? freshIntentHash(req);
+  // A distinct one-shot id for the fee leg (sibling off the same coordinator hop).
+  const feeIntent = keccak256(
+    encodeAbiParameters([{ type: "bytes32" }, { type: "string" }], [workIntent, "fee"])
+  );
+
+  const [workChain, feeChain] = await Promise.all([
+    buildBoundChain({
+      grant, coordinator, redeemer: req.redeemer, token,
+      recipient: payTo, maxAmount: workAmount, intentHash: workIntent,
+    }),
+    buildBoundChain({
+      grant, coordinator, redeemer: req.redeemer, token,
+      recipient: req.feeCollector, maxAmount: FEE_CAP_ATOMS, intentHash: feeIntent,
+    }),
+  ]);
+
+  const workExecution = {
+    target: token,
+    value: "0",
+    data: encodeFunctionData({
+      abi: erc20Abi, functionName: "transfer", args: [payTo, workAmount],
+    }),
+  };
+
+  const rootDelegator = decodeDelegations(grant.context).slice(-1)[0].delegator;
+
+  const paymentPayload = {
+    x402Version: 2,
+    scheme: req.scheme,
+    network: req.network,
+    payload: {
+      delegationManager: grant.delegationManager,
+      // Kept for schema compatibility; the oneshot path uses the structured block.
+      permissionContext: encodeDelegations(workChain),
+      delegator: rootDelegator,
+      executionCallData: encodeExecutionCalldata([
+        createExecution({
+          target: token, value: 0n,
+          callData: encodeFunctionData({
+            abi: erc20Abi, functionName: "transfer", args: [payTo, workAmount],
+          }),
+        }),
+      ]),
+      ...(params.authorization ? { authorization: params.authorization } : {}),
+      oneshot: {
+        paymentToken: token,
+        workChain,
+        workExecution,
+        feeChain,
+      },
+    },
+  };
+
+  return { paymentPayload, intentHash: workIntent, amount: workAmount, payTo };
+}

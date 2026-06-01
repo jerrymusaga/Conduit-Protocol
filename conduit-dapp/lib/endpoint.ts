@@ -42,6 +42,10 @@ export interface PaymentRequirements {
   redeemer: `0x${string}` | null;
   /** Catalog service id this 402 is for (when paying a catalog service). */
   service?: string;
+  /** Active relay backend ("viem-direct" | "oneshot-pl"). */
+  relayBackend?: string;
+  /** oneshot-pl only: where the buyer pays the relayer's gas fee. */
+  feeCollector?: `0x${string}` | null;
 }
 
 /**
@@ -69,6 +73,8 @@ export async function fetch402(path: string = RESOURCE_PATH): Promise<PaymentReq
     receiptEnforcer: extra.receiptEnforcer,
     redeemer: extra.redeemer ?? null,
     service: extra.service,
+    relayBackend: extra.relayBackend,
+    feeCollector: extra.feeCollector ?? null,
   };
 }
 

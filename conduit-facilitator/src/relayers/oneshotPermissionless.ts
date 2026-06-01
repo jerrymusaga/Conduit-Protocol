@@ -121,8 +121,8 @@ export const oneshotPermissionlessBackend: RelayBackend = {
             }
           : {}),
         transactions: [
-          { permissionContext: [o.feeDelegation], executions: [feeExecution] },
-          { permissionContext: [o.workDelegation], executions: [o.workExecution] },
+          { permissionContext: o.feeChain, executions: [feeExecution] },
+          { permissionContext: o.workChain, executions: [o.workExecution] },
         ],
       };
 
