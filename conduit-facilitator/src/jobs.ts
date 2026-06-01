@@ -21,6 +21,18 @@ export interface Job {
 }
 
 const jobs = new Map<string, Job>();
+// Maps a relayer TaskId → our jobId, so inbound 1Shot webhooks (which reference
+// the task by its TaskId) can resolve the job they belong to.
+const taskToJob = new Map<string, string>();
+
+export function linkTask(taskId: string, jobId: string): void {
+  taskToJob.set(taskId.toLowerCase(), jobId);
+}
+
+export function getJobByTask(taskId: string): Job | undefined {
+  const id = taskToJob.get(taskId.toLowerCase());
+  return id ? jobs.get(id) : undefined;
+}
 
 export function createJob(): Job {
   const now = Date.now();

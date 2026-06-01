@@ -1,6 +1,6 @@
 import { encodeFunctionData, erc20Abi, type Address, type Hex } from "viem";
 import { config } from "../config.js";
-import { createJob, updateJob } from "../jobs.js";
+import { createJob, linkTask, updateJob } from "../jobs.js";
 import {
   computeFeeAtoms,
   getCapabilities,
@@ -112,7 +112,11 @@ export const oneshotPermissionlessBackend: RelayBackend = {
       const submitParams: Send7710Params = {
         chainId: chainIdStr,
         context: fee.context,
-        ...(config.webhookUrl ? { destinationUrl: config.webhookUrl } : {}),
+        // Point 1Shot at OUR inbound webhook so its Ed25519-signed status events
+        // drive the job (the bonus-scored path). Poll remains the fallback.
+        ...(config.oneshot.webhookUrl
+          ? { destinationUrl: config.oneshot.webhookUrl }
+          : {}),
         ...(params.authorization
           ? {
               authorizationList: [
@@ -134,10 +138,12 @@ export const oneshotPermissionlessBackend: RelayBackend = {
       };
 
       const taskId = await send7710Transaction(relayerUrl, submitParams);
+      linkTask(taskId, job.id); // so inbound 1Shot webhooks resolve this job
       updateJob(job.id, { status: "pending" });
 
-      // 4) Drive the job to terminal state. Webhooks are preferred (wire via
-      //    WEBHOOK_URL → webhook.ts); poll as the always-on fallback.
+      // 4) Drive the job to terminal state. 1Shot's signed webhooks are the
+      //    preferred source (POST /relayer-webhook); poll is the always-on
+      //    fallback when no public webhook URL is configured.
       void pollOneshot(job.id, taskId);
 
       return { jobId: job.id, status: "pending" };

@@ -5,6 +5,7 @@ import { selectRelayBackend } from "./relayers/index.js";
 import { supportedRouter } from "./routes/supported.js";
 import { verifyRouter } from "./routes/verify.js";
 import { settleRouter } from "./routes/settle.js";
+import { relayerWebhookRouter } from "./routes/relayerWebhook.js";
 
 const backend = selectRelayBackend();
 
@@ -35,6 +36,7 @@ app.get("/health", (_req, res) => {
 app.use(supportedRouter(backend));
 app.use(verifyRouter(backend));
 app.use(settleRouter(backend));
+app.use(relayerWebhookRouter);
 
 app.listen(config.port, () => {
   console.log(`conduit-facilitator listening on :${config.port}`);

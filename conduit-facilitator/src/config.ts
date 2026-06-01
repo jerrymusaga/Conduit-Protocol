@@ -31,6 +31,10 @@ const baseSchema = z.object({
   // oneshot-pl
   ONESHOT_RELAYER_URL: z.string().url().optional(),
   ONESHOT_GAS_TOKEN: z.string().optional(),
+  // Public URL of THIS facilitator's inbound 1Shot webhook (POST /relayer-webhook).
+  // When set, 1Shot POSTs Ed25519-signed status events here. Needs a public
+  // tunnel in dev (e.g. ngrok). If unset, the backend polls relayer_getStatus.
+  ONESHOT_WEBHOOK_URL: z.string().url().optional(),
 });
 
 const parsed = baseSchema.safeParse(process.env);
@@ -67,6 +71,7 @@ export const config = {
   oneshot: {
     relayerUrl: env.ONESHOT_RELAYER_URL,
     gasToken: env.ONESHOT_GAS_TOKEN ?? "USDC",
+    webhookUrl: env.ONESHOT_WEBHOOK_URL,
   },
 } as const;
 
