@@ -17,7 +17,14 @@ import type { RelayBackend } from "../relayers/index.js";
 export function supportedRouter(backend: RelayBackend): Router {
   const router = Router();
 
-  router.get("/supported", (_req: Request, res: Response) => {
+  router.get("/supported", async (_req: Request, res: Response) => {
+    // Ensure async backend state (oneshot-pl targetAddress/feeCollector) is
+    // resolved so we never advertise a null redeemer due to a warm-up race.
+    try {
+      await backend.ensureReady?.();
+    } catch (err) {
+      console.warn("[supported] backend.ensureReady failed:", err);
+    }
     res.json({
       kinds: [
         {

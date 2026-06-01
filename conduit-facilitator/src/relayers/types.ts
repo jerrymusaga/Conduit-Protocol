@@ -94,5 +94,11 @@ export interface RelayBackend {
    * The buyer builds a loose fee delegation paying this address in stablecoin.
    */
   readonly feeCollector?: Address | null;
+  /**
+   * Resolve any async startup state (e.g. oneshot-pl fetching its targetAddress
+   * + feeCollector from the relayer) so readers like /supported never see nulls
+   * due to a warm-up race. No-op for backends that are ready synchronously.
+   */
+  ensureReady?(): Promise<void>;
   submit(params: RelaySubmitParams): Promise<RelayResult>;
 }

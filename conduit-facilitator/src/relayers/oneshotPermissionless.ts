@@ -68,6 +68,13 @@ export const oneshotPermissionlessBackend: RelayBackend = {
     return capsCache?.feeCollector ?? null;
   },
 
+  // Awaited by /supported so redeemer + feeCollector are never null due to the
+  // async warm-up race.
+  async ensureReady(): Promise<void> {
+    const c = await caps();
+    cachedRedeemer = c.targetAddress;
+  },
+
   async submit(params: RelaySubmitParams): Promise<RelayResult> {
     const job = createJob();
 

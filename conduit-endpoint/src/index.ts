@@ -31,7 +31,11 @@ app.use((req, res, next) => {
 // start before the facilitator is up (dev convenience), refreshed if missing.
 let capsCache: ConduitCapabilities | undefined;
 async function getCaps(): Promise<ConduitCapabilities> {
-  if (!capsCache) capsCache = await fetchCapabilities();
+  // Don't cache an incomplete capabilities response: on the oneshot-pl backend
+  // the redeemer (1Shot targetAddress) is warmed asynchronously, so an early
+  // fetch can return null. Refetch until it's populated.
+  if (capsCache && capsCache.redeemer) return capsCache;
+  capsCache = await fetchCapabilities();
   return capsCache;
 }
 
