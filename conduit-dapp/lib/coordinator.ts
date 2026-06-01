@@ -192,14 +192,12 @@ export async function runCampaign(params: {
     try {
       const req = await fetch402(service.resource);
       const intentHash = freshIntentHash(req);
-      const built = await buildPayment({
-        grant,
-        coordinator,
-        req,
-        intentHash,
-        subAgent,
-        authorization: auth,
-      });
+      // oneshot-pl needs the structured two-delegation (fee + work) payload;
+      // viem-direct uses the single bound redelegation. The 402 says which.
+      const built =
+        req.relayBackend === "oneshot-pl"
+          ? await buildOneshotPayment({ grant, coordinator, req, intentHash, authorization: auth })
+          : await buildPayment({ grant, coordinator, req, intentHash, subAgent, authorization: auth });
       const carriesDesignation = !!auth;
       hooks.onPayStart?.(correlationId);
       const claim = await payAndClaim(built.paymentPayload, {
