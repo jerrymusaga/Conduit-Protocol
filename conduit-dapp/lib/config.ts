@@ -62,6 +62,9 @@ export const config = {
     process.env.NEXT_PUBLIC_ENDPOINT_URL ?? "http://localhost:4500",
   receiptEnforcer: (process.env.NEXT_PUBLIC_X402_RECEIPT_ENFORCER ??
     "0x111115259a41bd174c7C1f6B7eE36ec1Ab3CD5c1") as `0x${string}`,
+  // X402SubscriptionEnforcer — recurring intent-bound payments (Base Sepolia).
+  subscriptionEnforcer: (process.env.NEXT_PUBLIC_X402_SUBSCRIPTION_ENFORCER ??
+    "0x9847Be9B20f23b2cb12C2D6C49B58772096E45eF") as `0x${string}`,
   // The ERC-20 the agent budget is denominated in (USDC). Used as the
   // `tokenAddress` of the root erc20PeriodTransferEnforcer caveat and as the
   // bound token in the X402ReceiptEnforcer terms.

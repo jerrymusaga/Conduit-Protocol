@@ -19,6 +19,7 @@ const SECTIONS = [
   ["quickstart", "Quickstart"],
   ["api", "Facilitator API"],
   ["payment", "Build a payment"],
+  ["enforcers", "Enforcers"],
   ["webhooks", "Webhooks"],
   ["addresses", "Addresses"],
 ] as const;
@@ -186,6 +187,34 @@ const caveats = [
             </p>
           </Section>
 
+          {/* ENFORCERS */}
+          <Section id="enforcers" title="Enforcers">
+            <p>
+              The facilitator relays <i>any</i> ERC-7710 execution — Conduit ships the
+              on-chain caveats that make payments <b className="text-white">safe</b>.
+              Each binds a delegated transfer so a compromised agent can’t misuse it.
+              The pattern is pluggable: one facilitator, many enforcers.
+            </p>
+            <Endpoint method="ENFORCER" path="X402ReceiptEnforcer">
+              One-shot, intent-bound payment: binds token + recipient + amount +
+              intent hash; pair with <Mono>IdEnforcer</Mono> for replay protection.
+              The standard x402 pay-once flow.
+            </Endpoint>
+            <Endpoint method="ENFORCER" path="X402SubscriptionEnforcer">
+              Recurring payment: binds token + recipient + <i>exact</i> amount, charged
+              at most once per period. An agent can renew each period without a new
+              grant — but can’t change the recipient/amount/token or double-charge.
+            </Endpoint>
+            <Callout>
+              <b className="text-white">Roadmap — beyond payments:</b> the same pattern
+              extends to other actions. A <Mono>SwapEnforcer</Mono> (bind router +
+              tokenIn/out + min-out + recipient) would let agents trade within bounds;
+              the facilitator already relays it unchanged. Conduit ships the
+              payment-safety enforcers today; swaps and other action-bound enforcers are
+              on the roadmap — same architecture, different caveat.
+            </Callout>
+          </Section>
+
           {/* WEBHOOKS */}
           <Section id="webhooks" title="Webhooks">
             <p>
@@ -216,6 +245,7 @@ const caveats = [
             </p>
             <div className="space-y-2">
               <Addr label="X402ReceiptEnforcer" addr={config.receiptEnforcer} />
+              <Addr label="X402SubscriptionEnforcer" addr={config.subscriptionEnforcer} />
               <Addr label="DelegationManager" addr={config.delegationManager} />
               <Addr label="IdEnforcer" addr={config.idEnforcer} />
               <Addr label="ERC20PeriodTransferEnforcer" addr={config.erc20PeriodTransferEnforcer} />
