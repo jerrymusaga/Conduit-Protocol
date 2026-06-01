@@ -68,6 +68,78 @@ const STAGE_LABEL: Record<CardStage, string> = {
   failed: "failed",
 };
 
+// --- session persistence (survives a page refresh) -------------------------
+// The grant + ephemeral coordinator key live only in React state, so a refresh
+// wipes them even though Privy keeps you signed in. Persist them to
+// sessionStorage (bigint-safe), keyed to the signed-in address, and rehydrate
+// on mount if it matches and the grant hasn't expired.
+
+const SESSION_KEY = "conduit.session.v1";
+
+interface PersistedSession {
+  address: string;
+  coordinator: Coordinator;
+  grant: Omit<GrantResult, "periodAmount"> & { periodAmount: string };
+  authorization: Eip7702Authorization | null;
+  spent: number;
+}
+
+function saveSession(s: {
+  address: string;
+  coordinator: Coordinator;
+  grant: GrantResult;
+  authorization: Eip7702Authorization | null;
+  spent: number;
+}) {
+  try {
+    const data: PersistedSession = {
+      address: s.address,
+      coordinator: s.coordinator,
+      grant: { ...s.grant, periodAmount: s.grant.periodAmount.toString() },
+      authorization: s.authorization,
+      spent: s.spent,
+    };
+    sessionStorage.setItem(SESSION_KEY, JSON.stringify(data));
+  } catch {
+    /* storage unavailable — non-fatal */
+  }
+}
+
+function clearSession() {
+  try {
+    sessionStorage.removeItem(SESSION_KEY);
+  } catch {
+    /* noop */
+  }
+}
+
+/** Restore a session iff it matches `address` and the grant hasn't expired. */
+function loadSession(address: string): {
+  coordinator: Coordinator;
+  grant: GrantResult;
+  authorization: Eip7702Authorization | null;
+  spent: number;
+} | null {
+  try {
+    const raw = sessionStorage.getItem(SESSION_KEY);
+    if (!raw) return null;
+    const d = JSON.parse(raw) as PersistedSession;
+    if (d.address.toLowerCase() !== address.toLowerCase()) return null;
+    if (d.grant.expiry <= Math.floor(Date.now() / 1000)) {
+      clearSession();
+      return null;
+    }
+    return {
+      coordinator: d.coordinator,
+      grant: { ...d.grant, periodAmount: BigInt(d.grant.periodAmount) },
+      authorization: d.authorization,
+      spent: d.spent,
+    };
+  } catch {
+    return null;
+  }
+}
+
 const now = () => new Date().toLocaleTimeString("en-US", { hour12: false });
 
 export default function DemoPage() {
@@ -116,6 +188,7 @@ export default function DemoPage() {
   // Live SSE feed from the facilitator (server-truth annotation).
   const { events, connected: sseConnected } = useFacilitatorEvents(connected);
   const seenEvents = useRef(new Set<string>());
+  const rehydrated = useRef(false);
 
   const CAP = grantResult ? Number(grantResult.periodAmount) : 100_000;
   const pct = Math.min(100, (spent / CAP) * 100);
@@ -132,12 +205,41 @@ export default function DemoPage() {
     requestAnimationFrame(() => logEndRef.current?.scrollIntoView({ behavior: "smooth" }));
   }, []);
 
+  // Rehydrate a persisted session on (re)connect so a refresh doesn't wipe the
+  // grant + coordinator. Only restores if the address matches + grant is live.
+  useEffect(() => {
+    if (rehydrated.current || !connected || !address || granted) return;
+    const s = loadSession(address);
+    if (s) {
+      coordinatorRef.current = s.coordinator;
+      setGrantResult(s.grant);
+      setAuthorization(s.authorization);
+      setSpent(s.spent);
+      setGranted(true);
+      rehydrated.current = true;
+      append("Restored your active grant from this session.");
+    }
+  }, [connected, address, granted, append]);
+
   // Tick the expiry countdown.
   useEffect(() => {
     if (!grantResult) return;
     const id = setInterval(() => setNowSec(Math.floor(Date.now() / 1000)), 1000);
     return () => clearInterval(id);
   }, [grantResult]);
+
+  // Keep the persisted session in sync as spend accrues / the 7702 auth is
+  // consumed, so a mid-run refresh restores accurate budget + auth state.
+  useEffect(() => {
+    if (!granted || !grantResult || !address || !coordinatorRef.current) return;
+    saveSession({
+      address,
+      coordinator: coordinatorRef.current,
+      grant: grantResult,
+      authorization,
+      spent,
+    });
+  }, [granted, grantResult, address, authorization, spent]);
 
   // Annotate feed cards from the facilitator's SSE stream (server-truth). The
   // client narration sets the optimistic stage; SSE confirms permission/settle.
@@ -200,6 +302,8 @@ export default function DemoPage() {
       setSpent(0);
       setCards([]);
       setLog([]);
+      rehydrated.current = false;
+      clearSession();
     }
   };
 
@@ -217,6 +321,7 @@ export default function DemoPage() {
       coordinatorRef.current = coordinator;
       append(`Coordinator account · ${shorten(coordinator.address)}`);
 
+      let signedAuth: Eip7702Authorization | null = null;
       const embeddedWallet = getEmbeddedConnectedWallet(wallets);
       if (embeddedWallet) {
         append(`Signing EIP-7702 authorization · designating ${shorten(config.eip7702Impl)}…`);
@@ -227,14 +332,15 @@ export default function DemoPage() {
           { contractAddress: config.eip7702Impl, chainId: config.chainId, nonce },
           { address: embeddedWallet.address }
         );
-        setAuthorization({
+        signedAuth = {
           chainId: auth.chainId,
           address: auth.address as `0x${string}`,
           nonce: auth.nonce,
           r: auth.r,
           s: auth.s,
           yParity: (auth.yParity === 1 ? 1 : 0) as 0 | 1,
-        });
+        };
+        setAuthorization(signedAuth);
         append("EIP-7702 authorization signed · bundled into the first redeem");
       } else {
         append("External wallet can't sign EIP-7702 — sign in with email/GitHub for the full flow.");
@@ -249,7 +355,10 @@ export default function DemoPage() {
         periodDuration: periodSeconds,
       });
       setGrantResult(result);
+      setAuthorization(signedAuth);
       setGranted(true);
+      // The session-sync effect persists grant+coordinator+auth+spent so a
+      // refresh restores the active session (survives reload).
       append("Permission granted · the coordinator holds the root policy");
     } catch (e) {
       console.error("[conduit] grant failed →", e);
