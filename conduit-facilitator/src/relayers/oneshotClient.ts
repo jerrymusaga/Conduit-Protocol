@@ -142,14 +142,22 @@ export const getStatus = (url: string, id: Hex, logs = true) =>
   relayerRpc<StatusResult>(url, "relayer_getStatus", { id, logs });
 
 /**
- * Fee amount in token atoms, floored at minFee. minFee from the live relayer
- * arrives as a DECIMAL string (e.g. "0.01"), so scale it by token decimals.
+ * Fee amount in token atoms, floored at minFee.
+ *
+ * `rate` is payment-token WHOLE units per 1 native token (e.g. USDC per ETH).
+ * So: atoms = nativeFeeWei × rate × 10^decimals / 1e18.
+ * `minFee` may arrive as a decimal string ("0.01") or as atoms ("10000") — we
+ * normalize both. On testnet the gas-based estimate is tiny, so minFee floors it
+ * (≈ $0.01). Verified against the live .dev quote (rate 2000, minFee "0.01").
  */
 export function computeFeeAtoms(fee: FeeData, estimatedGasUsed: bigint): bigint {
-  const decimals = fee.token.decimals;
+  const decimals = Number(fee.token.decimals);
+  const minFeeAtoms = fee.minFee.includes(".")
+    ? BigInt(Math.round(Number(fee.minFee) * 10 ** decimals))
+    : BigInt(fee.minFee);
   const nativeFeeWei = BigInt(fee.gasPrice) * estimatedGasUsed;
-  // rate: native-wei → token atoms (numeric). Float then ceil; fine for testnet.
-  const tokenAtoms = BigInt(Math.ceil(Number(nativeFeeWei) * fee.rate));
-  const minFeeAtoms = BigInt(Math.round(Number(fee.minFee) * 10 ** decimals));
-  return tokenAtoms < minFeeAtoms ? minFeeAtoms : tokenAtoms;
+  const est =
+    (nativeFeeWei * BigInt(Math.round(fee.rate)) * 10n ** BigInt(decimals)) /
+    10n ** 18n;
+  return est < minFeeAtoms ? minFeeAtoms : est;
 }
