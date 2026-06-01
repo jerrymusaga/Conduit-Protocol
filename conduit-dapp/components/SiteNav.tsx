@@ -39,9 +39,14 @@ export function SiteNav() {
             ))}
           </div>
 
-          <Link href="/demo" className="btn-primary text-sm">
-            Launch demo
-          </Link>
+          <div className="flex items-center gap-4">
+            <Link href="/docs" className="hidden text-sm text-conduit-muted transition-colors hover:text-white md:block">
+              Docs
+            </Link>
+            <Link href="/demo" className="btn-primary text-sm">
+              Launch demo
+            </Link>
+          </div>
         </nav>
       </div>
     </header>
