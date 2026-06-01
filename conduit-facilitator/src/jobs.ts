@@ -48,6 +48,18 @@ export function createJob(): Job {
 
 const settledWaiters = new Map<string, ((job: Job) => void)[]>();
 
+// A single hook fired once when any job reaches a terminal state, regardless of
+// relay path (viem-direct receipt, oneshot poll, or inbound 1Shot webhook).
+// Registered by index.ts to forward a clean status event to the integrator's
+// WEBHOOK_URL — so devs building on Conduit get push notifications without
+// touching the relayer/chain. Set via a registrar to avoid a jobs↔webhook cycle.
+let onTerminal: ((job: Job) => void) | null = null;
+const firedTerminal = new Set<string>();
+
+export function setTerminalHook(fn: (job: Job) => void): void {
+  onTerminal = fn;
+}
+
 /** Resolve when a job reaches a terminal state (confirmed | failed). */
 export function onJobSettled(id: string, cb: (job: Job) => void): void {
   const job = jobs.get(id);
@@ -72,6 +84,11 @@ export function updateJob(
     if (waiters) {
       settledWaiters.delete(id);
       for (const cb of waiters) cb(job);
+    }
+    // Forward to the integrator's webhook exactly once per job.
+    if (onTerminal && !firedTerminal.has(id)) {
+      firedTerminal.add(id);
+      onTerminal(job);
     }
   }
   return job;

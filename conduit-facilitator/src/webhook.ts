@@ -18,8 +18,13 @@ export async function fireWebhook(job: Job): Promise<void> {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        type: "conduit.settlement",
+        // A clean, relayer-agnostic settlement event. The dev gets this whether
+        // Conduit settled via viem-direct or by consuming 1Shot's signed webhooks
+        // — they never touch the relayer, the chain, or signature verification.
         jobId: job.id,
-        status: job.status,
+        status: job.status, // "confirmed" | "failed"
+        success: job.status === "confirmed",
         txHash: job.txHash ?? null,
         error: job.error ?? null,
         updatedAt: job.updatedAt,

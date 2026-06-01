@@ -1,7 +1,6 @@
 import { parseAbi, type Hex } from "viem";
 import { chainConfig, publicClient, walletClient } from "../chain.js";
 import { createJob, updateJob } from "../jobs.js";
-import { fireWebhook } from "../webhook.js";
 import type { RelayBackend, RelayResult, RelaySubmitParams } from "./types.js";
 
 /**
@@ -73,21 +72,21 @@ export const viemDirectBackend: RelayBackend = {
 };
 
 async function waitForReceipt(jobId: string, txHash: Hex): Promise<void> {
+  // The integrator webhook fires from jobs.updateJob on the terminal transition
+  // (centralized for all relay paths), so we just update status here.
   try {
     const receipt = await publicClient.waitForTransactionReceipt({
       hash: txHash,
     });
     const status = receipt.status === "success" ? "confirmed" : "failed";
-    const job = updateJob(jobId, {
+    updateJob(jobId, {
       status,
       ...(status === "failed" ? { error: "transaction reverted" } : {}),
     });
-    if (job) await fireWebhook(job);
   } catch (err) {
-    const job = updateJob(jobId, {
+    updateJob(jobId, {
       status: "failed",
       error: err instanceof Error ? err.message : String(err),
     });
-    if (job) await fireWebhook(job);
   }
 }

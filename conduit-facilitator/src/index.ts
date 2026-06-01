@@ -6,8 +6,15 @@ import { supportedRouter } from "./routes/supported.js";
 import { verifyRouter } from "./routes/verify.js";
 import { settleRouter } from "./routes/settle.js";
 import { relayerWebhookRouter } from "./routes/relayerWebhook.js";
+import { setTerminalHook } from "./jobs.js";
+import { fireWebhook } from "./webhook.js";
 
 const backend = selectRelayBackend();
+
+// Forward every settled job to the integrator's WEBHOOK_URL (one place, all
+// relay paths). This is the dev-facing webhook: build on Conduit, register a
+// URL, get push settlement events — no relayer/chain/crypto on their side.
+setTerminalHook((job) => void fireWebhook(job));
 
 const app = express();
 app.use(express.json({ limit: "5mb" }));
