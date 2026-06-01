@@ -196,7 +196,7 @@ export async function runCampaign(params: {
       // viem-direct uses the single bound redelegation. The 402 says which.
       const built =
         req.relayBackend === "oneshot-pl"
-          ? await buildOneshotPayment({ grant, coordinator, req, intentHash, authorization: auth })
+          ? await buildOneshotPayment({ grant, coordinator, req, intentHash, subAgent, authorization: auth })
           : await buildPayment({ grant, coordinator, req, intentHash, subAgent, authorization: auth });
       const carriesDesignation = !!auth;
       hooks.onPayStart?.(correlationId);

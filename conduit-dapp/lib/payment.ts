@@ -265,8 +265,10 @@ async function buildBoundChain(params: {
   recipient: Hex;
   maxAmount: bigint;
   intentHash: Hex;
+  /** Optional specialist for a real 3-hop A2A chain (coordinator → sub → relayer). */
+  subAgent?: Coordinator;
 }): Promise<Delegation[]> {
-  const { grant, coordinator, redeemer, token, recipient, maxAmount, intentHash } = params;
+  const { grant, coordinator, redeemer, token, recipient, maxAmount, intentHash, subAgent } = params;
   const idCaveat: Caveat = {
     enforcer: idEnforcer(config.chainId),
     terms: encodeAbiParameters([{ type: "uint256" }], [BigInt(intentHash)]),
@@ -282,22 +284,51 @@ async function buildBoundChain(params: {
   };
   const parentChain = decodeDelegations(grant.context);
   const immediateParent = parentChain[0];
+
+  // A2A: coordinator → sub-agent open hop; the sub-agent signs the bound leaf.
+  const extraHops: Delegation[] = [];
+  let leafSigner = coordinator;
+  let leafAuthority = hashDelegation(immediateParent);
+  if (subAgent) {
+    const unsignedCoordHop: Omit<Delegation, "signature"> = {
+      delegate: subAgent.address,
+      delegator: coordinator.address,
+      authority: hashDelegation(immediateParent),
+      caveats: [],
+      salt: intentHash,
+    };
+    const coordSig = await signDelegation({
+      privateKey: coordinator.privateKey,
+      delegation: unsignedCoordHop,
+      delegationManager: grant.delegationManager,
+      chainId: config.chainId,
+      name: "DelegationManager",
+      version: "1",
+      allowInsecureUnrestrictedDelegation: true, // open hop; binding rides the leaf
+    });
+    const coordHop: Delegation = { ...unsignedCoordHop, signature: coordSig };
+    extraHops.push(coordHop);
+    leafSigner = subAgent;
+    leafAuthority = hashDelegation(coordHop);
+  }
+
   const unsignedChild: Omit<Delegation, "signature"> = {
     delegate: redeemer,
-    delegator: coordinator.address,
-    authority: hashDelegation(immediateParent),
+    delegator: leafSigner.address,
+    authority: leafAuthority,
     caveats: [idCaveat, x402Caveat],
     salt: intentHash,
   };
   const signature = await signDelegation({
-    privateKey: coordinator.privateKey,
+    privateKey: leafSigner.privateKey,
     delegation: unsignedChild,
     delegationManager: grant.delegationManager,
     chainId: config.chainId,
     name: "DelegationManager",
     version: "1",
   });
-  return [{ ...unsignedChild, signature }, ...parentChain];
+  // Chain order [leaf, …, root]: bound leaf, then any A2A hops, then the grant.
+  return [{ ...unsignedChild, signature }, ...extraHops, ...parentChain];
 }
 
 export interface BuiltOneshotPayment {
@@ -323,8 +354,10 @@ export async function buildOneshotPayment(params: {
   req: PaymentRequirements;
   intentHash?: Hex;
   authorization?: Eip7702Authorization;
+  /** Specialist sub-agent → real 3-hop A2A on the work leg (fee leg stays direct). */
+  subAgent?: Coordinator;
 }): Promise<BuiltOneshotPayment> {
-  const { grant, coordinator, req } = params;
+  const { grant, coordinator, req, subAgent } = params;
   if (!req.redeemer) throw new Error("402 advertised no redeemer (targetAddress)");
   if (!req.feeCollector) throw new Error("402 advertised no feeCollector (oneshot-pl)");
 
@@ -341,6 +374,7 @@ export async function buildOneshotPayment(params: {
     buildBoundChain({
       grant, coordinator, redeemer: req.redeemer, token,
       recipient: payTo, maxAmount: workAmount, intentHash: workIntent,
+      subAgent, // 3-hop A2A on the work payment when present
     }),
     buildBoundChain({
       grant, coordinator, redeemer: req.redeemer, token,

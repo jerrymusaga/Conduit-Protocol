@@ -173,6 +173,13 @@ const caveats = [
               via EIP-7702 in the same transaction.
             </Callout>
             <p className="text-sm text-conduit-muted">
+              <b className="text-white">Roadmap — cross-chain:</b> 1Shot’s relayer also
+              supports multichain settlement (<Mono>send7710TransactionMultichain</Mono>),
+              so an agent’s stablecoin gas budget can live on one chain while the work
+              executes on another, atomically. Conduit’s relay seam is built for it;
+              shipping post-hackathon.
+            </p>
+            <p className="text-sm text-conduit-muted">
               In practice this is one call — Conduit’s client picks the right shape from
               the facilitator’s advertised <Mono>relayBackend</Mono>. See{" "}
               <Mono>lib/payment.ts</Mono> in the demo for a reference implementation.
