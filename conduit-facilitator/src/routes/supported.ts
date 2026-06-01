@@ -11,8 +11,7 @@ import type { RelayBackend } from "../relayers/index.js";
  * of Conduit's X402ReceiptEnforcer surfaced so clients can construct
  * redelegations carrying it — plus the `redeemer` address buyers must name
  * in their delegation's Redeemer caveat (the account that submits the
- * redemption, which differs between the viem-direct and oneshot-pl
- * backends).
+ * redemption — for oneshot-pl this is 1Shot's relayer targetAddress).
  */
 export function supportedRouter(backend: RelayBackend): Router {
   const router = Router();

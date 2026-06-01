@@ -51,9 +51,7 @@ app.listen(config.port, () => {
   console.log(`  relay backend:    ${backend.name}`);
   console.log(`  receipt enforcer: ${config.receiptEnforcer}`);
   console.log(`  delegation mgr:   ${chainConfig.delegationManager}`);
-  if (backend.name === "oneshot-pl") {
-    console.log(
-      "  relaying through the 1Shot Permissionless Relayer (gas paid in stablecoin)"
-    );
-  }
+  console.log(
+    "  relaying through the 1Shot Permissionless Relayer (gas paid in stablecoin)"
+  );
 });

@@ -17,8 +17,8 @@ export interface Eip7702Authorization {
 
 /**
  * What every relay backend receives to submit a redemption. The arrays are
- * the exact arguments to DelegationManager.redeemDelegations (the viem-direct
- * path). The optional `oneshot` block carries the structured form the 1Shot
+ * the exact arguments to DelegationManager.redeemDelegations. The optional
+ * `oneshot` block carries the structured form the 1Shot
  * Permissionless Relayer needs (delegations + executions + the buyer-signed fee
  * delegation), which the dapp supplies when paying via the oneshot-pl backend.
  */
@@ -70,23 +70,22 @@ export type RelayStatus = "submitted" | "pending" | "confirmed" | "failed";
 export interface RelayResult {
   jobId: string;
   status: RelayStatus;
-  /** Present once known (synchronous for viem-direct; async for oneshot-pl). */
+  /** Present once known (async — after the 1Shot task is submitted/confirmed). */
   txHash?: Hex;
   error?: string;
 }
 
 /**
- * The seam that lets us swap testnet (viem-direct) and mainnet
- * (1Shot Permissionless Relayer) without touching routes. Selected at
- * startup from config.relayBackend.
+ * The relay seam. Conduit ships the 1Shot Permissionless Relayer backend;
+ * additional backends can be added without touching the routes.
  */
 export interface RelayBackend {
   readonly name: string;
   /**
    * The on-chain address that submits redemptions — i.e. msg.sender at the
    * DelegationManager. Buyers must name this in their delegation's Redeemer
-   * caveat. For viem-direct it's the relayer EOA; for oneshot-pl it's
-   * 1Shot's relayer (null until the mainnet backend is implemented).
+   * caveat. For oneshot-pl it's 1Shot's relayer targetAddress (warmed from
+   * relayer_getCapabilities; null until ready).
    */
   readonly redeemer: Address | null;
   /**

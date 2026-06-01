@@ -49,7 +49,7 @@ export function createJob(): Job {
 const settledWaiters = new Map<string, ((job: Job) => void)[]>();
 
 // A single hook fired once when any job reaches a terminal state, regardless of
-// relay path (viem-direct receipt, oneshot poll, or inbound 1Shot webhook).
+// relay path (oneshot poll or inbound 1Shot webhook).
 // Registered by index.ts to forward a clean status event to the integrator's
 // WEBHOOK_URL — so devs building on Conduit get push notifications without
 // touching the relayer/chain. Set via a registrar to avoid a jobs↔webhook cycle.

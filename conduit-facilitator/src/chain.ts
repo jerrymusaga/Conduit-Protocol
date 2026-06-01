@@ -1,13 +1,10 @@
 import {
   createPublicClient,
-  createWalletClient,
   http,
   type Address,
   type Chain,
   type PublicClient,
-  type WalletClient,
 } from "viem";
-import { privateKeyToAccount } from "viem/accounts";
 import { base, baseSepolia } from "viem/chains";
 import { config } from "./config.js";
 
@@ -58,16 +55,3 @@ export const publicClient: PublicClient = createPublicClient({
   chain: current.chain,
   transport: http(config.rpcUrl),
 });
-
-/**
- * Wallet client for the viem-direct relay backend. Only constructed when a
- * relayer key is present (i.e. the viem-direct backend is selected).
- */
-export const walletClient: WalletClient | undefined = config.viemDirect
-  .relayerPrivateKey
-  ? createWalletClient({
-      account: privateKeyToAccount(config.viemDirect.relayerPrivateKey),
-      chain: current.chain,
-      transport: http(config.rpcUrl),
-    })
-  : undefined;

@@ -24,8 +24,8 @@ import type { RelayBackend, RelayResult, RelaySubmitParams } from "./types.js";
  * delegation; the payment stays tight. Status is driven by webhooks (preferred)
  * with getStatus polling as the fallback.
  *
- * Selected at startup via RELAY_BACKEND=oneshot-pl. The relayer URL is chosen by
- * chain (.dev for Sepolia/Base Sepolia, .com for mainnets).
+ * The relayer URL is chosen by chain (.dev for Sepolia/Base Sepolia, .com for
+ * mainnets) unless ONESHOT_RELAYER_URL overrides it.
  */
 
 const ESTIMATED_GAS = 250_000n; // upper bound: fee transfer + bound work transfer

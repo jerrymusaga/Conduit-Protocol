@@ -7,9 +7,8 @@ import { config } from "./config.js";
  * caller) can use this as the source of truth for settlement status —
  * which the 1Shot prize criteria explicitly reward.
  *
- * On testnet (viem-direct) we call this ourselves after the tx lands so
- * the consumer sees identical behavior to the mainnet (oneshot-pl) flow,
- * where 1Shot's own webhooks drive it.
+ * Fired once per job from jobs.updateJob on the terminal transition, driven by
+ * 1Shot's signed webhooks (or the getStatus poll fallback).
  */
 export async function fireWebhook(job: Job): Promise<void> {
   if (!config.webhookUrl) return;
@@ -19,9 +18,9 @@ export async function fireWebhook(job: Job): Promise<void> {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         type: "conduit.settlement",
-        // A clean, relayer-agnostic settlement event. The dev gets this whether
-        // Conduit settled via viem-direct or by consuming 1Shot's signed webhooks
-        // — they never touch the relayer, the chain, or signature verification.
+        // A clean, relayer-agnostic settlement event. Conduit consumes 1Shot's
+        // signed webhooks and forwards this — the dev never touches the relayer,
+        // the chain, or signature verification.
         jobId: job.id,
         status: job.status, // "confirmed" | "failed"
         success: job.status === "confirmed",
