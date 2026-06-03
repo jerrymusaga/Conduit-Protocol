@@ -5,12 +5,81 @@
  */
 import {
   erc20Abi,
+  parseAbi,
   parseAbiItem,
   parseEventLogs,
   type Hex,
 } from "viem";
+import { decodeDelegations, hashDelegation } from "@metamask/smart-accounts-kit/utils";
 import { publicClient } from "./chain";
 import { config } from "./config";
+
+// --- budget state (the one-shot grant's live period allowance) -------------
+
+const PERIOD_ENFORCER_ABI = parseAbi([
+  "function getAvailableAmount(bytes32 delegationHash, address delegationManager, bytes terms) view returns (uint256 availableAmount, bool isNewPeriod, uint256 currentPeriod)",
+]);
+
+export interface BudgetState {
+  /** Cap per period (base units). */
+  periodAmount: bigint;
+  /** Tokens still spendable THIS period (the truth, read on-chain). */
+  available: bigint;
+  /** periodAmount − available, clamped ≥ 0. */
+  spent: bigint;
+  /** Seconds until the period rolls over and the cap refills. */
+  resetInSeconds: number;
+  /** No budget left this period. */
+  exhausted: boolean;
+}
+
+/**
+ * Read the TRUE on-chain spend for a one-shot budget grant from the
+ * ERC20PeriodTransferEnforcer (cumulative across runs, period-aware) — so the
+ * meter + "exhausted this period" guard are exact, not an optimistic client sum.
+ */
+export async function readBudgetState(grant: {
+  context: Hex;
+  delegationManager: `0x${string}`;
+  periodAmount: bigint;
+  periodDuration: number;
+}): Promise<BudgetState | null> {
+  const chain = decodeDelegations(grant.context) as Array<{
+    delegate: Hex; delegator: Hex; authority: Hex;
+    caveats: { enforcer: Hex; terms: Hex; args: Hex }[];
+    salt: Hex; signature: Hex;
+  }>;
+  const root = chain[chain.length - 1];
+  const caveat = root.caveats.find(
+    (c) => c.enforcer.toLowerCase() === config.erc20PeriodTransferEnforcer.toLowerCase()
+  );
+  if (!caveat) return null;
+
+  const delegationHash = hashDelegation(root);
+  const [available] = await publicClient.readContract({
+    address: config.erc20PeriodTransferEnforcer,
+    abi: PERIOD_ENFORCER_ABI,
+    functionName: "getAvailableAmount",
+    args: [delegationHash, grant.delegationManager, caveat.terms],
+  });
+
+  // startDate = last 32 bytes of the 116-byte packed terms (…token·amount·duration·startDate).
+  const startDate = Number(BigInt(`0x${caveat.terms.slice(-64)}`));
+  const now = Math.floor(Date.now() / 1000);
+  const period = grant.periodDuration;
+  const elapsed = now - startDate;
+  const idx = elapsed >= 0 ? Math.floor(elapsed / period) : 0;
+  const resetInSeconds = Math.max(0, startDate + (idx + 1) * period - now);
+
+  const spent = grant.periodAmount > available ? grant.periodAmount - available : 0n;
+  return {
+    periodAmount: grant.periodAmount,
+    available,
+    spent,
+    resetInSeconds,
+    exhausted: available <= 0n,
+  };
+}
 
 /** USDC balance (base units) for an address. */
 export async function readUsdcBalance(address: Hex): Promise<bigint> {

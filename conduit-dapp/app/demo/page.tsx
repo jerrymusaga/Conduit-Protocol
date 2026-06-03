@@ -33,6 +33,7 @@ import type { Eip7702Authorization } from "@/lib/payment";
 import { useFacilitatorEvents } from "@/lib/useFacilitatorEvents";
 import { config } from "@/lib/config";
 import { publicClient } from "@/lib/chain";
+import { readBudgetState, type BudgetState } from "@/lib/onchain";
 import { CoordinationCanvas } from "@/components/CoordinationCanvas";
 
 /* ===========================================================================
@@ -181,7 +182,8 @@ export default function DemoPage() {
   const [prompt, setPrompt] = useState("Launch my new product: a visual, a tagline, and competitor research.");
   const [mode, setMode] = useState<A2AMode>("a2a");
   const [busy, setBusy] = useState(false);
-  const [spent, setSpent] = useState(0); // micro-USDC settled
+  const [spent, setSpent] = useState(0); // micro-USDC settled (optimistic, during a run)
+  const [budgetState, setBudgetState] = useState<BudgetState | null>(null); // on-chain truth
   const [cards, setCards] = useState<FeedCard[]>([]);
   const [log, setLog] = useState<{ t: string; text: string }[]>([]);
   // The last settled payment (exact payload + path) — fuel for a REAL replay.
@@ -196,14 +198,29 @@ export default function DemoPage() {
   const rehydrated = useRef(false);
 
   const CAP = grantResult ? Number(grantResult.periodAmount) : 100_000;
-  // Clamp so the meter can never show >100% or negative remaining.
-  const spentClamped = Math.min(spent, CAP);
-  const pct = Math.min(100, (spent / CAP) * 100);
-  const remainingUsdc = ((CAP - spentClamped) / 1e6).toFixed(2);
+  // Meter prefers the on-chain truth when idle (cumulative, period-aware);
+  // during a run it follows the optimistic counter for smooth animation.
+  const effectiveSpent = !busy && budgetState ? Number(budgetState.spent) : spent;
+  const spentClamped = Math.min(effectiveSpent, CAP);
+  const pct = Math.min(100, (effectiveSpent / CAP) * 100);
+  const remainingAtoms = !busy && budgetState ? Number(budgetState.available) : Math.max(0, CAP - spent);
+  const remainingUsdc = (Math.max(0, Math.min(remainingAtoms, CAP)) / 1e6).toFixed(2);
   const secsLeft = grantResult ? Math.max(0, grantResult.expiry - nowSec) : null;
   const expiryText = secsLeft == null ? "—" : fmtCountdown(secsLeft);
   const displayAmount = grantResult ? grantResult.periodAmountUsdc : amountInput;
   const displayPeriod = grantResult ? grantResult.periodLabel : periodLabel(periodSeconds);
+
+  // Run guard: distinguish a PERMANENT end (expired/revoked → new grant needed)
+  // from a TEMPORARY period cap (budget refills next period → just wait).
+  const expired = grantResult ? nowSec >= grantResult.expiry : false;
+  const exhausted = !busy && !!budgetState && budgetState.exhausted;
+  const runBlock: string | null = !granted
+    ? null
+    : expired
+      ? "Permission expired — grant a new one"
+      : exhausted
+        ? `Budget exhausted this period — resets in ${fmtCountdown(budgetState!.resetInSeconds)}`
+        : null;
 
   const append = useCallback((text: string) => {
     setLog((l) => [...l, { t: now(), text }]);
@@ -232,6 +249,31 @@ export default function DemoPage() {
     const id = setInterval(() => setNowSec(Math.floor(Date.now() / 1000)), 1000);
     return () => clearInterval(id);
   }, [grantResult]);
+
+  // Read the TRUE on-chain budget (cumulative, period-aware) so the meter +
+  // "exhausted this period" guard are exact. Refresh on grant + periodically;
+  // run() also refreshes right after a campaign settles.
+  const refreshBudget = useCallback(async () => {
+    if (!grantResult) {
+      setBudgetState(null);
+      return;
+    }
+    try {
+      setBudgetState(await readBudgetState(grantResult));
+    } catch {
+      /* transient RPC error — keep the last known state */
+    }
+  }, [grantResult]);
+
+  useEffect(() => {
+    if (!granted || !grantResult) {
+      setBudgetState(null);
+      return;
+    }
+    void refreshBudget();
+    const id = setInterval(() => void refreshBudget(), 8000);
+    return () => clearInterval(id);
+  }, [granted, grantResult, refreshBudget]);
 
   // Keep the persisted session in sync as spend accrues / the 7702 auth is
   // consumed, so a mid-run refresh restores accurate budget + auth state.
@@ -465,6 +507,7 @@ export default function DemoPage() {
       append(`Run failed · ${errMsg(e)}`);
     } finally {
       setBusy(false);
+      void refreshBudget(); // reconcile the meter to on-chain truth post-run
     }
   };
 
@@ -618,11 +661,21 @@ export default function DemoPage() {
             </div>
             <button
               onClick={run}
-              disabled={!granted || busy}
+              disabled={!granted || busy || !!runBlock}
               className="btn-primary mt-4 w-full justify-center text-sm disabled:opacity-40"
             >
               {busy ? "Running…" : "Run"}
             </button>
+            {runBlock && (
+              <p className="mt-2 text-center text-[11px] leading-relaxed text-conduit-magenta">
+                {runBlock}
+                {expired && (
+                  <span className="mt-1 block text-conduit-muted">
+                    Grant a new permission to continue.
+                  </span>
+                )}
+              </p>
+            )}
 
             {/* The compromised-agent beat — real on-chain rejections. */}
             <div className="mt-5 border-t border-conduit-border/60 pt-4">
