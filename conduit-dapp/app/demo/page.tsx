@@ -34,6 +34,7 @@ import type { Eip7702Authorization } from "@/lib/payment";
 import { useFacilitatorEvents } from "@/lib/useFacilitatorEvents";
 import { config } from "@/lib/config";
 import { publicClient } from "@/lib/chain";
+import { Erc7710Inspector, type InspectorBinding } from "@/components/Erc7710Inspector";
 
 /* ===========================================================================
    Conduit — facilitator operations console.
@@ -496,6 +497,12 @@ export default function DemoPage() {
             </span>
           </Link>
           <div className="flex items-center gap-3">
+            <Link
+              href="/subscription"
+              className="text-xs text-conduit-muted underline-offset-4 hover:text-white hover:underline"
+            >
+              subscriptions →
+            </Link>
             {connected && (
               <span className="mono flex items-center gap-1.5 text-[11px] text-conduit-muted">
                 <span
@@ -711,12 +718,26 @@ export default function DemoPage() {
               ) : (
                 <>
                   <p className="text-[12px] leading-relaxed text-conduit-muted">
-                    Each card is one agent <span className="text-white">paying another agent</span> for a
-                    service. Watch it flow
-                    <span className="text-conduit-cyan"> 402 request → permission → settle → delivered</span>,
-                    all authorized + settled by Conduit against your single budget.
+                    Each card is one agent <span className="text-white">paying another agent</span> — an{" "}
+                    <span className="text-white">ERC-7710 delegation</span> redeemed through{" "}
+                    <span className="text-white">MetaMask&apos;s DelegationManager</span>, bounded by the{" "}
+                    <span className="text-conduit-cyan">X402ReceiptEnforcer</span>. Expand a card to inspect
+                    the redemption + on-chain proof.
                   </p>
-                  {cards.map((c) => <PaymentCard key={c.correlationId} card={c} />)}
+                  {cards.map((c) => (
+                    <PaymentCard
+                      key={c.correlationId}
+                      card={c}
+                      binding={{
+                        enforcerName: c.agent === "rogue" ? "X402ReceiptEnforcer (violated)" : "X402ReceiptEnforcer",
+                        enforcerAddr: config.receiptEnforcer,
+                        boundSummary:
+                          c.priceUsdc === "—"
+                            ? "one exact request · recipient + amount + intent"
+                            : `${c.priceUsdc} USDC → bound recipient · one-shot (intent-locked)`,
+                      }}
+                    />
+                  ))}
                 </>
               )}
             </div>
@@ -790,7 +811,8 @@ const TONE: Record<"muted" | "work" | "ok" | "bad", string> = {
   bad: "text-conduit-magenta",
 };
 
-function PaymentCard({ card }: { card: FeedCard }) {
+function PaymentCard({ card, binding }: { card: FeedCard; binding: InspectorBinding }) {
+  const [open, setOpen] = useState(false);
   const denied = card.stage === "denied" || card.stage === "failed";
   const done = card.stage === "settled";
   const working = card.stage === "requested" || card.stage === "settling";
@@ -834,10 +856,10 @@ function PaymentCard({ card }: { card: FeedCard }) {
         <Step
           on={["allowed", "settling", "settled"].includes(card.stage)}
           bad={denied}
-          label={denied ? "permission ✗" : "permission ✓"}
+          label={denied ? "7710 caveat ✗" : "7710 caveat ✓"}
         />
         <Arrow />
-        <Step on={["settling", "settled"].includes(card.stage)} label="settle" />
+        <Step on={["settling", "settled"].includes(card.stage)} label="redeem" />
         <Arrow />
         <Step on={done} label="delivered" />
       </div>
@@ -850,16 +872,14 @@ function PaymentCard({ card }: { card: FeedCard }) {
           revert reason: {card.reason}
         </p>
       )}
-      {card.txHash && card.txHash.startsWith("0x") && (
-        <a
-          href={`${config.explorerUrl}/tx/${card.txHash}`}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="mono mt-2 inline-flex items-center gap-1 text-[11px] text-conduit-cyan underline-offset-4 hover:underline"
-        >
-          view settlement tx {shorten(card.txHash)} ↗
-        </a>
-      )}
+
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="mono mt-2 text-[11px] text-conduit-muted underline-offset-4 hover:text-conduit-cyan"
+      >
+        {open ? "▾ hide ERC-7710 details" : "▸ inspect ERC-7710"}
+      </button>
+      {open && <Erc7710Inspector binding={binding} txHash={card.txHash} />}
     </div>
   );
 }
