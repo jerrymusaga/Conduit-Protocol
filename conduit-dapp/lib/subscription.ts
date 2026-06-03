@@ -42,7 +42,7 @@ import { encodeExecutionCalldata } from "@metamask/smart-accounts-kit/utils";
 import { config } from "./config";
 import { publicClient } from "./chain";
 import type { Coordinator, GrantResult } from "./grant";
-import { grantBudget } from "./grant";
+import { grantBudget, revokeRootDelegation } from "./grant";
 import {
   buildBoundChain,
   FEE_CAP_ATOMS,
@@ -184,73 +184,23 @@ export async function grantSubscription(params: {
   };
 }
 
-/** DelegationManager.disableDelegation(Delegation) — onlyDeleGator(delegator). */
-const DELEGATION_MANAGER_ABI = [
-  {
-    type: "function",
-    name: "disableDelegation",
-    stateMutability: "nonpayable",
-    inputs: [
-      {
-        name: "delegation",
-        type: "tuple",
-        components: [
-          { name: "delegate", type: "address" },
-          { name: "delegator", type: "address" },
-          { name: "authority", type: "bytes32" },
-          {
-            name: "caveats",
-            type: "tuple[]",
-            components: [
-              { name: "enforcer", type: "address" },
-              { name: "terms", type: "bytes" },
-              { name: "args", type: "bytes" },
-            ],
-          },
-          { name: "salt", type: "uint256" },
-          { name: "signature", type: "bytes" },
-        ],
-      },
-    ],
-    outputs: [],
-  },
-] as const;
-
 /**
- * Cancel the subscription — `disableDelegation` on the subscription root. The
- * DelegationManager gates this on `onlyDeleGator(delegator)`, so the USER's
- * account sends the tx directly (it's their revoke, not the agent's). Once
- * disabled, every future charge against this root reverts. NB: this is a direct
- * on-chain tx from the user's wallet → it needs a little native gas (ETH).
+ * Cancel the subscription — `disableDelegation` on the subscription root (the
+ * single root in its context). Shares the revoke path with the one-shot budget
+ * (see [[revokeRootDelegation]]): the USER's account sends it directly, since
+ * the DelegationManager gates it `onlyDeleGator(delegator)`. Once disabled,
+ * every future charge against this root reverts. NB: direct tx → needs gas (ETH).
  */
 export async function cancelSubscription(params: {
   walletClient: WalletClient;
   userAddress: Hex;
   grant: SubscriptionGrant;
 }): Promise<Hex> {
-  const { walletClient, userAddress, grant } = params;
-  const root = decodeDelegations(grant.context)[0] as Delegation;
-
-  const delegationArg = {
-    delegate: root.delegate,
-    delegator: root.delegator,
-    authority: root.authority,
-    caveats: root.caveats.map((c) => ({
-      enforcer: c.enforcer,
-      terms: c.terms,
-      args: c.args,
-    })),
-    salt: BigInt(root.salt),
-    signature: root.signature,
-  };
-
-  return walletClient.writeContract({
-    address: grant.delegationManager,
-    abi: DELEGATION_MANAGER_ABI,
-    functionName: "disableDelegation",
-    args: [delegationArg],
-    account: userAddress,
-    chain: walletClient.chain,
+  return revokeRootDelegation({
+    walletClient: params.walletClient,
+    userAddress: params.userAddress,
+    context: params.grant.context,
+    delegationManager: params.grant.delegationManager,
   });
 }
 

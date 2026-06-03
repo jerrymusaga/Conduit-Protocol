@@ -22,7 +22,7 @@
  * into the first redeem by the facilitator's relayer.
  */
 import { signDelegation } from "@metamask/smart-accounts-kit/actions";
-import { encodeDelegations } from "@metamask/smart-accounts-kit/utils";
+import { encodeDelegations, decodeDelegations } from "@metamask/smart-accounts-kit/utils";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import {
   encodePacked,
@@ -118,6 +118,17 @@ export async function grantBudget(params: {
         terms: rootTerms,
         args: "0x" as Hex,
       },
+      // TRUE expiry: ERC20PeriodTransferEnforcer is a ROLLING cap that resets
+      // every period forever, so on its own the grant never expires on-chain
+      // (the UI countdown would be cosmetic). A TimestampEnforcer with
+      // before=expiry makes the budget genuinely die after its window —
+      // bounding the blast radius, not just the UI. terms = packed(uint128
+      // after=0, uint128 before=expiry).
+      {
+        enforcer: config.timestampEnforcer,
+        terms: encodePacked(["uint128", "uint128"], [0n, BigInt(expiry)]),
+        args: "0x" as Hex,
+      },
     ],
     salt,
   };
@@ -144,4 +155,77 @@ export async function grantBudget(params: {
     periodDuration,
     periodLabel: periodLabel(periodDuration),
   };
+}
+
+/** DelegationManager.disableDelegation(Delegation) — onlyDeleGator(delegator). */
+export const DELEGATION_MANAGER_ABI = [
+  {
+    type: "function",
+    name: "disableDelegation",
+    stateMutability: "nonpayable",
+    inputs: [
+      {
+        name: "delegation",
+        type: "tuple",
+        components: [
+          { name: "delegate", type: "address" },
+          { name: "delegator", type: "address" },
+          { name: "authority", type: "bytes32" },
+          {
+            name: "caveats",
+            type: "tuple[]",
+            components: [
+              { name: "enforcer", type: "address" },
+              { name: "terms", type: "bytes" },
+              { name: "args", type: "bytes" },
+            ],
+          },
+          { name: "salt", type: "uint256" },
+          { name: "signature", type: "bytes" },
+        ],
+      },
+    ],
+    outputs: [],
+  },
+] as const;
+
+/**
+ * Revoke a root grant — `disableDelegation` on the encoded chain's root. The
+ * DelegationManager gates this `onlyDeleGator(delegator)`, so the USER's account
+ * sends the tx directly (it's their kill switch, not the agent's). Disabling the
+ * root CASCADES: every child redelegation off it dies at once. NB: this is a
+ * direct on-chain tx → it needs a little native gas (ETH).
+ */
+export async function revokeRootDelegation(params: {
+  walletClient: WalletClient;
+  userAddress: Hex;
+  /** Encoded delegation chain whose root (last element) should be disabled. */
+  context: Hex;
+  delegationManager: Hex;
+}): Promise<Hex> {
+  const chain = decodeDelegations(params.context) as Array<{
+    delegate: Hex;
+    delegator: Hex;
+    authority: Hex;
+    caveats: { enforcer: Hex; terms: Hex; args: Hex }[];
+    salt: Hex | bigint;
+    signature: Hex;
+  }>;
+  const root = chain[chain.length - 1];
+  const delegationArg = {
+    delegate: root.delegate,
+    delegator: root.delegator,
+    authority: root.authority,
+    caveats: root.caveats.map((c) => ({ enforcer: c.enforcer, terms: c.terms, args: c.args })),
+    salt: BigInt(root.salt),
+    signature: root.signature,
+  };
+  return params.walletClient.writeContract({
+    address: params.delegationManager,
+    abi: DELEGATION_MANAGER_ABI,
+    functionName: "disableDelegation",
+    args: [delegationArg],
+    account: params.userAddress,
+    chain: params.walletClient.chain,
+  });
 }

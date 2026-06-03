@@ -19,6 +19,7 @@ import {
   periodLabel,
   createCoordinatorAccount,
   grantBudget,
+  revokeRootDelegation,
   type Coordinator,
   type GrantResult,
 } from "@/lib/grant";
@@ -305,6 +306,35 @@ export default function DemoPage() {
       setLog([]);
       rehydrated.current = false;
       clearSession();
+    }
+  };
+
+  // Cascading revoke (kill-root): disableDelegation on the budget root → every
+  // task agent under it dies at once. A direct on-chain tx from the user's own
+  // account (only the delegator can revoke) → needs a little ETH for gas.
+  const revoke = async () => {
+    if (busy || !granted || !grantResult || !walletClient || !address) return;
+    setBusy(true);
+    append("Revoking the budget on-chain · disableDelegation cascades to every task agent (needs a little ETH)…");
+    try {
+      const tx = await revokeRootDelegation({
+        walletClient,
+        userAddress: address,
+        context: grantResult.context,
+        delegationManager: grantResult.delegationManager,
+      });
+      append(`Revoke tx · ${shorten(tx)} — awaiting confirmation…`);
+      await publicClient.waitForTransactionReceipt({ hash: tx });
+      append("Budget revoked ✓ · every task agent under this grant is now dead on-chain");
+      coordinatorRef.current = null;
+      setGranted(false);
+      setGrantResult(null);
+      setAuthorization(null);
+      clearSession();
+    } catch (e) {
+      append(`Revoke failed · ${errMsg(e)}`);
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -685,6 +715,24 @@ export default function DemoPage() {
                 </span>
               </div>
             </div>
+
+            {/* Cascading revoke — the kill switch. Disables the root → all task
+                agents under it die at once (the "cascading revoke" beat). */}
+            {granted && (
+              <div className="mt-5 border-t border-conduit-border/60 pt-4">
+                <button
+                  onClick={revoke}
+                  disabled={busy}
+                  className="w-full rounded-lg border border-conduit-magenta/40 px-3 py-2 text-xs font-medium text-conduit-magenta transition-colors hover:bg-conduit-magenta/10 disabled:opacity-40"
+                >
+                  {busy ? "Working…" : "Revoke budget — kill all agents (on-chain)"}
+                </button>
+                <p className="mt-1.5 text-[11px] leading-relaxed text-conduit-muted/70">
+                  Disables the root delegation; every task agent under it dies at once. Your
+                  own kill switch — direct on-chain tx (needs a little ETH).
+                </p>
+              </div>
+            )}
           </section>
         </div>
 
