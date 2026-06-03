@@ -98,8 +98,12 @@ export async function grantBudget(params: {
   if (periodAmount <= 0n) throw new Error("Budget amount must be greater than 0");
 
   const startTime = Math.floor(Date.now() / 1000);
-  // Expiry is independent of the spend window: e.g. "≤$5/hour, valid for a week".
-  const expiry = startTime + (params.expirySeconds ?? periodDuration);
+  // Expiry is OPT-IN: only when the caller asks for one (e.g. /demo's "expires
+  // after"). Callers that want a non-expiring bounded budget — like the
+  // subscription's gas-fee root — omit expirySeconds and get no TimestampEnforcer
+  // (otherwise it would inherit the short periodDuration and expire mid-use).
+  const hasExpiry = params.expirySeconds !== undefined && params.expirySeconds > 0;
+  const expiry = hasExpiry ? startTime + params.expirySeconds! : 0;
 
   // ERC20PeriodTransferEnforcer terms (matches contracts/test fork-test layout):
   //   token(20) ++ periodAmount(uint256) ++ periodDuration(uint256) ++ startTime(uint256)
@@ -111,28 +115,26 @@ export async function grantBudget(params: {
   // Fresh random salt so the delegation hash is unique per grant.
   const salt = toHex(crypto.getRandomValues(new Uint8Array(32)));
 
+  const caveats: { enforcer: Hex; terms: Hex; args: Hex }[] = [
+    { enforcer: config.erc20PeriodTransferEnforcer, terms: rootTerms, args: "0x" },
+  ];
+  // TRUE expiry: ERC20PeriodTransferEnforcer is a ROLLING cap that resets every
+  // period forever, so on its own the grant never expires on-chain. When the
+  // caller sets an expiry, add a TimestampEnforcer (after=0, before=expiry) so
+  // the budget genuinely dies after its window.
+  if (hasExpiry) {
+    caveats.push({
+      enforcer: config.timestampEnforcer,
+      terms: encodePacked(["uint128", "uint128"], [0n, BigInt(expiry)]),
+      args: "0x",
+    });
+  }
+
   const unsignedRoot = {
     delegate: params.coordinator.address,
     delegator: params.userAddress,
     authority: ROOT_AUTHORITY,
-    caveats: [
-      {
-        enforcer: config.erc20PeriodTransferEnforcer,
-        terms: rootTerms,
-        args: "0x" as Hex,
-      },
-      // TRUE expiry: ERC20PeriodTransferEnforcer is a ROLLING cap that resets
-      // every period forever, so on its own the grant never expires on-chain
-      // (the UI countdown would be cosmetic). A TimestampEnforcer with
-      // before=expiry makes the budget genuinely die after its window —
-      // bounding the blast radius, not just the UI. terms = packed(uint128
-      // after=0, uint128 before=expiry).
-      {
-        enforcer: config.timestampEnforcer,
-        terms: encodePacked(["uint128", "uint128"], [0n, BigInt(expiry)]),
-        args: "0x" as Hex,
-      },
-    ],
+    caveats,
     salt,
   };
 

@@ -149,11 +149,22 @@ export default function SubscriptionPage() {
     return () => clearInterval(id);
   }, []);
 
-  // Refresh on-chain period state periodically while subscribed.
+  // Refresh on-chain period state periodically while subscribed. Only commit a
+  // new state object when the meaningful on-chain fields actually change, so the
+  // 10s poll doesn't re-render (and flicker) the panel every tick — the 1s
+  // countdown is derived from nowSec against the stable nextChargeAt instead.
   const refreshState = useCallback(async () => {
     if (!grant) return;
     try {
-      setSubState(await readSubscriptionState(grant));
+      const next = await readSubscriptionState(grant);
+      setSubState((prev) =>
+        prev &&
+        prev.startDate === next.startDate &&
+        prev.lastChargedPeriod === next.lastChargedPeriod &&
+        prev.active === next.active
+          ? prev
+          : next
+      );
     } catch {
       /* transient RPC error — keep the last known state */
     }
