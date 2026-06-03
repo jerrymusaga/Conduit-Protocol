@@ -21,6 +21,8 @@ interface ChainDefaults {
   erc20PeriodTransferEnforcer: `0x${string}`;
   /** IdEnforcer — used on the child redelegation for one-shot replay protection. */
   idEnforcer: `0x${string}`;
+  /** TimestampEnforcer — bounds a delegation's validity window (subscription expiry). */
+  timestampEnforcer: `0x${string}`;
   /** EIP7702StatelessDeleGatorImpl — what we designate the user EOA to. */
   eip7702Impl: `0x${string}`;
   /** Block explorer base URL (no trailing slash) for tx/address links. */
@@ -35,6 +37,7 @@ const CHAIN_DEFAULTS: Record<number, ChainDefaults> = {
     delegationManager: "0xdb9B1e94B5b69Df7e401DDbedE43491141047dB3",
     erc20PeriodTransferEnforcer: "0x474e3Ae7E169e940607cC624Da8A15Eb120139aB",
     idEnforcer: "0xC8B5D93463c893401094cc70e66A206fb5987997",
+    timestampEnforcer: "0x1046bb45C8d673d4ea75321280DB34899413c069",
     eip7702Impl: "0x63c0c19a282a1B52b07dD5a65b58948A07DAE32B",
     explorerUrl: "https://sepolia.basescan.org",
   },
@@ -45,6 +48,7 @@ const CHAIN_DEFAULTS: Record<number, ChainDefaults> = {
     delegationManager: "0xdb9B1e94B5b69Df7e401DDbedE43491141047dB3",
     erc20PeriodTransferEnforcer: "0x474e3Ae7E169e940607cC624Da8A15Eb120139aB",
     idEnforcer: "0xC8B5D93463c893401094cc70e66A206fb5987997",
+    timestampEnforcer: "0x1046bb45C8d673d4ea75321280DB34899413c069",
     eip7702Impl: "0x63c0c19a282a1B52b07dD5a65b58948A07DAE32B",
     explorerUrl: "https://basescan.org",
   },
@@ -72,6 +76,7 @@ export const config = {
   delegationManager: defaults.delegationManager,
   erc20PeriodTransferEnforcer: defaults.erc20PeriodTransferEnforcer,
   idEnforcer: defaults.idEnforcer,
+  timestampEnforcer: defaults.timestampEnforcer,
   eip7702Impl: defaults.eip7702Impl,
   // Hard fallback so a bad/missing chainId can never produce an "undefined/tx" link.
   explorerUrl: defaults.explorerUrl ?? "https://sepolia.basescan.org",

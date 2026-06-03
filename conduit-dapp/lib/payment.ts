@@ -49,8 +49,8 @@ export interface Eip7702Authorization {
 
 // Structural mirrors of the toolkit's Delegation/Caveat (the package doesn't
 // re-export them on a public subpath). Same shape → assignable to the helpers.
-type Caveat = { enforcer: Hex; terms: Hex; args: Hex };
-type Delegation = {
+export type Caveat = { enforcer: Hex; terms: Hex; args: Hex };
+export type Delegation = {
   delegate: Hex;
   delegator: Hex;
   authority: Hex;
@@ -252,12 +252,12 @@ export async function buildPayment(params: {
 /** Ceiling the bounded fee delegation allows 1Shot to charge (USDC atoms).
  *  The real fee comes from a live quote ≤ this; binding a cap keeps it
  *  Conduit-style (can only ever pay feeCollector, never above the cap). */
-const FEE_CAP_ATOMS = 50_000n; // 0.05 USDC
+export const FEE_CAP_ATOMS = 50_000n; // 0.05 USDC
 
 /** Build + sign ONE intent-bound redelegation CHAIN [leaf,…,root], structured
  *  (not hex-encoded) for 1Shot. The leaf is bound by X402ReceiptEnforcer to
  *  (token, recipient, maxAmount, intentHash) + IdEnforcer(one-shot). */
-async function buildBoundChain(params: {
+export async function buildBoundChain(params: {
   grant: GrantResult;
   coordinator: Coordinator;
   redeemer: Hex;

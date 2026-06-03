@@ -12,11 +12,23 @@ export interface CatalogService {
   id: string;
   label: string;
   description: string;
-  kind: "image" | "text" | "data";
+  kind: "image" | "text" | "data" | "subscription";
   priceUsdc: string;
   priceBaseUnits: string;
   /** Relative resource path, e.g. "/services/venice-image". */
   resource: string;
+}
+
+/** Subscription terms a recurring service advertises in its 402 envelope. */
+export interface SubscriptionRequirements {
+  /** X402SubscriptionEnforcer address the buyer binds the root grant to. */
+  enforcer: `0x${string}`;
+  /** Off-chain subscription id (bytes32), packed into the enforcer terms. */
+  subscriptionId: `0x${string}`;
+  /** Billing period length in seconds (the cadence). */
+  periodSeconds: number;
+  /** Exact charge per period, in token base units (string). */
+  amountPerPeriod: string;
 }
 
 /** Fetch the seller's service catalog. */
@@ -42,6 +54,10 @@ export interface PaymentRequirements {
   redeemer: `0x${string}` | null;
   /** Catalog service id this 402 is for (when paying a catalog service). */
   service?: string;
+  /** "subscription" | "one-shot" — which enforcer binds this payment. */
+  paymentKind?: "subscription" | "one-shot";
+  /** Present when paymentKind === "subscription". */
+  subscription?: SubscriptionRequirements | null;
   /** Active relay backend ("viem-direct" | "oneshot-pl"). */
   relayBackend?: string;
   /** oneshot-pl only: where the buyer pays the relayer's gas fee. */
@@ -73,6 +89,8 @@ export async function fetch402(path: string = RESOURCE_PATH): Promise<PaymentReq
     receiptEnforcer: extra.receiptEnforcer,
     redeemer: extra.redeemer ?? null,
     service: extra.service,
+    paymentKind: extra.paymentKind ?? "one-shot",
+    subscription: extra.subscription ?? null,
     relayBackend: extra.relayBackend,
     feeCollector: extra.feeCollector ?? null,
   };
