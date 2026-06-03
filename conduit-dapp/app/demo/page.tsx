@@ -3,7 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useAccount, useWalletClient } from "wagmi";
+import { useAccount, useWalletClient, useSwitchChain } from "wagmi";
 import {
   usePrivy,
   useLogin,
@@ -153,9 +153,15 @@ export default function DemoPage() {
   const { signAuthorization } = useSign7702Authorization();
   const { wallets } = useWallets();
   const { setActiveWallet } = useSetActiveWallet();
-  const { address, isConnected } = useAccount();
+  const { address, isConnected, chainId: activeChainId } = useAccount();
+  const { switchChain } = useSwitchChain();
   const { data: walletClient } = useWalletClient({ chainId: config.chainId });
   const connected = ready && authenticated && isConnected && !!address;
+  // External wallets (MetaMask) connect on whatever network the user has
+  // selected; the embedded wallet is always on the app chain. If the active
+  // wallet is on the wrong chain, useWalletClient({chainId}) is null → "waiting
+  // to bind". Detect + prompt a switch to Base Sepolia.
+  const wrongChain = connected && !!activeChainId && activeChainId !== config.chainId;
 
   // Bind the embedded Ethereum wallet to wagmi after login.
   useEffect(() => {
@@ -167,6 +173,17 @@ export default function DemoPage() {
     if (address && address.toLowerCase() === target.address.toLowerCase()) return;
     void setActiveWallet(target);
   }, [authenticated, wallets, address, setActiveWallet]);
+
+  // Keep the active wallet on Base Sepolia (external wallets may be elsewhere).
+  useEffect(() => {
+    if (wrongChain) {
+      try {
+        switchChain?.({ chainId: config.chainId });
+      } catch {
+        /* user can switch manually; the grant guard surfaces the hint */
+      }
+    }
+  }, [wrongChain, switchChain]);
 
   // Grant / permission state.
   const [granted, setGranted] = useState(false);
@@ -388,8 +405,17 @@ export default function DemoPage() {
   // Grant: coordinator EOA + 7702 auth (embedded wallet) + root delegation.
   const grant = async () => {
     if (busy) return;
+    if (wrongChain) {
+      append("Wrong network — switch your wallet to Base Sepolia (approve the switch in MetaMask), then Grant.");
+      try {
+        await switchChain?.({ chainId: config.chainId });
+      } catch {
+        /* user declined; they can switch manually */
+      }
+      return;
+    }
     if (!walletClient || !address) {
-      append(`Waiting for wallet to bind… (wallets=${wallets.length})`);
+      append("Waiting for wallet to bind… if it persists, switch your wallet to Base Sepolia and reconnect.");
       return;
     }
     setBusy(true);
