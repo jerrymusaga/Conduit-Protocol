@@ -3,7 +3,6 @@
 import Image from "next/image";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { formatUnits } from "viem";
 import { useAccount, useWalletClient } from "wagmi";
 import {
   usePrivy,
@@ -30,12 +29,11 @@ import {
   type PlannedItem,
   type RogueKind,
 } from "@/lib/coordinator";
-import type { Hex } from "viem";
 import type { Eip7702Authorization } from "@/lib/payment";
 import { useFacilitatorEvents } from "@/lib/useFacilitatorEvents";
 import { config } from "@/lib/config";
 import { publicClient } from "@/lib/chain";
-import { Erc7710Inspector, type InspectorBinding } from "@/components/Erc7710Inspector";
+import { CoordinationCanvas } from "@/components/CoordinationCanvas";
 
 /* ===========================================================================
    Conduit — facilitator operations console.
@@ -58,17 +56,11 @@ interface FeedCard {
   stage: CardStage;
   reason?: string | null;
   txHash?: string | null;
+  /** Specialist sub-agent address (A2A mode) — the redelegate the coordinator hired. */
+  agentAddress?: string;
+  /** True when this payment runs as a 3-hop A2A (coordinator → specialist → relayer). */
+  a2a?: boolean;
 }
-
-const STAGE_LABEL: Record<CardStage, string> = {
-  queued: "queued",
-  requested: "x402 request",
-  allowed: "permission ✓",
-  denied: "DENIED",
-  settling: "settling…",
-  settled: "settled ✓",
-  failed: "failed",
-};
 
 // --- session persistence (survives a page refresh) -------------------------
 // The grant + ephemeral coordinator key live only in React state, so a refresh
@@ -168,6 +160,7 @@ export default function DemoPage() {
 
   // Grant / permission state.
   const [granted, setGranted] = useState(false);
+  const [revoked, setRevoked] = useState(false);
   const [grantResult, setGrantResult] = useState<GrantResult | null>(null);
   const [amountInput, setAmountInput] = useState<string>(BUDGET.periodAmountUsdc);
   const [periodSeconds, setPeriodSeconds] = useState<number>(BUDGET.periodDuration);
@@ -299,6 +292,7 @@ export default function DemoPage() {
     } finally {
       coordinatorRef.current = null;
       setGranted(false);
+      setRevoked(false);
       setGrantResult(null);
       setAuthorization(null);
       setSpent(0);
@@ -326,6 +320,7 @@ export default function DemoPage() {
       append(`Revoke tx · ${shorten(tx)} — awaiting confirmation…`);
       await publicClient.waitForTransactionReceipt({ hash: tx });
       append("Budget revoked ✓ · every task agent under this grant is now dead on-chain");
+      setRevoked(true); // keep the tree on screen, dimmed — the cascading-death beat
       coordinatorRef.current = null;
       setGranted(false);
       setGrantResult(null);
@@ -388,6 +383,8 @@ export default function DemoPage() {
       setGrantResult(result);
       setAuthorization(signedAuth);
       setGranted(true);
+      setRevoked(false);
+      setCards([]);
       // The session-sync effect persists grant+coordinator+auth+spent so a
       // refresh restores the active session (survives reload).
       append("Permission granted · the coordinator holds the root policy");
@@ -404,6 +401,7 @@ export default function DemoPage() {
     if (busy || !granted || !grantResult || !coordinatorRef.current) return;
     setBusy(true);
     setCards([]);
+    setRevoked(false);
     try {
       await runCampaign({
         prompt,
@@ -426,6 +424,8 @@ export default function DemoPage() {
               }))
             );
           },
+          onTask: (task, agentAddress) =>
+            setCardStage(task.taskId, { agentAddress, a2a: true }),
           onPayStart: (cid) => setCardStage(cid, { stage: "requested" }),
           onResult: (r) => {
             if (r.ok) {
@@ -741,53 +741,27 @@ export default function DemoPage() {
           <section className="panel p-0">
             <div className="flex items-center justify-between border-b border-conduit-border/60 px-5 py-3">
               <h2 className="text-sm font-semibold uppercase tracking-wide text-conduit-muted">
-                Live payment feed
+                Agent coordination
               </h2>
               <span className="mono text-[11px] text-conduit-muted">
-                via Conduit facilitator · erc7710
+                one permission · many agents · every payment gated by Conduit
               </span>
             </div>
-            <div className="min-h-[460px] space-y-3 px-5 py-5">
-              {cards.length === 0 ? (
-                <div className="pt-12 text-center">
-                  <p className="mono text-sm text-conduit-muted">
-                    {connected
-                      ? granted
-                        ? "Enter a prompt and hit Run."
-                        : "Grant a permission to begin."
-                      : "Sign in to begin."}
-                  </p>
-                  <p className="mx-auto mt-3 max-w-md text-[12px] leading-relaxed text-conduit-muted/70">
-                    Each agent that needs a paid service hits a paywall, asks Conduit
-                    to authorize the payment against your one permission, and Conduit
-                    settles it on-chain — or blocks it if it breaks the rules.
-                  </p>
-                </div>
-              ) : (
-                <>
-                  <p className="text-[12px] leading-relaxed text-conduit-muted">
-                    Each card is one agent <span className="text-white">paying another agent</span> — an{" "}
-                    <span className="text-white">ERC-7710 delegation</span> redeemed through{" "}
-                    <span className="text-white">MetaMask&apos;s DelegationManager</span>, bounded by the{" "}
-                    <span className="text-conduit-cyan">X402ReceiptEnforcer</span>. Expand a card to inspect
-                    the redemption + on-chain proof.
-                  </p>
-                  {cards.map((c) => (
-                    <PaymentCard
-                      key={c.correlationId}
-                      card={c}
-                      binding={{
-                        enforcerName: c.agent === "rogue" ? "X402ReceiptEnforcer (violated)" : "X402ReceiptEnforcer",
-                        enforcerAddr: config.receiptEnforcer,
-                        boundSummary:
-                          c.priceUsdc === "—"
-                            ? "one exact request · recipient + amount + intent"
-                            : `${c.priceUsdc} USDC → bound recipient · one-shot (intent-locked)`,
-                      }}
-                    />
-                  ))}
-                </>
-              )}
+            <div className="px-5 py-5">
+              <CoordinationCanvas
+                userAddress={address}
+                coordinatorAddress={coordinatorRef.current?.address}
+                cards={cards}
+                mode={mode}
+                budget={{
+                  capUsdc: displayAmount,
+                  spentUsdc: (spent / 1e6).toFixed(2),
+                  remainingUsdc: ((CAP - spent) / 1e6).toFixed(2),
+                  pct,
+                  expiryText,
+                }}
+                revoked={revoked}
+              />
             </div>
           </section>
         </div>
@@ -820,128 +794,6 @@ export default function DemoPage() {
       </div>
     </main>
   );
-}
-
-// --- payment card ----------------------------------------------------------
-
-// Plain-English narration of what Conduit is doing at each stage.
-function caption(card: FeedCard): { text: string; tone: "muted" | "work" | "ok" | "bad" } {
-  const price = `${card.priceUsdc} USDC`;
-  const isRogue = card.agent === "rogue";
-  if (isRogue && (card.stage === "requested" || card.stage === "settling")) {
-    return { text: "Hijacked agent submitting a malicious payment to Conduit…", tone: "work" };
-  }
-  if (isRogue && card.stage === "denied") {
-    return { text: "Conduit BLOCKED it on-chain — the caveat rejected it. No money moved. ✓", tone: "bad" };
-  }
-  switch (card.stage) {
-    case "queued":
-      return { text: `${card.agent} agent queued — needs to pay ${price} for this`, tone: "muted" };
-    case "requested":
-      return { text: `Hit a paywall (HTTP 402). Asking Conduit to authorize ${price}…`, tone: "work" };
-    case "allowed":
-      return { text: `Conduit checked the permission — within budget, bound to this exact request ✓`, tone: "ok" };
-    case "settling":
-      return { text: `Authorized. Settling on-chain via Conduit's relayer…`, tone: "work" };
-    case "settled":
-      return { text: `Paid ${price} on-chain. Service unlocked and delivered.`, tone: "ok" };
-    case "denied":
-      return { text: `Conduit BLOCKED this payment — it broke the permission. No money moved.`, tone: "bad" };
-    case "failed":
-      return { text: `Settlement failed on-chain. No money moved.`, tone: "bad" };
-  }
-}
-
-const TONE: Record<"muted" | "work" | "ok" | "bad", string> = {
-  muted: "text-conduit-muted",
-  work: "text-conduit-violet",
-  ok: "text-conduit-cyan",
-  bad: "text-conduit-magenta",
-};
-
-function PaymentCard({ card, binding }: { card: FeedCard; binding: InspectorBinding }) {
-  const [open, setOpen] = useState(false);
-  const denied = card.stage === "denied" || card.stage === "failed";
-  const done = card.stage === "settled";
-  const working = card.stage === "requested" || card.stage === "settling";
-  const accent = denied ? "#EC4899" : done ? "#00E5FF" : "#7C3AED";
-  const cap = caption(card);
-
-  return (
-    <div
-      className="reveal rounded-xl border px-4 py-3.5 transition-all"
-      style={{ borderColor: `${accent}55`, background: `${accent}0a` }}
-    >
-      {/* header: which agent pays which agent, for how much */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <span
-            className={`h-2.5 w-2.5 rounded-full ${working ? "animate-pulse" : ""}`}
-            style={{ background: accent, boxShadow: `0 0 10px ${accent}` }}
-          />
-          {card.agent === "rogue" ? (
-            <span className="text-sm font-semibold text-conduit-magenta">
-              {card.label} · rogue agent
-            </span>
-          ) : (
-            <span className="mono flex items-center gap-1.5 text-[12px]">
-              <span className="text-conduit-muted">{card.agent} agent</span>
-              <span className="text-conduit-muted/40">pays →</span>
-              <span className="font-semibold text-white">{card.label}</span>
-            </span>
-          )}
-        </div>
-        <span className="mono text-xs font-semibold text-white">{card.priceUsdc} USDC</span>
-      </div>
-
-      {/* why the agent wants it (the coordinator's reasoning) */}
-      <p className="mt-1.5 text-[12px] italic text-conduit-muted">“{card.rationale}”</p>
-
-      {/* the 4-stage pipeline, with readable labels */}
-      <div className="mono mt-3 flex items-center gap-1.5 text-[11px]">
-        <Step on={["requested", "allowed", "settling", "settled"].includes(card.stage)} label="402 request" />
-        <Arrow />
-        <Step
-          on={["allowed", "settling", "settled"].includes(card.stage)}
-          bad={denied}
-          label={denied ? "7710 caveat ✗" : "7710 caveat ✓"}
-        />
-        <Arrow />
-        <Step on={["settling", "settled"].includes(card.stage)} label="redeem" />
-        <Arrow />
-        <Step on={done} label="delivered" />
-      </div>
-
-      {/* plain-English caption of the current step */}
-      <p className={`mt-2.5 text-[12px] leading-relaxed ${TONE[cap.tone]}`}>{cap.text}</p>
-
-      {card.reason && (
-        <p className="mono mt-1.5 text-[11px] text-conduit-magenta/80">
-          revert reason: {card.reason}
-        </p>
-      )}
-
-      <button
-        onClick={() => setOpen((o) => !o)}
-        className="mono mt-2 text-[11px] text-conduit-muted underline-offset-4 hover:text-conduit-cyan"
-      >
-        {open ? "▾ hide ERC-7710 details" : "▸ inspect ERC-7710"}
-      </button>
-      {open && <Erc7710Inspector binding={binding} txHash={card.txHash} />}
-    </div>
-  );
-}
-
-function Step({ on, bad, label }: { on: boolean; bad?: boolean; label: string }) {
-  const color = bad ? "text-conduit-magenta" : on ? "text-conduit-cyan" : "text-conduit-muted/40";
-  return (
-    <span className={color}>
-      {bad ? "✗" : on ? "●" : "○"} {label}
-    </span>
-  );
-}
-function Arrow() {
-  return <span className="text-conduit-muted/30">→</span>;
 }
 
 // --- helpers ---------------------------------------------------------------
