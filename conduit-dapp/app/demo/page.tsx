@@ -62,6 +62,15 @@ interface FeedCard {
   a2a?: boolean;
 }
 
+/** How long the whole grant stays valid (TimestampEnforcer). Independent of
+ *  the spend window above — e.g. "≤$5/hour, valid for a week". */
+const EXPIRY_OPTIONS = [
+  { label: "5 minutes", seconds: 300 },
+  { label: "1 hour", seconds: 3600 },
+  { label: "1 day", seconds: 86400 },
+  { label: "1 week", seconds: 604800 },
+] as const;
+
 // --- session persistence (survives a page refresh) -------------------------
 // The grant + ephemeral coordinator key live only in React state, so a refresh
 // wipes them even though Privy keeps you signed in. Persist them to
@@ -164,6 +173,7 @@ export default function DemoPage() {
   const [grantResult, setGrantResult] = useState<GrantResult | null>(null);
   const [amountInput, setAmountInput] = useState<string>(BUDGET.periodAmountUsdc);
   const [periodSeconds, setPeriodSeconds] = useState<number>(BUDGET.periodDuration);
+  const [expirySeconds, setExpirySeconds] = useState<number>(3600); // grant lifetime
   const [authorization, setAuthorization] = useState<Eip7702Authorization | null>(null);
   const coordinatorRef = useRef<Coordinator | null>(null);
 
@@ -186,12 +196,12 @@ export default function DemoPage() {
   const rehydrated = useRef(false);
 
   const CAP = grantResult ? Number(grantResult.periodAmount) : 100_000;
+  // Clamp so the meter can never show >100% or negative remaining.
+  const spentClamped = Math.min(spent, CAP);
   const pct = Math.min(100, (spent / CAP) * 100);
-  const remaining = grantResult ? Math.max(0, grantResult.expiry - nowSec) : null;
-  const expiryText =
-    remaining == null
-      ? "—"
-      : `${String(Math.floor(remaining / 60)).padStart(2, "0")}:${String(remaining % 60).padStart(2, "0")}`;
+  const remainingUsdc = ((CAP - spentClamped) / 1e6).toFixed(2);
+  const secsLeft = grantResult ? Math.max(0, grantResult.expiry - nowSec) : null;
+  const expiryText = secsLeft == null ? "—" : fmtCountdown(secsLeft);
   const displayAmount = grantResult ? grantResult.periodAmountUsdc : amountInput;
   const displayPeriod = grantResult ? grantResult.periodLabel : periodLabel(periodSeconds);
 
@@ -372,13 +382,14 @@ export default function DemoPage() {
         append("External wallet can't sign EIP-7702 — sign in with email/GitHub for the full flow.");
       }
 
-      append(`Requesting permission: up to ${amountInput} USDC / ${periodLabel(periodSeconds)}…`);
+      append(`Requesting permission: up to ${amountInput} USDC / ${periodLabel(periodSeconds)}, expires in ${fmtCountdown(expirySeconds)}…`);
       const result = await grantBudget({
         walletClient,
         userAddress: address,
         coordinator,
         amountUsdc: amountInput,
         periodDuration: periodSeconds,
+        expirySeconds,
       });
       setGrantResult(result);
       setAuthorization(signedAuth);
@@ -402,6 +413,7 @@ export default function DemoPage() {
     setBusy(true);
     setCards([]);
     setRevoked(false);
+    setSpent(0); // each campaign meters its own spend against the period cap
     try {
       await runCampaign({
         prompt,
@@ -651,7 +663,7 @@ export default function DemoPage() {
             {!granted ? (
               <div className="mt-4 space-y-3">
                 <p className="text-[13px] leading-relaxed text-conduit-muted">
-                  Authorize an agent budget — erc7715, single-use per request, expires after one period.
+                  Authorize an agent budget — erc7715, bound per request, revocable anytime.
                 </p>
                 <div className="flex items-center gap-2 text-sm">
                   <span className="text-white">up to</span>
@@ -670,6 +682,21 @@ export default function DemoPage() {
                     className="mono rounded-lg border border-conduit-border bg-conduit-panel px-2 py-1.5 text-white outline-none focus:border-conduit-cyan disabled:opacity-40"
                   >
                     {PERIOD_OPTIONS.map((o) => (
+                      <option key={o.seconds} value={o.seconds} className="bg-conduit-panel">
+                        {o.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="flex items-center gap-2 text-sm">
+                  <span className="text-white">expires after</span>
+                  <select
+                    value={expirySeconds}
+                    onChange={(e) => setExpirySeconds(Number(e.target.value))}
+                    disabled={!connected || busy}
+                    className="mono rounded-lg border border-conduit-border bg-conduit-panel px-2 py-1.5 text-white outline-none focus:border-conduit-cyan disabled:opacity-40"
+                  >
+                    {EXPIRY_OPTIONS.map((o) => (
                       <option key={o.seconds} value={o.seconds} className="bg-conduit-panel">
                         {o.label}
                       </option>
@@ -699,7 +726,7 @@ export default function DemoPage() {
               <div className="flex justify-between text-xs text-conduit-muted">
                 <span>spent</span>
                 <span className="mono">
-                  {(spent / 1e6).toFixed(2)} / {displayAmount} USDC
+                  {(spentClamped / 1e6).toFixed(2)} / {displayAmount} USDC
                 </span>
               </div>
               <div className="mt-2 h-2 overflow-hidden rounded-full bg-white/5">
@@ -710,9 +737,7 @@ export default function DemoPage() {
               </div>
               <div className="mt-1 text-right text-[11px] text-conduit-muted">
                 remaining{" "}
-                <span className="mono text-white">
-                  {((CAP - spent) / 1e6).toFixed(2)} USDC
-                </span>
+                <span className="mono text-white">{remainingUsdc} USDC</span>
               </div>
             </div>
 
@@ -755,8 +780,8 @@ export default function DemoPage() {
                 mode={mode}
                 budget={{
                   capUsdc: displayAmount,
-                  spentUsdc: (spent / 1e6).toFixed(2),
-                  remainingUsdc: ((CAP - spent) / 1e6).toFixed(2),
+                  spentUsdc: (spentClamped / 1e6).toFixed(2),
+                  remainingUsdc,
                   pct,
                   expiryText,
                 }}
@@ -801,6 +826,18 @@ export default function DemoPage() {
 function shorten(addr: string | null): string {
   if (!addr) return "—";
   return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
+}
+
+/** Adaptive countdown: days/hours for long grants, mm:ss only under an hour. */
+function fmtCountdown(sec: number): string {
+  if (sec <= 0) return "expired";
+  const d = Math.floor(sec / 86400);
+  const h = Math.floor((sec % 86400) / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 
 function errMsg(e: unknown): string {

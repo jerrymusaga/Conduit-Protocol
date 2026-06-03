@@ -88,6 +88,8 @@ export async function grantBudget(params: {
   coordinator: Coordinator;
   amountUsdc?: string;
   periodDuration?: number;
+  /** When the whole grant expires (TimestampEnforcer). Defaults to one period. */
+  expirySeconds?: number;
 }): Promise<GrantResult> {
   const amountUsdc = params.amountUsdc ?? BUDGET.periodAmountUsdc;
   const periodDuration = params.periodDuration ?? BUDGET.periodDuration;
@@ -96,7 +98,8 @@ export async function grantBudget(params: {
   if (periodAmount <= 0n) throw new Error("Budget amount must be greater than 0");
 
   const startTime = Math.floor(Date.now() / 1000);
-  const expiry = startTime + periodDuration;
+  // Expiry is independent of the spend window: e.g. "≤$5/hour, valid for a week".
+  const expiry = startTime + (params.expirySeconds ?? periodDuration);
 
   // ERC20PeriodTransferEnforcer terms (matches contracts/test fork-test layout):
   //   token(20) ++ periodAmount(uint256) ++ periodDuration(uint256) ++ startTime(uint256)
