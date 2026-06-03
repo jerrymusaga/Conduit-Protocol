@@ -1,4 +1,4 @@
-import { parseUnits } from "viem";
+import { keccak256, parseUnits, toHex } from "viem";
 import { config } from "./config.js";
 
 /**
@@ -10,8 +10,19 @@ import { config } from "./config.js";
  *   - "image": a generated image (Venice later; placeholder for now)
  *   - "text":  generated copy/text
  *   - "data":  a JSON data payload
+ *   - "subscription": a RECURRING data feed — bound by X402SubscriptionEnforcer
+ *      (fixed price, one merchant, at most once per period). Distinct from the
+ *      one-shot kinds above, which are bound by X402ReceiptEnforcer.
  */
-export type ServiceKind = "image" | "text" | "data";
+export type ServiceKind = "image" | "text" | "data" | "subscription";
+
+/** Subscription-only terms a recurring service advertises in its 402 envelope. */
+export interface SubscriptionTerms {
+  /** Off-chain subscription identifier (bytes32), bound into the enforcer terms. */
+  subscriptionId: `0x${string}`;
+  /** Billing period length in seconds (the cadence / "frequency"). */
+  periodSeconds: number;
+}
 
 export interface Service {
   id: string;
@@ -20,10 +31,12 @@ export interface Service {
   /** What this agent sells. */
   description: string;
   kind: ServiceKind;
-  /** Human price in USDC. */
+  /** Human price in USDC. For a subscription this is the EXACT charge per period. */
   priceUsdc: string;
   /** Price in base units (bigint, 6-decimals). */
   priceBaseUnits: bigint;
+  /** Present only when kind === "subscription". */
+  subscription?: SubscriptionTerms;
 }
 
 function svc(
@@ -31,7 +44,8 @@ function svc(
   label: string,
   kind: ServiceKind,
   priceUsdc: string,
-  description: string
+  description: string,
+  subscription?: SubscriptionTerms
 ): Service {
   return {
     id,
@@ -40,6 +54,7 @@ function svc(
     priceUsdc,
     priceBaseUnits: parseUnits(priceUsdc, 6),
     description,
+    subscription,
   };
 }
 
@@ -59,6 +74,13 @@ export const SERVICES: Service[] = [
     "Sells a gated market-data snapshot."),
   svc("competitor-scan", "Recon Agent", "data", "0.03",
     "Sells a gated competitor-analysis dataset."),
+  // Recurring service — bound by X402SubscriptionEnforcer. Fixed price, one
+  // merchant, at most once per period. The period is short (60s) so the demo
+  // can show the cadence + the on-chain "already-charged-this-period" guard
+  // without waiting a month. subscriptionId is deterministic from the id.
+  svc("pulse-feed", "Pulse Feed Agent", "subscription", "0.01",
+    "Recurring market-pulse data feed (subscription).",
+    { subscriptionId: keccak256(toHex("conduit:pulse-feed")), periodSeconds: 60 }),
 ];
 
 export function getService(id: string): Service | undefined {

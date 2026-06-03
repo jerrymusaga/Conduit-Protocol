@@ -74,6 +74,13 @@ function serviceResult(service: Service): Record<string, unknown> {
         prompt: service.label };
     case "text":
       return { type: "text", content: `Generated copy for: ${service.label}` };
+    case "subscription":
+      return { type: "subscription", content: {
+        service: service.id,
+        feed: "market-pulse",
+        period: service.subscription?.periodSeconds,
+        sample: { index: Math.random().toString(36).slice(2, 8), at: Date.now() },
+      } };
     default:
       return { type: "data", content: { service: service.id, sample: true } };
   }

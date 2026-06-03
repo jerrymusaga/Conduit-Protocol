@@ -10,6 +10,8 @@ import { config } from "./config.js";
 export interface ConduitCapabilities {
   network: string;
   receiptEnforcer: `0x${string}`;
+  /** X402SubscriptionEnforcer — recurring intent-bound payments. */
+  subscriptionEnforcer: `0x${string}`;
   delegationManager: `0x${string}`;
   redeemer: `0x${string}` | null;
   relayBackend: string;
@@ -43,6 +45,7 @@ export async function fetchCapabilities(): Promise<ConduitCapabilities> {
         assetTransferMethods?: string[];
         conduit?: {
           receiptEnforcer: `0x${string}`;
+          subscriptionEnforcer: `0x${string}`;
           delegationManager: `0x${string}`;
           redeemer: `0x${string}` | null;
           relayBackend: string;

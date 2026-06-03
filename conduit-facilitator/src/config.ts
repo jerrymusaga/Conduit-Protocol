@@ -16,6 +16,9 @@ const baseSchema = z.object({
   CHAIN_ID: z.coerce.number().int().positive(),
   RPC_URL: z.string().url(),
   X402_RECEIPT_ENFORCER: hexAddress,
+  // X402SubscriptionEnforcer — recurring intent-bound payments. Optional: if
+  // unset, falls back to the deployed Base Sepolia address below.
+  X402_SUBSCRIPTION_ENFORCER: hexAddress.optional(),
   WEBHOOK_URL: z.string().url().optional(),
 
   // 1Shot Permissionless Relayer. URL is optional — if unset, it's derived from
@@ -44,6 +47,9 @@ export const config = {
   chainId: env.CHAIN_ID,
   rpcUrl: env.RPC_URL,
   receiptEnforcer: env.X402_RECEIPT_ENFORCER as `0x${string}`,
+  // Deployed X402SubscriptionEnforcer (Base Sepolia) — recurring payments.
+  subscriptionEnforcer: (env.X402_SUBSCRIPTION_ENFORCER ??
+    "0x9847Be9B20f23b2cb12C2D6C49B58772096E45eF") as `0x${string}`,
   relayBackend: "oneshot-pl" as const,
   webhookUrl: env.WEBHOOK_URL,
   oneshot: {

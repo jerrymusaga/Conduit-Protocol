@@ -34,6 +34,8 @@ export function supportedRouter(backend: RelayBackend): Router {
             assetTransferMethods: ["erc7710"],
             conduit: {
               receiptEnforcer: config.receiptEnforcer,
+              // X402SubscriptionEnforcer — recurring intent-bound payments.
+              subscriptionEnforcer: config.subscriptionEnforcer,
               delegationManager: chainConfig.delegationManager,
               relayBackend: backend.name,
               redeemer: backend.redeemer,

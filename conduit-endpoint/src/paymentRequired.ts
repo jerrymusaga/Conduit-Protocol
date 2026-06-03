@@ -35,6 +35,20 @@ export function buildPaymentRequired(
           // Which catalog service this 402 is for (the console label).
           service: service.id,
           serviceLabel: service.label,
+          // Which enforcer binds this payment: a recurring service signals the
+          // subscription enforcer + its terms (subscriptionId, period, exact
+          // amount); a one-shot service uses the receipt enforcer.
+          paymentKind: service.kind === "subscription" ? "subscription" : "one-shot",
+          subscription:
+            service.kind === "subscription" && service.subscription
+              ? {
+                  enforcer: caps.subscriptionEnforcer,
+                  subscriptionId: service.subscription.subscriptionId,
+                  periodSeconds: service.subscription.periodSeconds,
+                  // For a subscription the price is the EXACT per-period charge.
+                  amountPerPeriod: service.priceBaseUnits.toString(),
+                }
+              : undefined,
           // Everything the buyer's wallet needs to construct a valid,
           // intent-bound redelegation:
           delegationManager: caps.delegationManager,
