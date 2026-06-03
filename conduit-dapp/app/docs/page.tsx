@@ -19,7 +19,9 @@ const SECTIONS = [
   ["quickstart", "Quickstart"],
   ["api", "Facilitator API"],
   ["payment", "Build a payment"],
+  ["subscriptions", "Subscriptions"],
   ["enforcers", "Enforcers"],
+  ["bounds", "Bounds & revocation"],
   ["webhooks", "Webhooks"],
   ["addresses", "Addresses"],
 ] as const;
@@ -71,10 +73,11 @@ export default function Docs() {
             </p>
             <p>
               Point any x402-protected resource at a Conduit facilitator and your
-              callers get: settlement via on-chain delegation redemption, an on-chain
-              caveat (<Mono>X402ReceiptEnforcer</Mono>) that binds every payment to one
-              exact request, gas paid in USDC with no relayer to run, and clean
-              settlement webhooks. Conduit is the payment rail; your agent is the caller.
+              callers get: settlement via on-chain delegation redemption, on-chain caveats
+              that bind every payment — <Mono>X402ReceiptEnforcer</Mono> for one exact
+              request, <Mono>X402SubscriptionEnforcer</Mono> for fixed recurring charges —
+              gas paid in USDC with no relayer to run, and clean settlement webhooks.
+              Conduit is the payment rail; your agent is the caller.
             </p>
             <Callout>
               The safety property: a payment is fused to one recipient, one amount, one
@@ -187,6 +190,48 @@ const caveats = [
             </p>
           </Section>
 
+          {/* SUBSCRIPTIONS */}
+          <Section id="subscriptions" title="Subscriptions">
+            <p>
+              For recurring charges, a service advertises a subscription instead of a
+              one-shot price. Its <Mono>402</Mono> carries{" "}
+              <Mono>paymentKind: &quot;subscription&quot;</Mono> and a{" "}
+              <Mono>subscription</Mono> block:
+            </p>
+            <Code>{`GET /services/pulse-feed → 402  { accepts: [{ ...,
+  extra: { paymentKind: "subscription",
+           subscription: { enforcer, subscriptionId,
+                           periodSeconds, amountPerPeriod } } }] }`}</Code>
+            <p>
+              The buyer signs a <b className="text-white">service-bound root</b> delegation
+              whose caveat is the <Mono>X402SubscriptionEnforcer</Mono> — the user&rsquo;s own
+              signature binds merchant + exact amount + cadence. 94-byte packed terms:
+            </p>
+            <Code>{`subscriptionId(bytes32) ++ token(address) ++ recipient(address)
+  ++ amountPerPeriod(uint128) ++ periodDuration(uint32) ++ reserved(uint16)`}</Code>
+            <p>
+              Each period the agent can charge <i>exactly once</i>; a second charge in the
+              same period reverts <Mono>X402Sub:already-charged-this-period</Mono> on-chain.
+              Every charge emits <Mono>X402SubscriptionCharged</Mono>{" "}
+              (<Mono>subscriptionId</Mono>, <Mono>amount</Mono>, <Mono>period</Mono>) for
+              off-chain reconciliation.
+            </p>
+            <Callout>
+              <b className="text-white">vs. a rolling spend cap:</b> a periodic{" "}
+              <i>allowance</i> only limits &ldquo;up to X per window&rdquo; — it doesn&rsquo;t
+              fix the recipient, the exact price, or prevent multiple charges. The
+              subscription enforcer is a <b className="text-white">fixed-price,
+              merchant-bound, once-per-period</b> charge with on-chain double-charge
+              protection. That&rsquo;s the actual subscription semantic.
+            </Callout>
+            <p className="text-sm text-conduit-muted">
+              On the 1Shot path the strict subscription root can&rsquo;t fund gas (it only
+              authorizes the exact subscription transfer), so a subscription grant is{" "}
+              <i>two</i> bounded user roots: the subscription root + a small gas-fee budget
+              root. Both bounded, both user-approved. See <Mono>lib/subscription.ts</Mono>.
+            </p>
+          </Section>
+
           {/* ENFORCERS */}
           <Section id="enforcers" title="Enforcers">
             <p>
@@ -212,6 +257,32 @@ const caveats = [
               the facilitator already relays it unchanged. Conduit ships the
               payment-safety enforcers today; swaps and other action-bound enforcers are
               on the roadmap — same architecture, different caveat.
+            </Callout>
+          </Section>
+
+          {/* BOUNDS & REVOCATION */}
+          <Section id="bounds" title="Bounds & revocation">
+            <p>
+              Every grant — one-shot budget or subscription — is bounded and revocable by
+              the <b className="text-white">user</b>, not the agent.
+            </p>
+            <Endpoint method="CAVEAT" path="TimestampEnforcer — expiry">
+              Adds a validity window: packed{" "}
+              <Mono>(uint128 after, uint128 before)</Mono>. Past <Mono>before</Mono>,
+              redemption reverts <Mono>TimestampEnforcer:expired-delegation</Mono>. Without
+              it, a rolling period cap never actually expires on-chain — so Conduit attaches
+              it to make the budget/subscription genuinely die at its deadline.
+            </Endpoint>
+            <Endpoint method="REVOKE" path="DelegationManager.disableDelegation(root)">
+              The kill switch. Gated <Mono>onlyDeleGator(delegator)</Mono>, so the{" "}
+              <b className="text-white">user&rsquo;s</b> account sends it — not the agent, not
+              the relayer. Disabling the root <b className="text-white">cascades</b>: every
+              child redelegation under it dies at once. A direct on-chain tx (needs gas).
+            </Endpoint>
+            <Callout>
+              The blast radius is bounded by design: a compromised agent can never widen a
+              delegation, the spend is caveat-fixed, the grant expires, and the user can
+              revoke the whole tree in one call.
             </Callout>
           </Section>
 
@@ -249,6 +320,7 @@ const caveats = [
               <Addr label="DelegationManager" addr={config.delegationManager} />
               <Addr label="IdEnforcer" addr={config.idEnforcer} />
               <Addr label="ERC20PeriodTransferEnforcer" addr={config.erc20PeriodTransferEnforcer} />
+              <Addr label="TimestampEnforcer" addr={config.timestampEnforcer} />
               <Addr label="EIP7702 StatelessDeleGator" addr={config.eip7702Impl} />
               <Addr label="USDC" addr={config.usdc} />
             </div>
