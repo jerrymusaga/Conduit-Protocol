@@ -838,7 +838,7 @@ export default function DemoPage() {
                         MetaMask Smart Account in your wallet, or sign in with email.
                       </span>
                     ) : hasCode ? (
-                      <span className="text-conduit-cyan">MetaMask Smart Account detected ✓ — no 7702 prompt needed.</span>
+                      <span className="text-conduit-cyan">MetaMask Smart Account detected ✓</span>
                     ) : isEmbeddedWallet ? (
                       <span className="text-conduit-muted">Embedded wallet — you&apos;ll sign a one-time 7702 upgrade with the grant.</span>
                     ) : null}
