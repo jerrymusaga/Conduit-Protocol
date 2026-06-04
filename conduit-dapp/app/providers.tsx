@@ -9,7 +9,7 @@
  * can use standard hooks (useAccount, useWalletClient, usePublicClient).
  *
  * Privy gives us:
- *   - email / GitHub / passkey / external-wallet login in one modal
+ *   - email / external-wallet (MetaMask) login in one modal
  *   - a viem walletClient (via wagmi) for the connected wallet
  *   - useSign7702Authorization (used in lib/grant.ts for the EIP-7702 upgrade
  *     required by the 1Shot Permissionless Relayer track)
@@ -50,10 +50,10 @@ export function Providers({ children }: { children: ReactNode }) {
           // Default wallet list — covers MetaMask + detected injected wallets.
           walletList: ["detected_wallets", "metamask", "wallet_connect"],
         },
-        loginMethods: ["email", "github", "wallet"],
+        loginMethods: ["email", "wallet"],
         embeddedWallets: {
           // Create an embedded wallet automatically for users who sign in via
-          // email/GitHub (so they don't need to install anything).
+          // email (so they don't need to install anything).
           ethereum: { createOnLogin: "users-without-wallets" },
         },
         defaultChain: activeChain,

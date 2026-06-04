@@ -290,7 +290,7 @@ export default function SubscriptionPage() {
         });
         append("EIP-7702 authorization signed · bundled into the first charge");
       } else {
-        append("External wallet can't sign EIP-7702 — sign in with email/GitHub for the full flow.");
+        append("External wallet can't sign EIP-7702 — sign in with email for the full flow.");
       }
 
       const terms = termsFromRequirements(req, req.subscription);

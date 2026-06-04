@@ -454,7 +454,7 @@ export default function DemoPage() {
     // dapp (and we can't bundle an auth for it) — so the redeem would fail.
     // Guide the user instead of letting settle revert cryptically.
     if (hasCode === false && !embeddedWallet) {
-      append("This MetaMask account isn't a Smart Account yet — enable MetaMask Smart Account in your wallet (Settings → enable smart account), or sign in with email/GitHub, then Grant.");
+      append("This MetaMask account isn't a Smart Account yet — enable MetaMask Smart Account in your wallet (Settings → enable smart account), or sign in with email, then Grant.");
       return;
     }
     setBusy(true);
@@ -835,7 +835,7 @@ export default function DemoPage() {
                     {needsSmartAccount ? (
                       <span className="text-conduit-magenta">
                         This MetaMask account isn&apos;t a Smart Account yet. Enable
-                        MetaMask Smart Account in your wallet, or sign in with email/GitHub.
+                        MetaMask Smart Account in your wallet, or sign in with email.
                       </span>
                     ) : hasCode ? (
                       <span className="text-conduit-cyan">MetaMask Smart Account detected ✓ — no 7702 prompt needed.</span>
