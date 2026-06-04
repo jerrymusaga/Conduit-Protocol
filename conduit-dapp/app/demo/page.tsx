@@ -695,8 +695,8 @@ export default function DemoPage() {
       </div>
 
       <div className="mx-auto grid max-w-7xl gap-6 px-6 py-8 lg:grid-cols-12">
-        {/* LEFT: prompt + permission + budget */}
-        <div className="space-y-6 lg:col-span-3">
+        {/* LEFT: permission (the prerequisite) above the prompt + budget */}
+        <div className="flex flex-col gap-6 lg:col-span-3">
           {/* Prompt */}
           <section className="panel p-6">
             <h2 className="text-sm font-semibold uppercase tracking-wide text-conduit-muted">
@@ -767,8 +767,8 @@ export default function DemoPage() {
             </div>
           </section>
 
-          {/* Permission */}
-          <section className="panel p-6">
+          {/* Permission — the prerequisite, ordered first in the column */}
+          <section className="panel order-first p-6">
             <div className="flex items-center justify-between">
               <h2 className="text-sm font-semibold uppercase tracking-wide text-conduit-muted">
                 Permission
