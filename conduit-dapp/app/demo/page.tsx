@@ -469,7 +469,7 @@ export default function DemoPage() {
         // Already a smart account (MetaMask Smart Account or a previously-7702'd
         // embedded wallet) → it has code on-chain, so redeemDelegations executes
         // directly. No dapp-side 7702 authorization needed.
-        append("Smart Account detected — your account already has code; no 7702 upgrade needed.");
+        append("Smart Account detected ✓");
       } else if (embeddedWallet) {
         append(`Signing EIP-7702 authorization · designating ${shorten(config.eip7702Impl)}…`);
         const nonce = await publicClient.getTransactionCount({
