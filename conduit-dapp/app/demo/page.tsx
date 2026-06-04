@@ -188,6 +188,9 @@ export default function DemoPage() {
   // Grant / permission state.
   const [granted, setGranted] = useState(false);
   const [revoked, setRevoked] = useState(false);
+  // Whether the connected account already has on-chain code (a smart account —
+  // MetaMask Smart Account or a 7702-upgraded EOA). null = unknown/checking.
+  const [hasCode, setHasCode] = useState<boolean | null>(null);
   const [grantResult, setGrantResult] = useState<GrantResult | null>(null);
   const [amountInput, setAmountInput] = useState<string>(BUDGET.periodAmountUsdc);
   const [periodSeconds, setPeriodSeconds] = useState<number>(BUDGET.periodDuration);
@@ -226,6 +229,12 @@ export default function DemoPage() {
   const expiryText = secsLeft == null ? "—" : fmtCountdown(secsLeft);
   const displayAmount = grantResult ? grantResult.periodAmountUsdc : amountInput;
   const displayPeriod = grantResult ? grantResult.periodLabel : periodLabel(periodSeconds);
+
+  // Account-type gate: an external EOA that isn't a smart account can't complete
+  // the flow (can't be 7702-upgraded from the dapp). Embedded EOAs are fine (we
+  // sign the auth); accounts that already have code are fine (no auth needed).
+  const isEmbeddedWallet = !!getEmbeddedConnectedWallet(wallets);
+  const needsSmartAccount = connected && hasCode === false && !isEmbeddedWallet;
 
   // Run guard: distinguish a PERMANENT end (expired/revoked → new grant needed)
   // from a TEMPORARY period cap (budget refills next period → just wait).
@@ -266,6 +275,28 @@ export default function DemoPage() {
     const id = setInterval(() => setNowSec(Math.floor(Date.now() / 1000)), 1000);
     return () => clearInterval(id);
   }, [grantResult]);
+
+  // Detect whether the connected account is already a smart account (has code).
+  // Drives the 7702 branch: has code → no auth needed; embedded EOA → we sign
+  // the auth; external EOA without code → guide them to enable a Smart Account.
+  useEffect(() => {
+    if (!connected || !address) {
+      setHasCode(null);
+      return;
+    }
+    let cancelled = false;
+    publicClient
+      .getCode({ address })
+      .then((code) => {
+        if (!cancelled) setHasCode(!!code && code !== "0x");
+      })
+      .catch(() => {
+        if (!cancelled) setHasCode(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [connected, address, granted]);
 
   // Read the TRUE on-chain budget (cumulative, period-aware) so the meter +
   // "exhausted this period" guard are exact. Refresh on grant + periodically;
@@ -418,6 +449,14 @@ export default function DemoPage() {
       append("Waiting for wallet to bind… if it persists, switch your wallet to Base Sepolia and reconnect.");
       return;
     }
+    const embeddedWallet = getEmbeddedConnectedWallet(wallets);
+    // An external EOA that isn't a smart account can't be 7702-upgraded from the
+    // dapp (and we can't bundle an auth for it) — so the redeem would fail.
+    // Guide the user instead of letting settle revert cryptically.
+    if (hasCode === false && !embeddedWallet) {
+      append("This MetaMask account isn't a Smart Account yet — enable MetaMask Smart Account in your wallet (Settings → enable smart account), or sign in with email/GitHub, then Grant.");
+      return;
+    }
     setBusy(true);
     try {
       append("Creating coordinator session account…");
@@ -426,8 +465,12 @@ export default function DemoPage() {
       append(`Coordinator account · ${shorten(coordinator.address)}`);
 
       let signedAuth: Eip7702Authorization | null = null;
-      const embeddedWallet = getEmbeddedConnectedWallet(wallets);
-      if (embeddedWallet) {
+      if (hasCode) {
+        // Already a smart account (MetaMask Smart Account or a previously-7702'd
+        // embedded wallet) → it has code on-chain, so redeemDelegations executes
+        // directly. No dapp-side 7702 authorization needed.
+        append("Smart Account detected — your account already has code; no 7702 upgrade needed.");
+      } else if (embeddedWallet) {
         append(`Signing EIP-7702 authorization · designating ${shorten(config.eip7702Impl)}…`);
         const nonce = await publicClient.getTransactionCount({
           address: embeddedWallet.address as `0x${string}`,
@@ -446,8 +489,6 @@ export default function DemoPage() {
         };
         setAuthorization(signedAuth);
         append("EIP-7702 authorization signed · bundled into the first redeem");
-      } else {
-        append("External wallet can't sign EIP-7702 — sign in with email/GitHub for the full flow.");
       }
 
       append(`Requesting permission: up to ${amountInput} USDC / ${periodLabel(periodSeconds)}, expires in ${fmtCountdown(expirySeconds)}…`);
@@ -784,11 +825,25 @@ export default function DemoPage() {
                 </div>
                 <button
                   onClick={grant}
-                  disabled={!connected || busy}
+                  disabled={!connected || busy || needsSmartAccount}
                   className="btn-primary mt-1 w-full justify-center text-sm disabled:opacity-40"
                 >
                   Grant permission
                 </button>
+                {connected && (
+                  <p className="text-[11px] leading-relaxed text-conduit-muted">
+                    {needsSmartAccount ? (
+                      <span className="text-conduit-magenta">
+                        This MetaMask account isn&apos;t a Smart Account yet. Enable
+                        MetaMask Smart Account in your wallet, or sign in with email/GitHub.
+                      </span>
+                    ) : hasCode ? (
+                      <span className="text-conduit-cyan">MetaMask Smart Account detected ✓ — no 7702 prompt needed.</span>
+                    ) : isEmbeddedWallet ? (
+                      <span className="text-conduit-muted">Embedded wallet — you&apos;ll sign a one-time 7702 upgrade with the grant.</span>
+                    ) : null}
+                  </p>
+                )}
               </div>
             ) : (
               <p className="mt-4 text-[13px] leading-relaxed text-conduit-muted">
