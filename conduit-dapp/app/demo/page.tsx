@@ -75,6 +75,8 @@ interface ReportSection {
   label: string;
   priceUsdc: string;
   output: { type?: string; content?: unknown; source?: string };
+  /** Ties the section back to its payment card for live settlement state. */
+  correlationId: string;
 }
 
 /** How long the whole grant stays valid (TimestampEnforcer). Independent of
@@ -741,6 +743,7 @@ export default function DemoPage() {
                   label: r.service.label,
                   priceUsdc: r.service.priceUsdc,
                   output: r.output as ReportSection["output"],
+                  correlationId: r.correlationId,
                 });
               }
             } else {
@@ -1135,7 +1138,7 @@ export default function DemoPage() {
 
           {/* The payoff: the aggregated report assembled from purchased outputs */}
           {report && (
-            <ReportPanel sections={report} markdown={reportMarkdown} cover={reportCover} />
+            <ReportPanel sections={report} markdown={reportMarkdown} cover={reportCover} cards={cards} />
           )}
         </div>
 
@@ -1181,20 +1184,35 @@ function ReportPanel({
   sections,
   markdown,
   cover,
+  cards,
 }: {
   sections: ReportSection[];
   markdown?: string | null;
   cover?: string | null;
+  cards: FeedCard[];
 }) {
   const total = sections.reduce((s, x) => s + (Number(x.priceUsdc) || 0), 0);
+  // Live settlement state of the payments behind this report (Option 2): the
+  // report is delivered on accept, then earns its "settled on-chain" badge as
+  // each payment confirms via pollSettlement.
+  const cardFor = (cid: string) => cards.find((c) => c.correlationId === cid);
+  const states = sections.map((s) => cardFor(s.correlationId));
+  const txCount = states.filter((c) => c?.stage === "settled" && c?.txHash).length;
+  const allSettled = states.length > 0 && states.every((c) => c?.stage === "settled");
+  const anyFailed = states.some((c) => c?.stage === "failed");
+  const settleBadge = allSettled
+    ? { cls: "bg-conduit-cyan/15 text-conduit-cyan", text: `✓ settled on-chain · ${txCount} tx` }
+    : anyFailed
+      ? { cls: "bg-conduit-magenta/15 text-conduit-magenta", text: "⚠ settlement issue" }
+      : { cls: "bg-conduit-violet/15 text-conduit-violet animate-pulse", text: "delivered · settling on-chain…" };
   return (
     <section className="panel reveal mt-6 p-6">
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold tracking-tight text-white">
           ETH Staking Market Report
         </h2>
-        <span className="mono rounded-md bg-conduit-cyan/15 px-2 py-0.5 text-[11px] text-conduit-cyan">
-          report complete ✓
+        <span className={`mono rounded-md px-2 py-0.5 text-[11px] ${settleBadge.cls}`}>
+          {settleBadge.text}
         </span>
       </div>
       <p className="mt-1 text-[12px] text-conduit-muted">
@@ -1230,7 +1248,7 @@ function ReportPanel({
             </summary>
             <div className="mt-3 space-y-4">
               {sections.map((sec, i) => (
-                <ReportSectionRow key={i} sec={sec} />
+                <ReportSectionRow key={i} sec={sec} card={cardFor(sec.correlationId)} />
               ))}
             </div>
           </details>
@@ -1238,7 +1256,7 @@ function ReportPanel({
       ) : (
         <div className="mt-5 space-y-5">
           {sections.map((sec, i) => (
-            <ReportSectionRow key={i} sec={sec} />
+            <ReportSectionRow key={i} sec={sec} card={cardFor(sec.correlationId)} />
           ))}
         </div>
       )}
@@ -1253,7 +1271,8 @@ function ReportPanel({
   );
 }
 
-function ReportSectionRow({ sec }: { sec: ReportSection }) {
+function ReportSectionRow({ sec, card }: { sec: ReportSection; card?: FeedCard }) {
+  const settled = card?.stage === "settled" && !!card.txHash;
   return (
     <div>
       <h3 className="text-sm font-semibold text-white">
@@ -1262,6 +1281,20 @@ function ReportSectionRow({ sec }: { sec: ReportSection }) {
           via {sec.label} · {sec.priceUsdc} USDC
           {sec.output?.source ? ` · ${sec.output.source}` : ""}
         </span>
+        {settled ? (
+          <a
+            href={`${config.explorerUrl}/tx/${card!.txHash}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="mono ml-2 text-[10px] font-normal text-conduit-cyan underline-offset-2 hover:underline"
+          >
+            settled ✓ tx ↗
+          </a>
+        ) : card?.stage === "failed" ? (
+          <span className="mono ml-2 text-[10px] font-normal text-conduit-magenta">settlement failed</span>
+        ) : (
+          <span className="mono ml-2 text-[10px] font-normal text-conduit-violet">settling…</span>
+        )}
       </h3>
       <div className="mt-1.5 text-[13px] leading-relaxed text-conduit-muted">
         <ReportOutput output={sec.output} />
