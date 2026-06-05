@@ -45,7 +45,10 @@ export interface Coordinator {
 
 /** Default budget — the starting values the user can adjust on /demo. */
 export const BUDGET = {
-  periodAmountUsdc: "0.10",
+  // Must comfortably cover a multi-agent campaign: each payment spends the
+  // service price PLUS its 1Shot gas fee (live quote, up to FEE_CAP) out of this
+  // same budget. 0.10 was too small once gas-in-USDC is counted.
+  periodAmountUsdc: "1.00",
   periodDuration: 3600, // 1 hour
 } as const;
 

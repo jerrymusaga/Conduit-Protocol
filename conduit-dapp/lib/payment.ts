@@ -251,8 +251,11 @@ export async function buildPayment(params: {
 
 /** Ceiling the bounded fee delegation allows 1Shot to charge (USDC atoms).
  *  The real fee comes from a live quote ≤ this; binding a cap keeps it
- *  Conduit-style (can only ever pay feeCollector, never above the cap). */
-export const FEE_CAP_ATOMS = 50_000n; // 0.05 USDC
+ *  Conduit-style (can only ever pay feeCollector, never above the cap).
+ *  Sized with headroom for 1Shot's Base Sepolia gas-in-USDC quotes — too low
+ *  a cap makes the bounded fee delegation revert X402Receipt:amount-exceeds-cap
+ *  when the live quote exceeds it. The user still only pays the quote, not the cap. */
+export const FEE_CAP_ATOMS = 300_000n; // 0.30 USDC ceiling (actual fee = live quote ≤ this)
 
 /** Build + sign ONE intent-bound redelegation CHAIN [leaf,…,root], structured
  *  (not hex-encoded) for 1Shot. The leaf is bound by X402ReceiptEnforcer to

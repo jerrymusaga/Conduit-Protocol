@@ -100,7 +100,7 @@ export default function SubscriptionPage() {
 
   // Buyer-side controls set at subscribe time.
   const [subLengthSec, setSubLengthSec] = useState<number>(3600); // 0 = never expires
-  const [feeBudget, setFeeBudget] = useState<string>("0.05"); // gas budget / period (USDC)
+  const [feeBudget, setFeeBudget] = useState<string>("0.30"); // gas budget / period (USDC)
   const [cancelled, setCancelled] = useState(false);
 
   const { events, connected: sseConnected } = useFacilitatorEvents(connected);

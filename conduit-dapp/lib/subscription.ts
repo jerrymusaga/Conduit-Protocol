@@ -169,7 +169,7 @@ export async function grantSubscription(params: {
     walletClient,
     userAddress,
     coordinator,
-    amountUsdc: params.feeBudgetUsdc ?? "0.05",
+    amountUsdc: params.feeBudgetUsdc ?? "0.30",
     periodDuration: terms.periodSeconds,
   });
 
