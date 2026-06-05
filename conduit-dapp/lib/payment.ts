@@ -255,14 +255,24 @@ export async function buildPayment(params: {
  *  guessed magic number. The user always pays the live quote, never the cap. */
 export const FEE_CAP_ATOMS = 300_000n; // 0.30 USDC fallback
 
+/** Minimum fee cap (USDC atoms). The cap is only a CEILING — the buyer pays the
+ *  real quoted fee — so a generous floor costs nothing and absorbs gas swings.
+ *  0.05 USDC comfortably covers a redeemDelegations batch on Base. */
+const FEE_CAP_FLOOR_ATOMS = 50_000n; // 0.05 USDC
+
 /** Size the bounded fee delegation's cap to the facilitator's live gas-fee
- *  estimate plus a safety buffer (for gas movement between quote and settle).
- *  Falls back to the fixed ceiling when no estimate is advertised. */
+ *  estimate plus headroom for gas moving between quote and settle. The cap is a
+ *  ceiling, never the amount paid, and the recipient is hard-bound to 1Shot's
+ *  feeCollector — so a wide cap is safe. We saw a ~1.65× quote→settle swing on
+ *  testnet blow through a 1.5× buffer ("payment does not cover the total
+ *  price"), so use 3× and floor it. Falls back to the fixed ceiling when no
+ *  estimate is advertised. */
 export function feeCapAtoms(feeEstimate?: string | null): bigint {
   if (!feeEstimate) return FEE_CAP_ATOMS;
   const est = BigInt(feeEstimate);
   if (est <= 0n) return FEE_CAP_ATOMS;
-  return (est * 3n) / 2n; // estimate × 1.5
+  const buffered = est * 3n; // 3× headroom for quote→settle gas movement
+  return buffered > FEE_CAP_FLOOR_ATOMS ? buffered : FEE_CAP_FLOOR_ATOMS;
 }
 
 /** Build + sign ONE intent-bound redelegation CHAIN [leaf,…,root], structured
