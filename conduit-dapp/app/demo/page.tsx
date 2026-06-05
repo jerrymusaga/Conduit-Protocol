@@ -218,7 +218,11 @@ export default function DemoPage() {
   const seenEvents = useRef(new Set<string>());
   const rehydrated = useRef(false);
 
-  const CAP = grantResult ? Number(grantResult.periodAmount) : 100_000;
+  // Before a grant exists, preview the meter against the typed amount (not a
+  // hardcoded fallback), so "remaining" matches what the user is about to grant.
+  const CAP = grantResult
+    ? Number(grantResult.periodAmount)
+    : Math.max(0, Math.round((Number(amountInput) || 0) * 1e6));
   // Meter prefers the on-chain truth when idle (cumulative, period-aware);
   // during a run it follows the optimistic counter for smooth animation.
   const effectiveSpent = !busy && budgetState ? Number(budgetState.spent) : spent;
