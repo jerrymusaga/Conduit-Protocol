@@ -17,6 +17,9 @@ const schema = z.object({
   PAY_TO: address,
   PRICE_USDC: z.string().default("0.01"),
   RESOURCE_DESCRIPTION: z.string().default("Conduit protected demo resource"),
+  // Venice API key (server-side Bearer). Optional: when unset, provider agents
+  // fall back to canned outputs so the demo still runs. Never exposed to the dapp.
+  VENICE_API_KEY: z.string().optional(),
 });
 
 const parsed = schema.safeParse(process.env);
@@ -41,6 +44,7 @@ export const config = {
   priceUsdc: env.PRICE_USDC,
   priceBaseUnits, // bigint
   resourceDescription: env.RESOURCE_DESCRIPTION,
+  veniceApiKey: env.VENICE_API_KEY,
 } as const;
 
 export type Config = typeof config;

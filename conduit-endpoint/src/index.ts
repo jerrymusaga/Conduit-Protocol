@@ -9,6 +9,8 @@ import {
 } from "./facilitatorClient.js";
 import { buildPaymentRequired } from "./paymentRequired.js";
 import { SERVICES, LEGACY_SERVICE, getService, type Service } from "./services.js";
+import { veniceChat, veniceRpc, veniceEnabled } from "./venice.js";
+import { hexToBigInt } from "viem";
 
 const app = express();
 app.use(express.json({ limit: "5mb" }));
@@ -65,25 +67,97 @@ app.get("/services", (_req, res) => {
   });
 });
 
-/** Produce the success payload for a settled service (placeholder products;
- * Venice generation gets wired in the Venice layer). */
-function serviceResult(service: Service): Record<string, unknown> {
+// --- Provider intelligence (Venice-powered, canned fallback) ----------------
+// The seller generates what it sells via Venice AFTER the erc7710 payment
+// settles. Every Venice call is best-effort; on any failure the canned value is
+// returned so the demo stays reliable. `source` labels what produced the output
+// so the report can attribute it ("via Venice · on-chain" vs "cached").
+
+const CANNED = {
+  data: {
+    stakingTVL: "$160B", stakedETH: "34.2M", percentSupplyStaked: "28.4%",
+    activeValidators: 1_068_000, apr: "3.1%",
+  } as Record<string, unknown>,
+  news:
+    "ETH staking inflows rose ~12% this week on renewed ETF demand; net new " +
+    "deposits outpaced exits, and the validator entry queue lengthened slightly.",
+  analytics:
+    "Staking remains concentrated among large liquid-staking protocols, though " +
+    "Lido's share is gradually declining as solo + restaking options grow. " +
+    "Outlook: stable issuance, modest restaking-driven growth, watch LST concentration.",
+};
+
+// Ethereum mainnet contracts the Data Agent reads via Venice's RPC proxy.
+const ETH2_DEPOSIT = "0x00000000219ab540356cBB839Cbe05303d7705Fa"; // beacon deposit contract
+const LIDO_STETH = "0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84"; // stETH
+const SELECTOR_TOTAL_SUPPLY = "0x18160ddd"; // totalSupply()
+
+/** wei (bigint) → "34.21M ETH" style human string. */
+function fmtEth(wei: bigint): string {
+  const eth = Number(wei) / 1e18;
+  if (eth >= 1e6) return `${(eth / 1e6).toFixed(2)}M ETH`;
+  if (eth >= 1e3) return `${(eth / 1e3).toFixed(1)}K ETH`;
+  return `${eth.toFixed(2)} ETH`;
+}
+
+/** Data Agent: real on-chain ETH-staking metrics via Venice crypto-rpc. */
+async function stakingDataOutput(): Promise<Record<string, unknown>> {
+  const net = "ethereum-mainnet";
+  const [blockHex, depositBalHex, lidoSupplyHex] = await Promise.all([
+    veniceRpc(net, "eth_blockNumber", []),
+    veniceRpc(net, "eth_getBalance", [ETH2_DEPOSIT, "latest"]),
+    veniceRpc(net, "eth_call", [{ to: LIDO_STETH, data: SELECTOR_TOTAL_SUPPLY }, "latest"]),
+  ]);
+
+  // If nothing came back live, serve the canned snapshot.
+  if (!blockHex && !depositBalHex && !lidoSupplyHex) {
+    return { type: "data", source: "cached", content: CANNED.data };
+  }
+
+  const content: Record<string, unknown> = { ...CANNED.data };
+  if (depositBalHex) content.totalDepositedETH = fmtEth(hexToBigInt(depositBalHex as `0x${string}`));
+  if (lidoSupplyHex) content.lidoStakedETH = fmtEth(hexToBigInt(lidoSupplyHex as `0x${string}`));
+  if (blockHex) content.atBlock = Number(hexToBigInt(blockHex as `0x${string}`));
+  return { type: "data", source: "venice:crypto-rpc · ethereum-mainnet", content };
+}
+
+/** News Agent: recent ETH-staking news via Venice chat + web search. */
+async function stakingNewsOutput(): Promise<Record<string, unknown>> {
+  const text = await veniceChat(
+    "You are a crypto news analyst. Reply with 2-3 sentences of the most recent " +
+      "Ethereum staking news. Be concrete and current. No preamble, no markdown.",
+    "Summarize this week's notable Ethereum staking news (flows, queue, ETFs, LSTs).",
+    { webSearch: "on", stripThinking: true, maxTokens: 300 }
+  );
+  return text
+    ? { type: "text", source: "venice:chat · web-search", content: text }
+    : { type: "text", source: "cached", content: CANNED.news };
+}
+
+/** Analytics Agent: ETH-staking market analysis via a Venice reasoning model. */
+async function stakingAnalyticsOutput(): Promise<Record<string, unknown>> {
+  const text = await veniceChat(
+    "You are an Ethereum staking market analyst. Reply with a 3-4 sentence " +
+      "analysis: liquid-staking concentration, restaking, and a short outlook. " +
+      "No preamble, no markdown.",
+    "Analyze the current Ethereum staking market structure and give an outlook.",
+    { reasoningEffort: "low", stripThinking: true, maxTokens: 400 }
+  );
+  return text
+    ? { type: "text", source: "venice:chat · reasoning", content: text }
+    : { type: "text", source: "cached", content: CANNED.analytics };
+}
+
+/** Produce the success payload for a settled service. */
+async function serviceResult(service: Service): Promise<Record<string, unknown>> {
   // Per-provider staking outputs the procurement agent aggregates into a report.
   switch (service.id) {
     case "staking-data":
-      return { type: "data", content: {
-        stakingTVL: "$160B", stakedETH: "34.2M", percentSupplyStaked: "28.4%",
-        activeValidators: 1_068_000, apr: "3.1%",
-      } };
+      return stakingDataOutput();
     case "staking-news":
-      return { type: "text", content:
-        "ETH staking inflows rose ~12% this week on renewed ETF demand; net new " +
-        "deposits outpaced exits, and the validator entry queue lengthened slightly." };
+      return stakingNewsOutput();
     case "staking-analytics":
-      return { type: "text", content:
-        "Staking remains concentrated among large liquid-staking protocols, though " +
-        "Lido's share is gradually declining as solo + restaking options grow. " +
-        "Outlook: stable issuance, modest restaking-driven growth, watch LST concentration." };
+      return stakingAnalyticsOutput();
   }
   switch (service.kind) {
     case "image":
@@ -191,7 +265,7 @@ async function handlePaidResource(
   res.setHeader("X-PAYMENT-RESPONSE", paymentResponse);
   res.json({
     service: service.id,
-    data: serviceResult(service),
+    data: await serviceResult(service),
     servedAt: new Date().toISOString(),
     settlement: {
       jobId: settlement.jobId,
@@ -220,4 +294,5 @@ app.listen(config.port, () => {
   console.log(`  payTo:       ${config.payTo}`);
   console.log(`  services:    ${SERVICES.map((s) => s.id).join(", ")}`);
   console.log(`  catalog:     GET /services`);
+  console.log(`  venice:      ${veniceEnabled() ? "ON (live intelligence)" : "off (canned fallback)"}`);
 });
