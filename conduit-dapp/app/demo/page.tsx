@@ -14,8 +14,6 @@ import {
 import { useSetActiveWallet } from "@privy-io/wagmi";
 import {
   BUDGET,
-  PERIOD_OPTIONS,
-  periodLabel,
   createCoordinatorAccount,
   grantBudget,
   revokeRootDelegation,
@@ -193,7 +191,6 @@ export default function DemoPage() {
   const [hasCode, setHasCode] = useState<boolean | null>(null);
   const [grantResult, setGrantResult] = useState<GrantResult | null>(null);
   const [amountInput, setAmountInput] = useState<string>(BUDGET.periodAmountUsdc);
-  const [periodSeconds, setPeriodSeconds] = useState<number>(BUDGET.periodDuration);
   // Absolute expiry (datetime-local string); default = now + 1 hour.
   const [expiryAt, setExpiryAt] = useState<string>(() => toLocalDatetime(Date.now() + 86_400_000));
   const [authorization, setAuthorization] = useState<Eip7702Authorization | null>(null);
@@ -233,7 +230,6 @@ export default function DemoPage() {
   const secsLeft = grantResult ? Math.max(0, grantResult.expiry - nowSec) : null;
   const expiryText = secsLeft == null ? "—" : fmtCountdown(secsLeft);
   const displayAmount = grantResult ? grantResult.periodAmountUsdc : amountInput;
-  const displayPeriod = grantResult ? grantResult.periodLabel : periodLabel(periodSeconds);
 
   // Account-type gate: an external EOA that isn't a smart account can't complete
   // the flow (can't be 7702-upgraded from the dapp). Embedded EOAs are fine (we
@@ -250,7 +246,7 @@ export default function DemoPage() {
     : expired
       ? "Permission expired — grant a new one"
       : exhausted
-        ? `Budget exhausted this period — resets in ${fmtCountdown(budgetState!.resetInSeconds)}`
+        ? "Budget spent — grant a new permission"
         : null;
 
   const append = useCallback((text: string) => {
@@ -500,13 +496,15 @@ export default function DemoPage() {
         60,
         Math.floor(new Date(expiryAt).getTime() / 1000) - Math.floor(Date.now() / 1000)
       );
-      append(`Requesting permission: up to ${amountInput} USDC / ${periodLabel(periodSeconds)}, expires in ${fmtCountdown(expirySeconds)}…`);
+      append(`Requesting permission: up to ${amountInput} USDC, expires in ${fmtCountdown(expirySeconds)}…`);
       const result = await grantBudget({
         walletClient,
         userAddress: address,
         coordinator,
         amountUsdc: amountInput,
-        periodDuration: periodSeconds,
+        // One budget for the grant's life: the spend window == the expiry, so
+        // there's no mid-grant reset (no confusing "per hour/day/week").
+        periodDuration: expirySeconds,
         expirySeconds,
       });
       setGrantResult(result);
@@ -794,29 +792,17 @@ export default function DemoPage() {
                 <p className="text-[13px] leading-relaxed text-conduit-muted">
                   Authorize an agent budget — erc7715, bound per request, revocable anytime.
                 </p>
-                <div className="flex items-center gap-2 text-sm">
-                  <span className="text-white">up to</span>
+                <label className="flex items-center gap-2 text-sm">
+                  <span className="text-white">budget — up to</span>
                   <input
                     type="number" min="0" step="0.01" inputMode="decimal"
                     value={amountInput}
                     onChange={(e) => setAmountInput(e.target.value)}
                     disabled={!connected || busy}
-                    className="mono w-20 rounded-lg border border-conduit-border bg-transparent px-2 py-1.5 text-white outline-none focus:border-conduit-cyan disabled:opacity-40"
+                    className="mono w-24 rounded-lg border border-conduit-border bg-transparent px-2 py-1.5 text-white outline-none focus:border-conduit-cyan disabled:opacity-40"
                   />
-                  <span className="text-white">/</span>
-                  <select
-                    value={periodSeconds}
-                    onChange={(e) => setPeriodSeconds(Number(e.target.value))}
-                    disabled={!connected || busy}
-                    className="mono rounded-lg border border-conduit-border bg-conduit-panel px-2 py-1.5 text-white outline-none focus:border-conduit-cyan disabled:opacity-40"
-                  >
-                    {PERIOD_OPTIONS.map((o) => (
-                      <option key={o.seconds} value={o.seconds} className="bg-conduit-panel">
-                        {o.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+                  <span className="text-white">USDC</span>
+                </label>
                 <div className="space-y-1.5 text-sm">
                   <span className="text-white">expires</span>
                   <input
@@ -866,10 +852,8 @@ export default function DemoPage() {
             ) : (
               <p className="mt-4 text-[13px] leading-relaxed text-conduit-muted">
                 Authorizing{" "}
-                <span className="font-semibold text-white">
-                  up to {displayAmount} USDC / {displayPeriod}
-                </span>
-                . Expires in <span className="mono text-conduit-cyan">{expiryText}</span>.
+                <span className="font-semibold text-white">up to {displayAmount} USDC</span> for
+                this task. Expires in <span className="mono text-conduit-cyan">{expiryText}</span>.
               </p>
             )}
 
