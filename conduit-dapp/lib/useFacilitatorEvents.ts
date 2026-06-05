@@ -34,7 +34,19 @@ export function useFacilitatorEvents(enabled = true) {
     if (!enabled) return;
     const es = new EventSource(`${config.facilitatorUrl}/events`);
     esRef.current = es;
-    es.onopen = () => setConnected(true);
+    es.onopen = () => {
+      setConnected(true);
+      // The /events stream is live-only. On (re)connect, backfill the ring
+      // buffer so confirmations emitted during a gap aren't lost. Consumers
+      // dedupe by event id, so re-delivering already-seen events is harmless.
+      fetch(`${config.facilitatorUrl}/events/recent`)
+        .then((r) => (r.ok ? r.json() : { events: [] }))
+        .then((d) => {
+          const recent = (d.events ?? []) as ConduitEvent[];
+          if (recent.length) setEvents((list) => [...list, ...recent]);
+        })
+        .catch(() => {});
+    };
     es.onerror = () => setConnected(false);
     es.onmessage = (e) => {
       try {

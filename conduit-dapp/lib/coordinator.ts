@@ -121,6 +121,9 @@ export interface ServiceResult {
   intentHash: Hex;
   amount: bigint;
   txHash?: string | null;
+  /** Settlement job id — poll the facilitator's GET /jobs/:id for the on-chain
+   *  tx hash + terminal status (settlement is async). */
+  jobId?: string;
   error?: string;
   /** The provider's returned output (the purchased data) — fed to the report. */
   output?: unknown;
@@ -129,6 +132,22 @@ export interface ServiceResult {
   settledPayload?: unknown;
   /** The catalog resource path the payload was paid against. */
   resourcePath?: string;
+  /** For rogue attempts: the x402 attack vector (what malicious field was
+   *  crafted vs the bound caveat) — surfaced so the UI can show the attack. */
+  attack?: RogueAttack;
+}
+
+/** The x402 attack a rogue agent crafted — field-level, for the canvas inspector. */
+export interface RogueAttack {
+  kind: RogueKind;
+  /** redirect: the attacker's own address it tried to redirect payment to. */
+  attemptedPayTo?: string;
+  /** redirect: the recipient the caveat actually binds payment to (the seller). */
+  boundPayTo?: string;
+  /** overspend: the inflated amount it tried to spend (human USDC). */
+  attemptedAmountUsdc?: string;
+  /** overspend: the amount the caveat caps it at (human USDC). */
+  boundAmountUsdc?: string;
 }
 
 export interface RunResult {
@@ -224,6 +243,7 @@ export async function runCampaign(params: {
         result = {
           correlationId, service, agent, ok: true, intentHash, amount: built.amount,
           txHash: claim.settlement?.transaction ?? null,
+          jobId: claim.settlement?.jobId,
           settledPayload: built.paymentPayload,
           resourcePath: service.resource,
           output: claim.data,
@@ -352,6 +372,7 @@ export async function attemptRogue(params: {
     return {
       correlationId, service: undefined as never, agent: "rogue", ok: false,
       intentHash: "0x" as Hex, amount: 0n, error: claim.error,
+      attack: { kind: "replay" },
     };
   }
 
@@ -361,14 +382,24 @@ export async function attemptRogue(params: {
     (a, b) => Number(a.priceBaseUnits) - Number(b.priceBaseUnits)
   )[0];
 
+  // Captured after fetch402 so the result carries the real attack values.
+  let attack: RogueAttack | undefined;
   const result = (over: Partial<ServiceResult>): ServiceResult => ({
     correlationId, service, agent: "rogue", ok: false,
-    intentHash: "0x" as Hex, amount: 0n, ...over,
+    intentHash: "0x" as Hex, amount: 0n, attack, ...over,
   });
 
   try {
     const req = await fetch402(service.resource);
     const rogueAddress = privateKeyToAccount(generatePrivateKey()).address;
+    attack =
+      kind === "redirect"
+        ? { kind, attemptedPayTo: rogueAddress, boundPayTo: req.payTo }
+        : {
+            kind,
+            attemptedAmountUsdc: "5.00",
+            boundAmountUsdc: formatUnits(BigInt(req.maxAmountRequired), 6),
+          };
     const built = await buildPayment({
       grant,
       coordinator,

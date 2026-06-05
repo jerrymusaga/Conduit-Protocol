@@ -108,6 +108,33 @@ export interface ClaimResult {
   error?: string;
 }
 
+/** A settlement job's current state (GET /jobs/:id on the facilitator). */
+export interface JobState {
+  jobId: string;
+  /** "submitted" | "pending" | "confirmed" | "failed". */
+  status: string;
+  transaction?: string | null;
+  error?: string | null;
+}
+
+/**
+ * Poll the facilitator for a settlement job's state. Settlement is async (1Shot
+ * relays + confirms the tx out of band); this is the reliable, SSE-independent
+ * way to learn the on-chain tx hash and terminal status. Returns null on a
+ * transient fetch error so the caller can keep polling.
+ */
+export async function fetchJob(jobId: string): Promise<JobState | null> {
+  try {
+    const res = await fetch(`${config.facilitatorUrl}/jobs/${jobId}`);
+    if (!res.ok) return null;
+    const b = (await res.json()) as { status?: string; transaction?: string | null; error?: string | null };
+    if (!b.status) return null;
+    return { jobId, status: b.status, transaction: b.transaction ?? null, error: b.error ?? null };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Re-GET the resource with the X-PAYMENT header (base64 JSON per x402). The
  * endpoint verifies (simulation) then settles (relayer submits the redemption)
