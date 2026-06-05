@@ -227,3 +227,19 @@ body::before {
   }
   html { scroll-behavior: auto; }
 }
+
+/* ---- Form controls --------------------------------------------------- */
+/* The native datetime/date picker icon is dark by default — nearly invisible
+   on the dark theme. Invert it to white and brighten on hover. */
+input[type="datetime-local"]::-webkit-calendar-picker-indicator,
+input[type="date"]::-webkit-calendar-picker-indicator,
+input[type="time"]::-webkit-calendar-picker-indicator {
+  filter: invert(1) brightness(1.6);
+  opacity: 0.75;
+  cursor: pointer;
+}
+input[type="datetime-local"]::-webkit-calendar-picker-indicator:hover,
+input[type="date"]::-webkit-calendar-picker-indicator:hover,
+input[type="time"]::-webkit-calendar-picker-indicator:hover {
+  opacity: 1;
+}

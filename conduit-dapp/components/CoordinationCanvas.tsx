@@ -33,6 +33,8 @@ export interface CanvasCard {
   txHash?: string | null;
   agentAddress?: string;
   a2a?: boolean;
+  /** Where the purchased output came from (e.g. "venice:crypto-rpc · …"). */
+  source?: string;
 }
 
 interface Budget {
@@ -100,7 +102,7 @@ export function CoordinationCanvas({
   if (cards.length === 0) {
     return (
       <div className="flex min-h-[460px] flex-col items-center justify-center text-center">
-        <Node kind="you" label="YOU" sub={`one permission · ≤${budget.capUsdc} USDC`} accent={CYAN} />
+        <Node kind="you" label="YOU" sub={`one permission · up to ${budget.capUsdc} USDC`} accent={CYAN} />
         <Connector />
         <Node kind="coordinator" label="COORDINATOR" sub="waiting for a prompt" accent="#5b6472" idle />
         <p className="mx-auto mt-8 max-w-md text-[12px] leading-relaxed text-conduit-muted/70">
@@ -133,12 +135,12 @@ export function CoordinationCanvas({
             <span className="mono text-white">{budget.remainingUsdc} left of {budget.capUsdc}</span>
           </div>
         </div>
-        <EdgeLabel text={`grant ≤${budget.capUsdc} USDC / period`} />
+        <EdgeLabel text={`grant up to ${budget.capUsdc} USDC / period`} />
         <Connector />
         {/* COORDINATOR */}
         <Node kind="coordinator" label="◆ COORDINATOR" sub={short(coordinatorAddress)} accent={VIOLET} />
         <p className="mt-2 text-[10px] uppercase tracking-wide text-conduit-muted/70">
-          hires {cards.filter((c) => c.agent !== "rogue").length} specialist{cards.filter((c) => c.agent !== "rogue").length === 1 ? "" : "s"} · {mode === "a2a" ? "3-hop A2A" : "direct (2-hop)"}
+          hires {cards.filter((c) => c.agent !== "rogue").length} specialist{cards.filter((c) => c.agent !== "rogue").length === 1 ? "" : "s"} · {mode === "a2a" ? "A2A sub-agents" : "direct"}
         </p>
         <Connector />
       </div>
@@ -194,7 +196,7 @@ export function CoordinationCanvas({
               <Line k="from" v="coordinator" />
               <Line k="to" v={selectedCard.a2a ? `specialist ${short(selectedCard.agentAddress)}` : "coordinator (direct)"} />
               <Line k="task" v={selectedCard.rationale} />
-              <Line k="budget cap" v={`≤ ${selectedCard.priceUsdc} USDC · intent-bound`} />
+              <Line k="budget cap" v={`up to ${selectedCard.priceUsdc} USDC · intent-bound`} />
             </div>
             <Erc7710Inspector
               binding={bindingFor(selectedCard)}
@@ -238,7 +240,7 @@ function SpecialistColumn({
     <div className="reveal flex w-44 flex-col items-center" style={{ animationDelay: `${index * 110}ms` }}>
       {/* A2A edge chip */}
       <div className="mono w-full truncate rounded-md border border-conduit-border/60 px-2 py-1 text-center text-[9.5px] text-conduit-muted">
-        {rogue ? "↯ hijacked" : mode === "a2a" ? `← scoped · ≤${card.priceUsdc}` : `← ≤${card.priceUsdc}`}
+        {rogue ? "↯ hijacked" : mode === "a2a" ? `← scoped · up to ${card.priceUsdc}` : `← up to ${card.priceUsdc}`}
       </div>
       <span className="text-conduit-muted/30">▼</span>
 
@@ -288,6 +290,11 @@ function SpecialistColumn({
           >
             tx {short(card.txHash)} ↗
           </a>
+        )}
+        {p.done && card.source?.startsWith("venice") && (
+          <span className="mono mt-0.5 block text-[9px] text-conduit-violet" title={card.source}>
+            ✦ via Venice
+          </span>
         )}
         {card.reason && <p className="mono mt-0.5 text-[9px] leading-tight text-conduit-magenta/80">{card.reason}</p>}
       </div>

@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useAccount, useWalletClient, useSwitchChain } from "wagmi";
 import {
   usePrivy,
@@ -59,6 +59,8 @@ interface FeedCard {
   agentAddress?: string;
   /** True when this payment runs as a 3-hop A2A (coordinator → specialist → relayer). */
   a2a?: boolean;
+  /** Where the purchased output came from (e.g. "venice:crypto-rpc · …"). */
+  source?: string;
 }
 
 /** One purchased provider's contribution to the aggregated report. */
@@ -66,7 +68,7 @@ interface ReportSection {
   agent: string;
   label: string;
   priceUsdc: string;
-  output: { type?: string; content?: unknown };
+  output: { type?: string; content?: unknown; source?: string };
 }
 
 /** How long the whole grant stays valid (TimestampEnforcer). Independent of
@@ -206,13 +208,28 @@ export default function DemoPage() {
 
   // Console state.
   const [prompt, setPrompt] = useState("Generate a complete ETH staking market report.");
+  // A2A coordination mode. Default = real agent-to-agent: one specialist
+  // sub-agent (own on-chain key) per purchased service. `looped` (coordinator
+  // pays directly, fewer hops) is a silent live-reliability fallback reachable
+  // via ?mode=looped — not exposed in the UI.
   const [mode, setMode] = useState<A2AMode>("a2a");
+  useEffect(() => {
+    const m = new URLSearchParams(window.location.search).get("mode");
+    if (m === "looped" || m === "a2a") setMode(m);
+  }, []);
   const [busy, setBusy] = useState(false);
   const [spent, setSpent] = useState(0); // micro-USDC settled (optimistic, during a run)
   const [budgetState, setBudgetState] = useState<BudgetState | null>(null); // on-chain truth
   const [cards, setCards] = useState<FeedCard[]>([]);
   const [report, setReport] = useState<ReportSection[] | null>(null); // aggregated final report
   const reportRef = useRef<ReportSection[]>([]); // accumulates outputs during a run
+  const [reportMarkdown, setReportMarkdown] = useState<string | null>(null); // Venice-aggregated prose
+  const [reportCover, setReportCover] = useState<string | null>(null); // Venice cover image (data URL)
+  // Voice input: record the spoken prompt, transcribe via Venice STT.
+  const [recording, setRecording] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
   const [log, setLog] = useState<{ t: string; text: string }[]>([]);
   // The last settled payment (exact payload + path) — fuel for a REAL replay.
   const lastSettledRef = useRef<{ payload: unknown; resourcePath: string } | null>(null);
@@ -534,6 +551,89 @@ export default function DemoPage() {
     }
   };
 
+  // Venice report enrichment: prose aggregation (/api/report) + cover image
+  // (/api/cover). Best-effort — failures leave the deterministic sections intact.
+  const enrichReport = async (forPrompt: string, sections: ReportSection[]) => {
+    append("coordinator › Venice is writing the report…");
+    try {
+      const [rRes, cRes] = await Promise.allSettled([
+        fetch("/api/report", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ prompt: forPrompt, sections }),
+        }),
+        fetch("/api/cover", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title: "ETH Staking Market Report" }),
+        }),
+      ]);
+      if (rRes.status === "fulfilled" && rRes.value.ok) {
+        const j = (await rRes.value.json()) as { markdown?: string | null };
+        if (j.markdown) {
+          setReportMarkdown(j.markdown);
+          append("coordinator › Venice report ready ✓");
+        }
+      }
+      if (cRes.status === "fulfilled" && cRes.value.ok) {
+        const j = (await cRes.value.json()) as { image?: string | null };
+        if (j.image) setReportCover(j.image);
+      }
+    } catch (e) {
+      append(`coordinator › Venice enrichment skipped · ${errMsg(e)}`);
+    }
+  };
+
+  // Voice input — record the spoken request, transcribe via Venice STT, drop it
+  // into the prompt box. Venice is the very first step of the main flow.
+  const toggleRecord = async () => {
+    if (recording) {
+      mediaRecorderRef.current?.stop();
+      return;
+    }
+    if (!navigator.mediaDevices?.getUserMedia) {
+      append("voice › this browser does not support recording");
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const rec = new MediaRecorder(stream);
+      audioChunksRef.current = [];
+      rec.ondataavailable = (e) => {
+        if (e.data.size > 0) audioChunksRef.current.push(e.data);
+      };
+      rec.onstop = async () => {
+        stream.getTracks().forEach((t) => t.stop());
+        setRecording(false);
+        const blob = new Blob(audioChunksRef.current, { type: rec.mimeType || "audio/webm" });
+        if (blob.size === 0) return;
+        setTranscribing(true);
+        append("voice › transcribing via Venice…");
+        try {
+          const form = new FormData();
+          form.append("audio", blob, "request.webm");
+          const res = await fetch("/api/transcribe", { method: "POST", body: form });
+          const json = (await res.json()) as { text?: string; error?: string };
+          if (res.ok && json.text) {
+            setPrompt(json.text);
+            append(`voice › "${json.text}"`);
+          } else {
+            append(`voice › ${json.error ?? "transcription failed"}`);
+          }
+        } catch (e) {
+          append(`voice › ${errMsg(e)}`);
+        } finally {
+          setTranscribing(false);
+        }
+      };
+      mediaRecorderRef.current = rec;
+      rec.start();
+      setRecording(true);
+    } catch (e) {
+      append(`voice › mic access denied · ${errMsg(e)}`);
+    }
+  };
+
   // Run the prompt: coordinator plans, then pays each service through Conduit.
   const run = async () => {
     if (busy || !granted || !grantResult || !coordinatorRef.current) return;
@@ -541,6 +641,8 @@ export default function DemoPage() {
     setCards([]);
     setRevoked(false);
     setReport(null);
+    setReportMarkdown(null);
+    setReportCover(null);
     reportRef.current = [];
     setSpent(0); // each campaign meters its own spend against the period cap
     try {
@@ -578,10 +680,15 @@ export default function DemoPage() {
                   resourcePath: r.resourcePath,
                 };
               }
+              const source = (r.output as { source?: string } | undefined)?.source;
               setCardStage(r.correlationId, {
                 stage: "settled",
                 txHash: r.txHash ?? null,
+                source,
               });
+              if (source?.startsWith("venice")) {
+                append(`${r.agent} › output generated by Venice (${source.replace(/^venice:/, "")})`);
+              }
               // Collect the purchased output for the aggregated report.
               if (r.output) {
                 reportRef.current.push({
@@ -601,9 +708,13 @@ export default function DemoPage() {
       setAuthorization(null);
       // Aggregate the purchased outputs into the final report.
       if (reportRef.current.length > 0) {
+        const sections = [...reportRef.current];
         append("coordinator › aggregating provider outputs into a report…");
-        setReport([...reportRef.current]);
+        setReport(sections);
         append("Report complete ✓");
+        // Enrich via Venice (best-effort): prose aggregation + a cover image.
+        // Both fall back gracefully — the deterministic sections always render.
+        void enrichReport(prompt, sections);
       }
     } catch (e) {
       append(`Run failed · ${errMsg(e)}`);
@@ -729,14 +840,170 @@ export default function DemoPage() {
         </div>
       </div>
 
-      <div className="mx-auto grid max-w-7xl gap-6 px-6 py-8 lg:grid-cols-12">
-        {/* LEFT: permission (the prerequisite) above the prompt + budget */}
+      {/* PERMISSION — full-width setup bar (the prerequisite: grant a bounded
+          budget first, then run). Controls lay out horizontally; the budget
+          meter + revoke sit in a right rail. */}
+      <div className="mx-auto max-w-7xl px-6 pt-8">
+        <section className="panel p-6">
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-semibold uppercase tracking-wide text-conduit-muted">
+              Permission
+            </h2>
+            <span
+              className={`mono rounded-md px-2 py-0.5 text-[11px] ${granted ? "bg-conduit-cyan/15 text-conduit-cyan" : "border border-conduit-border text-conduit-muted"}`}
+            >
+              {granted ? "active" : "not granted"}
+            </span>
+          </div>
+
+          <div className="mt-4 flex flex-col gap-6 lg:flex-row lg:items-start lg:justify-between">
+            {/* setup / status */}
+            <div className="flex-1">
+              {!granted ? (
+                <div className="flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-end">
+                  {/* budget */}
+                  <label className="flex flex-col gap-1.5 text-sm">
+                    <span className="text-white">budget — up to</span>
+                    <span className="flex items-center gap-2">
+                      <input
+                        type="number" min="0" step="0.01" inputMode="decimal"
+                        value={amountInput}
+                        onChange={(e) => setAmountInput(e.target.value)}
+                        disabled={!connected || busy}
+                        className="mono w-28 rounded-lg border border-conduit-border bg-transparent px-2 py-1.5 text-white outline-none focus:border-conduit-cyan disabled:opacity-40"
+                      />
+                      <span className="text-white">USDC</span>
+                    </span>
+                  </label>
+                  {/* expires */}
+                  <div className="flex flex-col gap-1.5 text-sm">
+                    <span className="text-white">expires</span>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <input
+                        type="datetime-local"
+                        value={expiryAt}
+                        min={toLocalDatetime(Date.now() + 60_000)}
+                        onChange={(e) => setExpiryAt(e.target.value)}
+                        disabled={!connected || busy}
+                        className="mono rounded-lg border border-conduit-border bg-conduit-panel px-2 py-1.5 text-white outline-none focus:border-conduit-cyan disabled:opacity-40"
+                      />
+                      <div className="flex flex-wrap gap-1.5">
+                        {EXPIRY_OPTIONS.map((o) => (
+                          <button
+                            key={o.seconds}
+                            type="button"
+                            onClick={() => setExpiryAt(toLocalDatetime(Date.now() + o.seconds * 1000))}
+                            disabled={!connected || busy}
+                            className="mono rounded-md border border-conduit-border px-2 py-0.5 text-[11px] text-conduit-muted transition-colors hover:border-conduit-cyan/50 hover:text-conduit-cyan disabled:opacity-40"
+                          >
+                            +{o.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                  {/* grant */}
+                  <button
+                    onClick={grant}
+                    disabled={!connected || busy || needsSmartAccount}
+                    className="btn-primary justify-center text-sm disabled:opacity-40 sm:self-end"
+                  >
+                    Grant permission
+                  </button>
+                </div>
+              ) : (
+                <p className="text-[13px] leading-relaxed text-conduit-muted">
+                  Authorizing{" "}
+                  <span className="font-semibold text-white">up to {displayAmount} USDC</span> for
+                  this task. Expires in <span className="mono text-conduit-cyan">{expiryText}</span>.
+                </p>
+              )}
+              {!granted && connected && (
+                <p className="mt-3 text-[11px] leading-relaxed text-conduit-muted">
+                  {needsSmartAccount ? (
+                    <span className="text-conduit-magenta">
+                      This MetaMask account isn&apos;t a Smart Account yet. Enable
+                      MetaMask Smart Account in your wallet, or sign in with email.
+                    </span>
+                  ) : hasCode ? (
+                    <span className="text-conduit-cyan">MetaMask Smart Account detected ✓</span>
+                  ) : isEmbeddedWallet ? (
+                    <span className="text-conduit-muted">Embedded wallet — you&apos;ll sign a one-time 7702 upgrade with the grant.</span>
+                  ) : null}
+                </p>
+              )}
+              {!granted && (
+                <p className="mt-3 text-[12px] leading-relaxed text-conduit-muted/80">
+                  Authorize an agent budget — erc7715, bound per request, revocable anytime.
+                </p>
+              )}
+            </div>
+
+            {/* budget meter + revoke (right rail) */}
+            <div className="w-full lg:w-72 lg:shrink-0">
+              <div className="flex justify-between text-xs text-conduit-muted">
+                <span>spent</span>
+                <span className="mono">
+                  {(spentClamped / 1e6).toFixed(2)} / {displayAmount} USDC
+                </span>
+              </div>
+              <div className="mt-2 h-2 overflow-hidden rounded-full bg-white/5">
+                <div
+                  className="h-full rounded-full transition-all duration-500"
+                  style={{ width: `${pct}%`, background: "linear-gradient(90deg,#00E5FF,#7C3AED,#EC4899)" }}
+                />
+              </div>
+              <div className="mt-1 text-right text-[11px] text-conduit-muted">
+                remaining{" "}
+                <span className="mono text-white">{remainingUsdc} USDC</span>
+              </div>
+              {granted && (
+                <div className="mt-4 border-t border-conduit-border/60 pt-3">
+                  <button
+                    onClick={revoke}
+                    disabled={busy}
+                    className="w-full rounded-lg border border-conduit-magenta/40 px-3 py-2 text-xs font-medium text-conduit-magenta transition-colors hover:bg-conduit-magenta/10 disabled:opacity-40"
+                  >
+                    {busy ? "Working…" : "Revoke budget — kill all agents (on-chain)"}
+                  </button>
+                  <p className="mt-1.5 text-[11px] leading-relaxed text-conduit-muted/70">
+                    Disables the root delegation; every task agent under it dies at once. Needs a little ETH.
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <div className="mx-auto grid max-w-7xl gap-6 px-6 pb-8 pt-6 lg:grid-cols-12">
+        {/* LEFT: the prompt + run + the compromised-agent beat */}
         <div className="flex flex-col gap-6 lg:col-span-3">
           {/* Prompt */}
           <section className="panel p-6">
-            <h2 className="text-sm font-semibold uppercase tracking-wide text-conduit-muted">
-              Prompt
-            </h2>
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-semibold uppercase tracking-wide text-conduit-muted">
+                Prompt
+              </h2>
+              <button
+                onClick={toggleRecord}
+                disabled={busy || transcribing}
+                title={recording ? "Stop & transcribe" : "Speak your request (Venice)"}
+                className={`mono flex items-center gap-1.5 rounded-md px-2 py-1 text-[11px] transition disabled:opacity-40 ${
+                  recording
+                    ? "bg-conduit-magenta/20 text-conduit-magenta animate-pulse"
+                    : "border border-conduit-border text-conduit-muted hover:text-conduit-cyan"
+                }`}
+              >
+                {/* mic glyph (inline SVG — no icon lib) */}
+                <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <rect x="9" y="2" width="6" height="11" rx="3" />
+                  <path d="M5 10a7 7 0 0 0 14 0" />
+                  <line x1="12" y1="19" x2="12" y2="22" />
+                </svg>
+                {recording ? "Recording… stop" : transcribing ? "Transcribing…" : "Speak"}
+              </button>
+            </div>
             <textarea
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
@@ -744,23 +1011,9 @@ export default function DemoPage() {
               rows={3}
               className="mono mt-3 w-full resize-none rounded-lg border border-conduit-border bg-transparent px-3 py-2 text-[13px] text-white outline-none focus:border-conduit-cyan disabled:opacity-40"
             />
-            <div className="mt-3 flex items-center gap-2 text-xs">
-              <span className="text-conduit-muted">A2A:</span>
-              <button
-                onClick={() => setMode("a2a")}
-                disabled={busy}
-                className={`mono rounded-md px-2 py-1 ${mode === "a2a" ? "bg-conduit-cyan/15 text-conduit-cyan" : "border border-conduit-border text-conduit-muted"}`}
-              >
-                3-hop sub-agents
-              </button>
-              <button
-                onClick={() => setMode("looped")}
-                disabled={busy}
-                className={`mono rounded-md px-2 py-1 ${mode === "looped" ? "bg-conduit-cyan/15 text-conduit-cyan" : "border border-conduit-border text-conduit-muted"}`}
-              >
-                looped
-              </button>
-            </div>
+            <p className="mono mt-2 text-[10px] text-conduit-muted/70">
+              <span className="text-conduit-violet">✦</span> voice · research · report — powered by Venice
+            </p>
             <button
               onClick={run}
               disabled={!granted || busy || !!runBlock}
@@ -801,128 +1054,6 @@ export default function DemoPage() {
               </div>
             </div>
           </section>
-
-          {/* Permission — the prerequisite, ordered first in the column */}
-          <section className="panel order-first p-6">
-            <div className="flex items-center justify-between">
-              <h2 className="text-sm font-semibold uppercase tracking-wide text-conduit-muted">
-                Permission
-              </h2>
-              <span
-                className={`mono rounded-md px-2 py-0.5 text-[11px] ${granted ? "bg-conduit-cyan/15 text-conduit-cyan" : "border border-conduit-border text-conduit-muted"}`}
-              >
-                {granted ? "active" : "not granted"}
-              </span>
-            </div>
-
-            {!granted ? (
-              <div className="mt-4 space-y-3">
-                <p className="text-[13px] leading-relaxed text-conduit-muted">
-                  Authorize an agent budget — erc7715, bound per request, revocable anytime.
-                </p>
-                <label className="flex items-center gap-2 text-sm">
-                  <span className="text-white">budget — up to</span>
-                  <input
-                    type="number" min="0" step="0.01" inputMode="decimal"
-                    value={amountInput}
-                    onChange={(e) => setAmountInput(e.target.value)}
-                    disabled={!connected || busy}
-                    className="mono w-24 rounded-lg border border-conduit-border bg-transparent px-2 py-1.5 text-white outline-none focus:border-conduit-cyan disabled:opacity-40"
-                  />
-                  <span className="text-white">USDC</span>
-                </label>
-                <div className="space-y-1.5 text-sm">
-                  <span className="text-white">expires</span>
-                  <input
-                    type="datetime-local"
-                    value={expiryAt}
-                    min={toLocalDatetime(Date.now() + 60_000)}
-                    onChange={(e) => setExpiryAt(e.target.value)}
-                    disabled={!connected || busy}
-                    className="mono w-full rounded-lg border border-conduit-border bg-conduit-panel px-2 py-1.5 text-white outline-none focus:border-conduit-cyan disabled:opacity-40"
-                  />
-                  <div className="flex flex-wrap gap-1.5">
-                    {EXPIRY_OPTIONS.map((o) => (
-                      <button
-                        key={o.seconds}
-                        type="button"
-                        onClick={() => setExpiryAt(toLocalDatetime(Date.now() + o.seconds * 1000))}
-                        disabled={!connected || busy}
-                        className="mono rounded-md border border-conduit-border px-2 py-0.5 text-[11px] text-conduit-muted transition-colors hover:border-conduit-cyan/50 hover:text-conduit-cyan disabled:opacity-40"
-                      >
-                        +{o.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                <button
-                  onClick={grant}
-                  disabled={!connected || busy || needsSmartAccount}
-                  className="btn-primary mt-1 w-full justify-center text-sm disabled:opacity-40"
-                >
-                  Grant permission
-                </button>
-                {connected && (
-                  <p className="text-[11px] leading-relaxed text-conduit-muted">
-                    {needsSmartAccount ? (
-                      <span className="text-conduit-magenta">
-                        This MetaMask account isn&apos;t a Smart Account yet. Enable
-                        MetaMask Smart Account in your wallet, or sign in with email.
-                      </span>
-                    ) : hasCode ? (
-                      <span className="text-conduit-cyan">MetaMask Smart Account detected ✓</span>
-                    ) : isEmbeddedWallet ? (
-                      <span className="text-conduit-muted">Embedded wallet — you&apos;ll sign a one-time 7702 upgrade with the grant.</span>
-                    ) : null}
-                  </p>
-                )}
-              </div>
-            ) : (
-              <p className="mt-4 text-[13px] leading-relaxed text-conduit-muted">
-                Authorizing{" "}
-                <span className="font-semibold text-white">up to {displayAmount} USDC</span> for
-                this task. Expires in <span className="mono text-conduit-cyan">{expiryText}</span>.
-              </p>
-            )}
-
-            {/* budget meter */}
-            <div className="mt-5">
-              <div className="flex justify-between text-xs text-conduit-muted">
-                <span>spent</span>
-                <span className="mono">
-                  {(spentClamped / 1e6).toFixed(2)} / {displayAmount} USDC
-                </span>
-              </div>
-              <div className="mt-2 h-2 overflow-hidden rounded-full bg-white/5">
-                <div
-                  className="h-full rounded-full transition-all duration-500"
-                  style={{ width: `${pct}%`, background: "linear-gradient(90deg,#00E5FF,#7C3AED,#EC4899)" }}
-                />
-              </div>
-              <div className="mt-1 text-right text-[11px] text-conduit-muted">
-                remaining{" "}
-                <span className="mono text-white">{remainingUsdc} USDC</span>
-              </div>
-            </div>
-
-            {/* Cascading revoke — the kill switch. Disables the root → all task
-                agents under it die at once (the "cascading revoke" beat). */}
-            {granted && (
-              <div className="mt-5 border-t border-conduit-border/60 pt-4">
-                <button
-                  onClick={revoke}
-                  disabled={busy}
-                  className="w-full rounded-lg border border-conduit-magenta/40 px-3 py-2 text-xs font-medium text-conduit-magenta transition-colors hover:bg-conduit-magenta/10 disabled:opacity-40"
-                >
-                  {busy ? "Working…" : "Revoke budget — kill all agents (on-chain)"}
-                </button>
-                <p className="mt-1.5 text-[11px] leading-relaxed text-conduit-muted/70">
-                  Disables the root delegation; every task agent under it dies at once. Your
-                  own kill switch — direct on-chain tx (needs a little ETH).
-                </p>
-              </div>
-            )}
-          </section>
         </div>
 
         {/* CENTER: the live event feed — the star */}
@@ -955,7 +1086,9 @@ export default function DemoPage() {
           </section>
 
           {/* The payoff: the aggregated report assembled from purchased outputs */}
-          {report && <ReportPanel sections={report} />}
+          {report && (
+            <ReportPanel sections={report} markdown={reportMarkdown} cover={reportCover} />
+          )}
         </div>
 
         {/* RIGHT: activity log */}
@@ -996,7 +1129,15 @@ const REPORT_HEADINGS: Record<string, string> = {
   analytics: "Analysis",
 };
 
-function ReportPanel({ sections }: { sections: ReportSection[] }) {
+function ReportPanel({
+  sections,
+  markdown,
+  cover,
+}: {
+  sections: ReportSection[];
+  markdown?: string | null;
+  cover?: string | null;
+}) {
   const total = sections.reduce((s, x) => s + (Number(x.priceUsdc) || 0), 0);
   return (
     <section className="panel reveal mt-6 p-6">
@@ -1013,21 +1154,46 @@ function ReportPanel({ sections }: { sections: ReportSection[] }) {
         {sections.length === 1 ? "" : "s"} purchased through Conduit.
       </p>
 
-      <div className="mt-5 space-y-5">
-        {sections.map((sec, i) => (
-          <div key={i}>
-            <h3 className="text-sm font-semibold text-white">
-              {REPORT_HEADINGS[sec.agent] ?? sec.label}
-              <span className="mono ml-2 text-[10px] font-normal text-conduit-muted">
-                via {sec.label} · {sec.priceUsdc} USDC
-              </span>
-            </h3>
-            <div className="mt-1.5 text-[13px] leading-relaxed text-conduit-muted">
-              <ReportOutput output={sec.output} />
-            </div>
+      {/* The product payoff: a Venice-generated cover image. */}
+      {cover && (
+        <div className="relative mt-4 overflow-hidden rounded-lg border border-conduit-border">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={cover} alt="Report cover" className="h-44 w-full object-cover" />
+          <span className="mono absolute bottom-2 right-2 rounded bg-black/60 px-1.5 py-0.5 text-[9px] text-conduit-cyan">
+            cover · Venice image
+          </span>
+        </div>
+      )}
+
+      {/* Venice-aggregated prose (best-effort). Falls back to raw sections. */}
+      {markdown ? (
+        <>
+          <div className="mt-5 flex items-center gap-2">
+            <span className="mono rounded bg-conduit-violet/15 px-1.5 py-0.5 text-[10px] text-conduit-violet">
+              ✦ written by Venice
+            </span>
           </div>
-        ))}
-      </div>
+          <div className="mt-2">
+            <MiniMarkdown text={markdown} />
+          </div>
+          <details className="mt-5 border-t border-conduit-border/60 pt-3">
+            <summary className="mono cursor-pointer text-[11px] text-conduit-muted hover:text-conduit-cyan">
+              purchased sources ({sections.length})
+            </summary>
+            <div className="mt-3 space-y-4">
+              {sections.map((sec, i) => (
+                <ReportSectionRow key={i} sec={sec} />
+              ))}
+            </div>
+          </details>
+        </>
+      ) : (
+        <div className="mt-5 space-y-5">
+          {sections.map((sec, i) => (
+            <ReportSectionRow key={i} sec={sec} />
+          ))}
+        </div>
+      )}
 
       <div className="mono mt-6 flex items-center justify-between border-t border-conduit-border/60 pt-3 text-[12px]">
         <span className="text-conduit-muted">
@@ -1036,6 +1202,95 @@ function ReportPanel({ sections }: { sections: ReportSection[] }) {
         <span className="text-white">Total spent: {total.toFixed(2)} USDC</span>
       </div>
     </section>
+  );
+}
+
+function ReportSectionRow({ sec }: { sec: ReportSection }) {
+  return (
+    <div>
+      <h3 className="text-sm font-semibold text-white">
+        {REPORT_HEADINGS[sec.agent] ?? sec.label}
+        <span className="mono ml-2 text-[10px] font-normal text-conduit-muted">
+          via {sec.label} · {sec.priceUsdc} USDC
+          {sec.output?.source ? ` · ${sec.output.source}` : ""}
+        </span>
+      </h3>
+      <div className="mt-1.5 text-[13px] leading-relaxed text-conduit-muted">
+        <ReportOutput output={sec.output} />
+      </div>
+    </div>
+  );
+}
+
+/** Minimal, dependency-free markdown → JSX. Handles the subset Venice emits:
+ *  #/##/### headings, - bullets, **bold**, and paragraphs. No raw HTML. */
+function MiniMarkdown({ text }: { text: string }) {
+  const lines = text.replace(/\r/g, "").split("\n");
+  const blocks: ReactNode[] = [];
+  let list: string[] = [];
+  const flushList = (key: string) => {
+    if (list.length) {
+      blocks.push(
+        <ul key={key} className="my-2 list-disc space-y-1 pl-5 text-[13px] text-conduit-muted">
+          {list.map((it, i) => (
+            <li key={i}>{inlineBold(it)}</li>
+          ))}
+        </ul>
+      );
+      list = [];
+    }
+  };
+  lines.forEach((raw, idx) => {
+    const line = raw.trimEnd();
+    if (/^#\s+/.test(line)) {
+      flushList(`l${idx}`);
+      blocks.push(
+        <h3 key={idx} className="mt-3 text-base font-semibold text-white">
+          {inlineBold(line.replace(/^#\s+/, ""))}
+        </h3>
+      );
+    } else if (/^##\s+/.test(line)) {
+      flushList(`l${idx}`);
+      blocks.push(
+        <h4 key={idx} className="mt-3 text-sm font-semibold text-white">
+          {inlineBold(line.replace(/^#{2}\s+/, ""))}
+        </h4>
+      );
+    } else if (/^###\s+/.test(line)) {
+      flushList(`l${idx}`);
+      blocks.push(
+        <h5 key={idx} className="mt-2 text-[13px] font-semibold text-conduit-cyan">
+          {inlineBold(line.replace(/^#{3}\s+/, ""))}
+        </h5>
+      );
+    } else if (/^[-*]\s+/.test(line)) {
+      list.push(line.replace(/^[-*]\s+/, ""));
+    } else if (line.trim() === "") {
+      flushList(`l${idx}`);
+    } else {
+      flushList(`l${idx}`);
+      blocks.push(
+        <p key={idx} className="my-2 text-[13px] leading-relaxed text-conduit-muted">
+          {inlineBold(line)}
+        </p>
+      );
+    }
+  });
+  flushList("last");
+  return <div>{blocks}</div>;
+}
+
+/** Render **bold** spans within a line of text. */
+function inlineBold(text: string): ReactNode {
+  const parts = text.split(/(\*\*[^*]+\*\*)/g);
+  return parts.map((p, i) =>
+    /^\*\*[^*]+\*\*$/.test(p) ? (
+      <strong key={i} className="text-white">
+        {p.slice(2, -2)}
+      </strong>
+    ) : (
+      <span key={i}>{p}</span>
+    )
   );
 }
 
