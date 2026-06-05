@@ -194,7 +194,8 @@ export default function DemoPage() {
   const [grantResult, setGrantResult] = useState<GrantResult | null>(null);
   const [amountInput, setAmountInput] = useState<string>(BUDGET.periodAmountUsdc);
   const [periodSeconds, setPeriodSeconds] = useState<number>(BUDGET.periodDuration);
-  const [expirySeconds, setExpirySeconds] = useState<number>(3600); // grant lifetime
+  // Absolute expiry (datetime-local string); default = now + 1 hour.
+  const [expiryAt, setExpiryAt] = useState<string>(() => toLocalDatetime(Date.now() + 3600_000));
   const [authorization, setAuthorization] = useState<Eip7702Authorization | null>(null);
   const coordinatorRef = useRef<Coordinator | null>(null);
 
@@ -491,6 +492,10 @@ export default function DemoPage() {
         append("EIP-7702 authorization signed · bundled into the first redeem");
       }
 
+      const expirySeconds = Math.max(
+        60,
+        Math.floor(new Date(expiryAt).getTime() / 1000) - Math.floor(Date.now() / 1000)
+      );
       append(`Requesting permission: up to ${amountInput} USDC / ${periodLabel(periodSeconds)}, expires in ${fmtCountdown(expirySeconds)}…`);
       const result = await grantBudget({
         walletClient,
@@ -808,20 +813,29 @@ export default function DemoPage() {
                     ))}
                   </select>
                 </div>
-                <div className="flex items-center gap-2 text-sm">
-                  <span className="text-white">expires after</span>
-                  <select
-                    value={expirySeconds}
-                    onChange={(e) => setExpirySeconds(Number(e.target.value))}
+                <div className="space-y-1.5 text-sm">
+                  <span className="text-white">expires</span>
+                  <input
+                    type="datetime-local"
+                    value={expiryAt}
+                    min={toLocalDatetime(Date.now() + 60_000)}
+                    onChange={(e) => setExpiryAt(e.target.value)}
                     disabled={!connected || busy}
-                    className="mono rounded-lg border border-conduit-border bg-conduit-panel px-2 py-1.5 text-white outline-none focus:border-conduit-cyan disabled:opacity-40"
-                  >
+                    className="mono w-full rounded-lg border border-conduit-border bg-conduit-panel px-2 py-1.5 text-white outline-none focus:border-conduit-cyan disabled:opacity-40"
+                  />
+                  <div className="flex flex-wrap gap-1.5">
                     {EXPIRY_OPTIONS.map((o) => (
-                      <option key={o.seconds} value={o.seconds} className="bg-conduit-panel">
-                        {o.label}
-                      </option>
+                      <button
+                        key={o.seconds}
+                        type="button"
+                        onClick={() => setExpiryAt(toLocalDatetime(Date.now() + o.seconds * 1000))}
+                        disabled={!connected || busy}
+                        className="mono rounded-md border border-conduit-border px-2 py-0.5 text-[11px] text-conduit-muted transition-colors hover:border-conduit-cyan/50 hover:text-conduit-cyan disabled:opacity-40"
+                      >
+                        +{o.label}
+                      </button>
                     ))}
-                  </select>
+                  </div>
                 </div>
                 <button
                   onClick={grant}
@@ -960,6 +974,12 @@ export default function DemoPage() {
 function shorten(addr: string | null): string {
   if (!addr) return "—";
   return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
+}
+
+/** Format a timestamp (ms) as a local "YYYY-MM-DDTHH:mm" for a datetime-local input. */
+function toLocalDatetime(ms: number): string {
+  const off = new Date(ms).getTimezoneOffset() * 60_000;
+  return new Date(ms - off).toISOString().slice(0, 16);
 }
 
 /** Adaptive countdown: days/hours for long grants, mm:ss only under an hour. */
