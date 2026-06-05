@@ -61,6 +61,14 @@ interface FeedCard {
   a2a?: boolean;
 }
 
+/** One purchased provider's contribution to the aggregated report. */
+interface ReportSection {
+  agent: string;
+  label: string;
+  priceUsdc: string;
+  output: { type?: string; content?: unknown };
+}
+
 /** How long the whole grant stays valid (TimestampEnforcer). Independent of
  *  the spend window above — e.g. "≤$5/hour, valid for a week". */
 const EXPIRY_OPTIONS = [
@@ -203,6 +211,8 @@ export default function DemoPage() {
   const [spent, setSpent] = useState(0); // micro-USDC settled (optimistic, during a run)
   const [budgetState, setBudgetState] = useState<BudgetState | null>(null); // on-chain truth
   const [cards, setCards] = useState<FeedCard[]>([]);
+  const [report, setReport] = useState<ReportSection[] | null>(null); // aggregated final report
+  const reportRef = useRef<ReportSection[]>([]); // accumulates outputs during a run
   const [log, setLog] = useState<{ t: string; text: string }[]>([]);
   // The last settled payment (exact payload + path) — fuel for a REAL replay.
   const lastSettledRef = useRef<{ payload: unknown; resourcePath: string } | null>(null);
@@ -398,6 +408,7 @@ export default function DemoPage() {
       setAuthorization(null);
       setSpent(0);
       setCards([]);
+      setReport(null);
       setLog([]);
       rehydrated.current = false;
       clearSession();
@@ -529,6 +540,8 @@ export default function DemoPage() {
     setBusy(true);
     setCards([]);
     setRevoked(false);
+    setReport(null);
+    reportRef.current = [];
     setSpent(0); // each campaign meters its own spend against the period cap
     try {
       await runCampaign({
@@ -569,6 +582,15 @@ export default function DemoPage() {
                 stage: "settled",
                 txHash: r.txHash ?? null,
               });
+              // Collect the purchased output for the aggregated report.
+              if (r.output) {
+                reportRef.current.push({
+                  agent: r.agent,
+                  label: r.service.label,
+                  priceUsdc: r.service.priceUsdc,
+                  output: r.output as ReportSection["output"],
+                });
+              }
             } else {
               setCardStage(r.correlationId, { stage: "denied", reason: r.error });
             }
@@ -577,6 +599,12 @@ export default function DemoPage() {
       });
       // Clear the auth after the first run consumed it for designation.
       setAuthorization(null);
+      // Aggregate the purchased outputs into the final report.
+      if (reportRef.current.length > 0) {
+        append("coordinator › aggregating provider outputs into a report…");
+        setReport([...reportRef.current]);
+        append("Report complete ✓");
+      }
     } catch (e) {
       append(`Run failed · ${errMsg(e)}`);
     } finally {
@@ -925,6 +953,9 @@ export default function DemoPage() {
               />
             </div>
           </section>
+
+          {/* The payoff: the aggregated report assembled from purchased outputs */}
+          {report && <ReportPanel sections={report} />}
         </div>
 
         {/* RIGHT: activity log */}
@@ -955,6 +986,75 @@ export default function DemoPage() {
       </div>
     </main>
   );
+}
+
+// --- report panel ----------------------------------------------------------
+
+const REPORT_HEADINGS: Record<string, string> = {
+  data: "Market Data",
+  news: "Recent News",
+  analytics: "Analysis",
+};
+
+function ReportPanel({ sections }: { sections: ReportSection[] }) {
+  const total = sections.reduce((s, x) => s + (Number(x.priceUsdc) || 0), 0);
+  return (
+    <section className="panel reveal mt-6 p-6">
+      <div className="flex items-center justify-between">
+        <h2 className="text-lg font-semibold tracking-tight text-white">
+          ETH Staking Market Report
+        </h2>
+        <span className="mono rounded-md bg-conduit-cyan/15 px-2 py-0.5 text-[11px] text-conduit-cyan">
+          report complete ✓
+        </span>
+      </div>
+      <p className="mt-1 text-[12px] text-conduit-muted">
+        Assembled by the coordinator from {sections.length} agent
+        {sections.length === 1 ? "" : "s"} purchased through Conduit.
+      </p>
+
+      <div className="mt-5 space-y-5">
+        {sections.map((sec, i) => (
+          <div key={i}>
+            <h3 className="text-sm font-semibold text-white">
+              {REPORT_HEADINGS[sec.agent] ?? sec.label}
+              <span className="mono ml-2 text-[10px] font-normal text-conduit-muted">
+                via {sec.label} · {sec.priceUsdc} USDC
+              </span>
+            </h3>
+            <div className="mt-1.5 text-[13px] leading-relaxed text-conduit-muted">
+              <ReportOutput output={sec.output} />
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="mono mt-6 flex items-center justify-between border-t border-conduit-border/60 pt-3 text-[12px]">
+        <span className="text-conduit-muted">
+          {sections.map((s) => `${s.label.split(" ")[0]} ${s.priceUsdc}`).join(" · ")}
+        </span>
+        <span className="text-white">Total spent: {total.toFixed(2)} USDC</span>
+      </div>
+    </section>
+  );
+}
+
+function ReportOutput({ output }: { output: ReportSection["output"] }) {
+  const content = output?.content;
+  if (output?.type === "data" && content && typeof content === "object") {
+    return (
+      <ul className="mono space-y-0.5 text-[12px]">
+        {Object.entries(content as Record<string, unknown>).map(([k, v]) => (
+          <li key={k} className="flex justify-between gap-3">
+            <span className="text-conduit-muted/70">{k}</span>
+            <span className="text-white">{String(v)}</span>
+          </li>
+        ))}
+      </ul>
+    );
+  }
+  if (typeof content === "string") return <p>{content}</p>;
+  return <pre className="mono whitespace-pre-wrap text-[11px]">{JSON.stringify(content, null, 2)}</pre>;
 }
 
 // --- helpers ---------------------------------------------------------------

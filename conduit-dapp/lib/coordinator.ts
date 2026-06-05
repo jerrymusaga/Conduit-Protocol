@@ -28,6 +28,8 @@ export function createAgent(): Agent {
   return { privateKey, address: privateKeyToAccount(privateKey).address };
 }
 
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
 /** One planned purchase the coordinator decided to make. */
 export interface PlanItem {
   service: CatalogService;
@@ -120,6 +122,8 @@ export interface ServiceResult {
   amount: bigint;
   txHash?: string | null;
   error?: string;
+  /** The provider's returned output (the purchased data) — fed to the report. */
+  output?: unknown;
   /** The exact x402 payload that settled — fuel for a REAL replay attempt
    *  (re-POSTing this verbatim is what IdEnforcer rejects as id-already-used). */
   settledPayload?: unknown;
@@ -153,8 +157,15 @@ export async function runCampaign(params: {
   const hooks = params.hooks ?? {};
   const log = hooks.log ?? (() => {});
 
-  log("coordinator › reading the catalog…");
+  // --- Discovery beat: search the registry, surface providers one by one ----
+  log("coordinator › searching the provider registry…");
   const catalog = await fetchCatalog();
+  const providers = catalog.filter((s) => s.kind !== "subscription");
+  for (const s of providers) {
+    await sleep(450);
+    log(`coordinator › ✓ found ${s.label} · ${s.priceUsdc} USDC`);
+  }
+  await sleep(300);
 
   log("coordinator › reasoning over the prompt…");
   const rawPlan = await planner.plan(prompt, catalog);
@@ -215,6 +226,7 @@ export async function runCampaign(params: {
           txHash: claim.settlement?.transaction ?? null,
           settledPayload: built.paymentPayload,
           resourcePath: service.resource,
+          output: claim.data,
         };
         log(`${agent} › settled ${service.label} · ${formatUnits(built.amount, 6)} USDC`);
         // If this payment carried the EIP-7702 designation, the next payments
