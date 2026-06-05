@@ -48,8 +48,8 @@ export const BUDGET = {
   // Must comfortably cover a multi-agent campaign: each payment spends the
   // service price PLUS its 1Shot gas fee (live quote, up to FEE_CAP) out of this
   // same budget. 0.10 was too small once gas-in-USDC is counted.
-  periodAmountUsdc: "1.00",
-  periodDuration: 3600, // 1 hour
+  periodAmountUsdc: "5.00",
+  periodDuration: 86400, // 24 hours
 } as const;
 
 export const PERIOD_OPTIONS = [

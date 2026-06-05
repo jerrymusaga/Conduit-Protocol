@@ -145,10 +145,11 @@ export function CoordinationCanvas({
 
       {/* SPECIALISTS row */}
       <div className={`flex flex-wrap items-stretch justify-center gap-3 ${dim}`}>
-        {cards.map((c) => (
+        {cards.map((c, i) => (
           <SpecialistColumn
             key={c.correlationId}
             card={c}
+            index={i}
             mode={mode}
             selected={selected === c.correlationId}
             onSelect={() => setSelected(selected === c.correlationId ? null : c.correlationId)}
@@ -219,11 +220,13 @@ function bindingFor(c: CanvasCard): InspectorBinding {
 
 function SpecialistColumn({
   card,
+  index,
   mode,
   selected,
   onSelect,
 }: {
   card: CanvasCard;
+  index: number;
   mode: "a2a" | "looped";
   selected: boolean;
   onSelect: () => void;
@@ -231,7 +234,8 @@ function SpecialistColumn({
   const p = phaseOf(card.stage);
   const rogue = card.agent === "rogue";
   return (
-    <div className="flex w-44 flex-col items-center">
+    // staggered entrance → the agents "appear" as they're discovered
+    <div className="reveal flex w-44 flex-col items-center" style={{ animationDelay: `${index * 110}ms` }}>
       {/* A2A edge chip */}
       <div className="mono w-full truncate rounded-md border border-conduit-border/60 px-2 py-1 text-center text-[9.5px] text-conduit-muted">
         {rogue ? "↯ hijacked" : mode === "a2a" ? `← scoped · ≤${card.priceUsdc}` : `← ≤${card.priceUsdc}`}
@@ -254,10 +258,18 @@ function SpecialistColumn({
         <p className="mono mt-0.5 text-[10px] text-conduit-muted/70">{short(card.agentAddress) !== "—" ? short(card.agentAddress) : (rogue ? "→ 0xRogue" : "")}</p>
         <p className="mono mt-1 text-[10px] underline-offset-2 hover:underline" style={{ color: p.accent }}>inspect ⌄</p>
       </button>
-      <span className="text-conduit-muted/30">▼</span>
 
-      {/* gate cell */}
-      <div className="w-full rounded-md border px-2 py-1 text-center" style={{ borderColor: `${p.accent}55` }}>
+      {/* node → gate: a glowing payment dot travels down while in flight */}
+      <div
+        className={`my-0.5 h-6 w-px ${p.working ? "flow-rail" : ""}`}
+        style={{ background: p.working ? `${p.accent}55` : "rgba(255,255,255,0.08)" }}
+      />
+
+      {/* gate cell — glows as the payment passes through */}
+      <div
+        className={`w-full rounded-md border px-2 py-1 text-center ${p.working ? "gate-active" : ""}`}
+        style={{ borderColor: `${p.accent}55` }}
+      >
         <span className="mono text-[10px]" style={{ color: p.accent }}>{p.gate}</span>
       </div>
       <span className="text-conduit-muted/30">▼</span>

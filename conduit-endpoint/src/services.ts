@@ -66,14 +66,14 @@ function svc(
  * shows varied costs draining one budget.
  */
 export const SERVICES: Service[] = [
-  svc("venice-image", "ImageForge Agent", "image", "0.04",
-    "Sells premium image generation (Venice AI)."),
-  svc("copywriting", "Wordsmith Agent", "text", "0.02",
-    "Sells marketing copy / taglines."),
-  svc("market-data", "DataFeed Agent", "data", "0.01",
-    "Sells a gated market-data snapshot."),
-  svc("competitor-scan", "Recon Agent", "data", "0.03",
-    "Sells a gated competitor-analysis dataset."),
+  // The provider agents a procurement coordinator buys from to assemble an ETH
+  // staking market report. Each is a real priced x402 + erc7710 service.
+  svc("staking-data", "Data Agent", "data", "0.05",
+    "Sells on-chain ETH staking metrics (TVL, staked supply, validators)."),
+  svc("staking-news", "News Agent", "text", "0.03",
+    "Sells a recent ETH staking news summary."),
+  svc("staking-analytics", "Analytics Agent", "text", "0.07",
+    "Sells ETH staking market analysis + insights."),
   // Recurring service — bound by X402SubscriptionEnforcer. Fixed price, one
   // merchant, at most once per period. The period is short (60s) so the demo
   // can show the cadence + the on-chain "already-charged-this-period" guard

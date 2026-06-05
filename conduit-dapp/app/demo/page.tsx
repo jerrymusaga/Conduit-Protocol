@@ -195,12 +195,12 @@ export default function DemoPage() {
   const [amountInput, setAmountInput] = useState<string>(BUDGET.periodAmountUsdc);
   const [periodSeconds, setPeriodSeconds] = useState<number>(BUDGET.periodDuration);
   // Absolute expiry (datetime-local string); default = now + 1 hour.
-  const [expiryAt, setExpiryAt] = useState<string>(() => toLocalDatetime(Date.now() + 3600_000));
+  const [expiryAt, setExpiryAt] = useState<string>(() => toLocalDatetime(Date.now() + 86_400_000));
   const [authorization, setAuthorization] = useState<Eip7702Authorization | null>(null);
   const coordinatorRef = useRef<Coordinator | null>(null);
 
   // Console state.
-  const [prompt, setPrompt] = useState("Launch my new product: a visual, a tagline, and competitor research.");
+  const [prompt, setPrompt] = useState("Generate a complete ETH staking market report.");
   const [mode, setMode] = useState<A2AMode>("a2a");
   const [busy, setBusy] = useState(false);
   const [spent, setSpent] = useState(0); // micro-USDC settled (optimistic, during a run)

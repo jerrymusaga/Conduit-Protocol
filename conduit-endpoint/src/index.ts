@@ -68,6 +68,23 @@ app.get("/services", (_req, res) => {
 /** Produce the success payload for a settled service (placeholder products;
  * Venice generation gets wired in the Venice layer). */
 function serviceResult(service: Service): Record<string, unknown> {
+  // Per-provider staking outputs the procurement agent aggregates into a report.
+  switch (service.id) {
+    case "staking-data":
+      return { type: "data", content: {
+        stakingTVL: "$160B", stakedETH: "34.2M", percentSupplyStaked: "28.4%",
+        activeValidators: 1_068_000, apr: "3.1%",
+      } };
+    case "staking-news":
+      return { type: "text", content:
+        "ETH staking inflows rose ~12% this week on renewed ETF demand; net new " +
+        "deposits outpaced exits, and the validator entry queue lengthened slightly." };
+    case "staking-analytics":
+      return { type: "text", content:
+        "Staking remains concentrated among large liquid-staking protocols, though " +
+        "Lido's share is gradually declining as solo + restaking options grow. " +
+        "Outlook: stable issuance, modest restaking-driven growth, watch LST concentration." };
+  }
   switch (service.kind) {
     case "image":
       return { type: "image", note: "image generation placeholder (Venice next)",

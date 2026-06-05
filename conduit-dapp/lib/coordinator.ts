@@ -70,22 +70,25 @@ export const stubPlanner: Planner = {
     const picks: PlanItem[] = [];
     const add = (id: string, agent: string, rationale: string) => {
       const service = want(id);
-      if (service) picks.push({ service, agent, rationale });
+      if (service && !picks.some((x) => x.service.id === id))
+        picks.push({ service, agent, rationale });
     };
 
-    if (/(image|logo|art|cover|visual|design|brand)/.test(p))
-      add("venice-image", "image", "Prompt asks for a visual asset.");
-    if (/(copy|tagline|caption|text|slogan|post|write|content)/.test(p))
-      add("copywriting", "copy", "Prompt needs written copy.");
-    if (/(market|price|trend|data)/.test(p))
-      add("market-data", "data", "Prompt needs market data.");
-    if (/(competitor|rival|landscape|compare)/.test(p))
-      add("competitor-scan", "research", "Prompt needs competitor analysis.");
+    // A full report / staking / market-intelligence request procures all three
+    // providers; otherwise match the specific capability asked for.
+    const wantsReport = /(report|staking|market|intelligence|overview|research|analysis)/.test(p);
+    if (wantsReport || /(data|tvl|metric|on-?chain|supply|validator)/.test(p))
+      add("staking-data", "data", "Needs on-chain staking metrics.");
+    if (wantsReport || /(news|inflow|headline|recent|sentiment|flow)/.test(p))
+      add("staking-news", "news", "Needs recent staking news.");
+    if (wantsReport || /(analy|insight|concentration|trend|outlook)/.test(p))
+      add("staking-analytics", "analytics", "Needs market analysis + insights.");
 
-    // Fallback: if nothing matched, do a sensible default mini-campaign.
+    // Fallback: procure the full provider set (a complete report).
     if (picks.length === 0) {
-      add("venice-image", "image", "Default: produce a visual.");
-      add("copywriting", "copy", "Default: produce copy.");
+      add("staking-data", "data", "Procure on-chain staking metrics.");
+      add("staking-news", "news", "Procure recent staking news.");
+      add("staking-analytics", "analytics", "Procure market analysis.");
     }
     return picks;
   },
