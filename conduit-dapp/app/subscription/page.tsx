@@ -99,7 +99,10 @@ export default function SubscriptionPage() {
   const logEndRef = useRef<HTMLDivElement>(null);
 
   // Buyer-side controls set at subscribe time.
-  const [subLengthSec, setSubLengthSec] = useState<number>(3600); // 0 = never expires
+  // Absolute expiry (datetime-local) + a "never" toggle (subscriptions can run
+  // open-ended until revoked).
+  const [subExpiryAt, setSubExpiryAt] = useState<string>(() => toLocalDatetime(Date.now() + 3600_000));
+  const [noExpiry, setNoExpiry] = useState(false);
   const [feeBudget, setFeeBudget] = useState<string>("0.30"); // gas budget / period (USDC)
   const [cancelled, setCancelled] = useState(false);
 
@@ -294,10 +297,13 @@ export default function SubscriptionPage() {
       }
 
       const terms = termsFromRequirements(req, req.subscription);
-      const expiry = subLengthSec > 0 ? Math.floor(Date.now() / 1000) + subLengthSec : undefined;
+      const nowSecs = Math.floor(Date.now() / 1000);
+      const expiry = noExpiry
+        ? undefined
+        : Math.max(nowSecs + 60, Math.floor(new Date(subExpiryAt).getTime() / 1000));
       append(
         `Signing the subscription: ${service.priceUsdc} USDC → ${shorten(terms.recipient)} every ${terms.periodSeconds}s` +
-          (expiry ? `, expires in ${fmtDuration(subLengthSec)}` : ", no expiry") + "…"
+          (expiry ? `, expires in ${fmtDuration(expiry - nowSecs)}` : ", no expiry") + "…"
       );
       // Size the gas-fee budget root to at least the live dynamic fee cap, so a
       // high gas quote doesn't blow past it (falls back to the user's input).
@@ -467,20 +473,48 @@ export default function SubscriptionPage() {
 
                     {/* buyer-side bounds */}
                     <div className="space-y-2.5 rounded-lg border border-conduit-border/60 p-3">
-                      <label className="flex items-center justify-between gap-2 text-[12px]">
-                        <span className="text-conduit-muted">expires after</span>
-                        <select
-                          value={subLengthSec}
-                          onChange={(e) => setSubLengthSec(Number(e.target.value))}
-                          disabled={!connected || busy}
-                          className="mono rounded-lg border border-conduit-border bg-conduit-panel px-2 py-1.5 text-white outline-none focus:border-conduit-cyan disabled:opacity-40"
-                        >
-                          <option value={300} className="bg-conduit-panel">5 minutes</option>
-                          <option value={3600} className="bg-conduit-panel">1 hour</option>
-                          <option value={86400} className="bg-conduit-panel">1 day</option>
-                          <option value={0} className="bg-conduit-panel">never</option>
-                        </select>
-                      </label>
+                      <div className="space-y-1.5 text-[12px]">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-conduit-muted">expires</span>
+                          <label className="flex items-center gap-1.5 text-conduit-muted">
+                            <input
+                              type="checkbox"
+                              checked={noExpiry}
+                              onChange={(e) => setNoExpiry(e.target.checked)}
+                              disabled={!connected || busy}
+                            />
+                            never
+                          </label>
+                        </div>
+                        <input
+                          type="datetime-local"
+                          value={subExpiryAt}
+                          min={toLocalDatetime(Date.now() + 60_000)}
+                          onChange={(e) => setSubExpiryAt(e.target.value)}
+                          disabled={!connected || busy || noExpiry}
+                          className="mono w-full rounded-lg border border-conduit-border bg-conduit-panel px-2 py-1.5 text-white outline-none focus:border-conduit-cyan disabled:opacity-40"
+                        />
+                        <div className="flex flex-wrap gap-1.5">
+                          {[
+                            { label: "5m", seconds: 300 },
+                            { label: "1h", seconds: 3600 },
+                            { label: "1d", seconds: 86400 },
+                          ].map((o) => (
+                            <button
+                              key={o.seconds}
+                              type="button"
+                              onClick={() => {
+                                setNoExpiry(false);
+                                setSubExpiryAt(toLocalDatetime(Date.now() + o.seconds * 1000));
+                              }}
+                              disabled={!connected || busy}
+                              className="mono rounded-md border border-conduit-border px-2 py-0.5 text-[11px] text-conduit-muted transition-colors hover:border-conduit-cyan/50 hover:text-conduit-cyan disabled:opacity-40"
+                            >
+                              +{o.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
                       <label className="flex items-center justify-between gap-2 text-[12px]">
                         <span className="text-conduit-muted">gas budget / period</span>
                         <span className="flex items-center gap-1">
@@ -783,6 +817,10 @@ function Arrow() {
 function shorten(addr: string | null): string {
   if (!addr) return "—";
   return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
+}
+function toLocalDatetime(ms: number): string {
+  const off = new Date(ms).getTimezoneOffset() * 60_000;
+  return new Date(ms - off).toISOString().slice(0, 16);
 }
 function fmtDuration(sec: number): string {
   if (sec <= 0) return "0s";
