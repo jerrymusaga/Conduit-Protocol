@@ -20,6 +20,7 @@
 import { useState } from "react";
 import { config } from "@/lib/config";
 import { Erc7710Inspector, type InspectorBinding } from "./Erc7710Inspector";
+import type { RogueAttack, RogueKind } from "@/lib/coordinator";
 
 export interface CanvasCard {
   correlationId: string;
@@ -35,6 +36,10 @@ export interface CanvasCard {
   a2a?: boolean;
   /** Where the purchased output came from (e.g. "venice:crypto-rpc · …"). */
   source?: string;
+  /** Rogue attempt kind (drives the attack inspector template). */
+  rogueKind?: RogueKind;
+  /** The x402 attack vector (field-level) shown in the intruder lane. */
+  attack?: RogueAttack;
 }
 
 interface Budget {
@@ -98,6 +103,9 @@ export function CoordinationCanvas({
   const [selected, setSelected] = useState<string | null>(null);
   const selectedCard = cards.find((c) => c.correlationId === selected) ?? null;
   const dim = revoked ? "opacity-30 grayscale transition-all duration-700" : "transition-all duration-500";
+  // The rogue is an EXTERNAL attacker — keep it out of your authorized tree.
+  const legit = cards.filter((c) => c.agent !== "rogue");
+  const rogues = cards.filter((c) => c.agent === "rogue");
 
   if (cards.length === 0) {
     return (
@@ -140,14 +148,16 @@ export function CoordinationCanvas({
         {/* COORDINATOR */}
         <Node kind="coordinator" label="◆ COORDINATOR" sub={short(coordinatorAddress)} accent={VIOLET} />
         <p className="mt-2 text-[10px] uppercase tracking-wide text-conduit-muted/70">
-          hires {cards.filter((c) => c.agent !== "rogue").length} specialist{cards.filter((c) => c.agent !== "rogue").length === 1 ? "" : "s"} · {mode === "a2a" ? "A2A sub-agents" : "direct"}
+          {legit.length > 0
+            ? `hires ${legit.length} specialist${legit.length === 1 ? "" : "s"} · ${mode === "a2a" ? "A2A sub-agents" : "direct"}`
+            : "no tasks yet"}
         </p>
         <Connector />
       </div>
 
-      {/* SPECIALISTS row */}
+      {/* SPECIALISTS row — only the agents YOU authorized (rogue is external) */}
       <div className={`flex flex-wrap items-stretch justify-center gap-3 ${dim}`}>
-        {cards.map((c, i) => (
+        {legit.map((c, i) => (
           <SpecialistColumn
             key={c.correlationId}
             card={c}
@@ -173,6 +183,25 @@ export function CoordinationCanvas({
           </span>
         </div>
       </div>
+
+      {/* INTRUDER LANE — the rogue is an EXTERNAL attacker hitting the SAME
+          Conduit gate and getting bounced. Spatially separated from your tree. */}
+      {rogues.length > 0 && (
+        <div className="mx-auto mt-5 max-w-3xl">
+          <div className="mb-2 flex items-center gap-2">
+            <span className="h-px flex-1" style={{ background: `${MAGENTA}33` }} />
+            <span className="mono text-[10px] uppercase tracking-wide" style={{ color: MAGENTA }}>
+              ⚠ external · not one of your authorized agents
+            </span>
+            <span className="h-px flex-1" style={{ background: `${MAGENTA}33` }} />
+          </div>
+          <div className="flex flex-col gap-3">
+            {rogues.map((c) => (
+              <IntruderCard key={c.correlationId} card={c} />
+            ))}
+          </div>
+        </div>
+      )}
 
       {revoked && (
         <p className="mt-4 text-center text-[12px] font-semibold text-conduit-magenta">
@@ -234,13 +263,12 @@ function SpecialistColumn({
   onSelect: () => void;
 }) {
   const p = phaseOf(card.stage);
-  const rogue = card.agent === "rogue";
   return (
     // staggered entrance → the agents "appear" as they're discovered
     <div className="reveal flex w-44 flex-col items-center" style={{ animationDelay: `${index * 110}ms` }}>
       {/* A2A edge chip */}
       <div className="mono w-full truncate rounded-md border border-conduit-border/60 px-2 py-1 text-center text-[9.5px] text-conduit-muted">
-        {rogue ? "↯ hijacked" : mode === "a2a" ? `← scoped · up to ${card.priceUsdc}` : `← up to ${card.priceUsdc}`}
+        {mode === "a2a" ? `← scoped · up to ${card.priceUsdc}` : `← up to ${card.priceUsdc}`}
       </div>
       <span className="text-conduit-muted/30">▼</span>
 
@@ -252,12 +280,12 @@ function SpecialistColumn({
       >
         <div className="flex items-center gap-1.5">
           <span className={`h-2 w-2 rounded-full ${p.working ? "animate-pulse" : ""}`} style={{ background: p.accent, boxShadow: `0 0 8px ${p.accent}` }} />
-          <span className="mono text-[11px] font-semibold" style={{ color: rogue ? MAGENTA : "#fff" }}>
-            {rogue ? card.label : `◇ ${card.agent}`}
+          <span className="mono text-[11px] font-semibold text-white">
+            ◇ {card.agent}
           </span>
         </div>
-        {!rogue && <p className="mono mt-0.5 truncate text-[10px] text-conduit-muted">pays {card.label}</p>}
-        <p className="mono mt-0.5 text-[10px] text-conduit-muted/70">{short(card.agentAddress) !== "—" ? short(card.agentAddress) : (rogue ? "→ 0xRogue" : "")}</p>
+        <p className="mono mt-0.5 truncate text-[10px] text-conduit-muted">pays {card.label}</p>
+        <p className="mono mt-0.5 text-[10px] text-conduit-muted/70">{short(card.agentAddress) !== "—" ? short(card.agentAddress) : ""}</p>
         <p className="mono mt-1 text-[10px] underline-offset-2 hover:underline" style={{ color: p.accent }}>inspect ⌄</p>
       </button>
 
@@ -324,6 +352,122 @@ function Line({ k, v }: { k: string; v: string }) {
     <div className="flex items-start justify-between gap-3 py-0.5">
       <span className="shrink-0 text-conduit-muted/60">{k}</span>
       <span className="text-right text-white">{v}</span>
+    </div>
+  );
+}
+
+const ROGUE_ENFORCER: Record<RogueKind, string> = {
+  redirect: "X402ReceiptEnforcer",
+  overspend: "X402ReceiptEnforcer",
+  replay: "IdEnforcer",
+};
+
+/**
+ * The intruder lane: a compromised, EXTERNAL agent crafting a malicious x402
+ * payment and getting bounced by the SAME Conduit gate. Shows the attack
+ * vector field-by-field (the violating field struck through vs the bound
+ * caveat) + the real on-chain reject reason.
+ */
+function IntruderCard({ card }: { card: CanvasCard }) {
+  const kind = card.rogueKind ?? card.attack?.kind ?? "redirect";
+  const a = card.attack;
+  const blocked = card.stage === "denied";
+  const breached = card.stage === "settled"; // must never happen
+  const inflight = !blocked && !breached;
+  const attacker = a?.attemptedPayTo ? short(a.attemptedPayTo) : "0xRogue…";
+
+  return (
+    <div className="rounded-xl border px-4 py-3" style={{ borderColor: `${MAGENTA}66`, background: `${MAGENTA}0a` }}>
+      <div className="flex items-center justify-between gap-2">
+        <span className="mono text-[11px] font-semibold" style={{ color: MAGENTA }}>
+          ⚠ COMPROMISED AGENT · {card.label}
+        </span>
+        <span
+          className="mono shrink-0 rounded px-1.5 py-0.5 text-[9.5px]"
+          style={
+            blocked
+              ? { background: `${MAGENTA}22`, color: MAGENTA }
+              : breached
+                ? { background: `${MAGENTA}33`, color: "#fff" }
+                : { border: `1px solid ${MAGENTA}44`, color: MAGENTA }
+          }
+        >
+          {blocked ? "✗ BLOCKED on-chain" : breached ? "⚠ BREACH" : "submitting…"}
+        </span>
+      </div>
+      <p className="mono mt-0.5 text-[10px] text-conduit-muted/70">
+        {attacker} · external · {card.rationale}
+      </p>
+
+      {inflight ? (
+        <p className="mono mt-2.5 text-[10.5px] text-conduit-muted">
+          submitting a malicious x402 payment…
+        </p>
+      ) : (
+        <>
+          {/* x402 attack inspector — what it crafted vs the bound caveat */}
+          <div className="mono mt-2.5 rounded-lg border border-conduit-border/50 bg-black/25 p-2.5 text-[10.5px]">
+            <p className="mb-1.5 uppercase tracking-wide text-conduit-muted/60">x402 X-PAYMENT it crafted</p>
+            {kind === "redirect" && (
+              <>
+                <AttackRow field="payTo" value={short(a?.attemptedPayTo)} ok={false} note={`bound ${short(a?.boundPayTo)}`} />
+                <AttackRow field="amount" value="within cap" ok />
+                <AttackRow field="intent" value="fresh id" ok />
+              </>
+            )}
+            {kind === "overspend" && (
+              <>
+                <AttackRow field="payTo" value="bound recipient" ok />
+                <AttackRow field="amount" value={`${a?.attemptedAmountUsdc ?? "5.00"} USDC`} ok={false} note={`cap ${a?.boundAmountUsdc ?? "—"} USDC`} />
+                <AttackRow field="intent" value="fresh id" ok />
+              </>
+            )}
+            {kind === "replay" && (
+              <>
+                <AttackRow field="intent" value="reused · already settled" ok={false} note="one-shot id" />
+                <AttackRow field="payTo" value="matches original" ok />
+                <AttackRow field="amount" value="matches original" ok />
+              </>
+            )}
+          </div>
+
+          {/* hits the SAME gate → bounced */}
+          <div className="mt-2 flex flex-col items-center">
+            <span className="text-conduit-muted/40">↓</span>
+            <div
+              className="w-full rounded-md border px-3 py-1.5 text-center"
+              style={{ borderColor: blocked ? `${MAGENTA}66` : `${CYAN}44`, background: blocked ? `${MAGENTA}0d` : undefined }}
+            >
+              <span className="mono text-[10px]" style={{ color: blocked ? MAGENTA : CYAN }}>
+                ╪ CONDUIT GATE ╪ {blocked ? "✗ BLOCKED" : ""}
+              </span>
+            </div>
+            {blocked && (
+              <p className="mono mt-1.5 text-center text-[10px]" style={{ color: MAGENTA }}>
+                {ROGUE_ENFORCER[kind]} ✗ {card.reason ?? "rejected"}
+              </p>
+            )}
+            {breached && (
+              <p className="mono mt-1.5 text-center text-[10px]" style={{ color: MAGENTA }}>
+                ⚠ unexpectedly settled — investigate the caveats
+              </p>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function AttackRow({ field, value, ok, note }: { field: string; value?: string; ok: boolean; note?: string }) {
+  return (
+    <div className="flex items-center justify-between gap-3 py-0.5">
+      <span className="shrink-0 text-conduit-muted/60">{field}</span>
+      <span className="flex items-center gap-1.5 text-right">
+        <span style={ok ? { color: "#fff" } : { color: MAGENTA, textDecoration: "line-through" }}>{value ?? "—"}</span>
+        {note && <span className="text-conduit-muted/50">({note})</span>}
+        <span style={{ color: ok ? CYAN : MAGENTA }}>{ok ? "✓" : "✗"}</span>
+      </span>
     </div>
   );
 }
