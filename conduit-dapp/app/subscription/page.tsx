@@ -12,9 +12,9 @@ import {
   getEmbeddedConnectedWallet,
 } from "@privy-io/react-auth";
 import { useSetActiveWallet } from "@privy-io/wagmi";
-import type { Hex } from "viem";
+import { formatUnits, type Hex } from "viem";
 import { createCoordinatorAccount, type Coordinator } from "@/lib/grant";
-import type { Eip7702Authorization } from "@/lib/payment";
+import { feeCapAtoms, type Eip7702Authorization } from "@/lib/payment";
 import {
   fetchCatalog,
   fetch402,
@@ -299,12 +299,16 @@ export default function SubscriptionPage() {
         `Signing the subscription: ${service.priceUsdc} USDC → ${shorten(terms.recipient)} every ${terms.periodSeconds}s` +
           (expiry ? `, expires in ${fmtDuration(subLengthSec)}` : ", no expiry") + "…"
       );
+      // Size the gas-fee budget root to at least the live dynamic fee cap, so a
+      // high gas quote doesn't blow past it (falls back to the user's input).
+      const dynamicFeeUsdc = req.feeEstimate ? Number(formatUnits(feeCapAtoms(req.feeEstimate), 6)) : 0;
+      const feeBudgetUsdc = Math.max(Number(feeBudget) || 0, dynamicFeeUsdc).toFixed(6);
       const g = await grantSubscription({
         walletClient,
         userAddress: address,
         coordinator,
         terms,
-        feeBudgetUsdc: feeBudget,
+        feeBudgetUsdc,
         expiry,
       });
       setGrant(g);

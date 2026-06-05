@@ -60,6 +60,9 @@ export function buildPaymentRequired(
           // the buyer knows whether to build a bounded fee delegation.
           relayBackend: caps.relayBackend,
           feeCollector: caps.feeCollector ?? null,
+          // Live gas-fee estimate (USDC atoms) — the buyer caps the bounded fee
+          // delegation at estimate × buffer instead of a hardcoded ceiling.
+          feeEstimate: caps.feeEstimate ?? null,
         },
       },
     ],

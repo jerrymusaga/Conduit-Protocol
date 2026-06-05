@@ -24,6 +24,15 @@ export function supportedRouter(backend: RelayBackend): Router {
     } catch (err) {
       console.warn("[supported] backend.ensureReady failed:", err);
     }
+    // Live gas-fee estimate (USDC atoms) so buyers size the bounded fee
+    // delegation to the real quote instead of a hardcoded ceiling.
+    let feeEstimate: string | null = null;
+    try {
+      const est = await backend.estimateFeeAtoms?.();
+      feeEstimate = est != null ? est.toString() : null;
+    } catch (err) {
+      console.warn("[supported] backend.estimateFeeAtoms failed:", err);
+    }
     res.json({
       kinds: [
         {
@@ -41,6 +50,8 @@ export function supportedRouter(backend: RelayBackend): Router {
               redeemer: backend.redeemer,
               // oneshot-pl only: where the buyer pays the relayer's gas fee.
               feeCollector: backend.feeCollector ?? null,
+              // Live gas-fee estimate (USDC atoms); buyer caps = estimate × buffer.
+              feeEstimate,
             },
             erc7710PermissionContext:
               "permissionContext must be a 0x-prefixed hex string (ABI-encoded delegation chain). Base64 is not accepted.",

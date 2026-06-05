@@ -1,5 +1,6 @@
 import { encodeFunctionData, erc20Abi, type Address, type Hex } from "viem";
 import { config } from "../config.js";
+import { chainConfig } from "../chain.js";
 import { createJob, linkTask, updateJob } from "../jobs.js";
 import {
   computeFeeAtoms,
@@ -73,6 +74,18 @@ export const oneshotPermissionlessBackend: RelayBackend = {
   async ensureReady(): Promise<void> {
     const c = await caps();
     cachedRedeemer = c.targetAddress;
+  },
+
+  // Live gas-fee estimate (USDC atoms) so the buyer sizes the bounded fee
+  // delegation to the real quote, not a hardcoded ceiling. Same computation
+  // submit() uses; the buyer adds a safety buffer on top.
+  async estimateFeeAtoms(): Promise<bigint | null> {
+    try {
+      const fee = await getFeeData(relayerUrl, chainIdStr, chainConfig.usdc);
+      return computeFeeAtoms(fee, ESTIMATED_GAS);
+    } catch {
+      return null;
+    }
   },
 
   async submit(params: RelaySubmitParams): Promise<RelayResult> {

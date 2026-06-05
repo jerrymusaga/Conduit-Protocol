@@ -45,7 +45,7 @@ import type { Coordinator, GrantResult } from "./grant";
 import { grantBudget, revokeRootDelegation } from "./grant";
 import {
   buildBoundChain,
-  FEE_CAP_ATOMS,
+  feeCapAtoms,
   type Delegation,
   type Eip7702Authorization,
 } from "./payment";
@@ -277,7 +277,7 @@ export async function buildSubscriptionPayment(params: {
     redeemer: req.redeemer,
     token,
     recipient: req.feeCollector,
-    maxAmount: FEE_CAP_ATOMS,
+    maxAmount: feeCapAtoms(req.feeEstimate),
     intentHash: feeIntent,
   });
 

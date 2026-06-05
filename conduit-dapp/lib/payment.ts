@@ -249,13 +249,21 @@ export async function buildPayment(params: {
 
 // --- 1Shot (oneshot-pl) path -----------------------------------------------
 
-/** Ceiling the bounded fee delegation allows 1Shot to charge (USDC atoms).
- *  The real fee comes from a live quote ≤ this; binding a cap keeps it
- *  Conduit-style (can only ever pay feeCollector, never above the cap).
- *  Sized with headroom for 1Shot's Base Sepolia gas-in-USDC quotes — too low
- *  a cap makes the bounded fee delegation revert X402Receipt:amount-exceeds-cap
- *  when the live quote exceeds it. The user still only pays the quote, not the cap. */
-export const FEE_CAP_ATOMS = 300_000n; // 0.30 USDC ceiling (actual fee = live quote ≤ this)
+/** FALLBACK fee ceiling (USDC atoms) used only when the facilitator advertises
+ *  no live estimate. Prefer feeCapAtoms() below, which sizes the cap to the
+ *  real quote so it's neither too low (→ X402Receipt:amount-exceeds-cap) nor a
+ *  guessed magic number. The user always pays the live quote, never the cap. */
+export const FEE_CAP_ATOMS = 300_000n; // 0.30 USDC fallback
+
+/** Size the bounded fee delegation's cap to the facilitator's live gas-fee
+ *  estimate plus a safety buffer (for gas movement between quote and settle).
+ *  Falls back to the fixed ceiling when no estimate is advertised. */
+export function feeCapAtoms(feeEstimate?: string | null): bigint {
+  if (!feeEstimate) return FEE_CAP_ATOMS;
+  const est = BigInt(feeEstimate);
+  if (est <= 0n) return FEE_CAP_ATOMS;
+  return (est * 3n) / 2n; // estimate × 1.5
+}
 
 /** Build + sign ONE intent-bound redelegation CHAIN [leaf,…,root], structured
  *  (not hex-encoded) for 1Shot. The leaf is bound by X402ReceiptEnforcer to
@@ -381,7 +389,7 @@ export async function buildOneshotPayment(params: {
     }),
     buildBoundChain({
       grant, coordinator, redeemer: req.redeemer, token,
-      recipient: req.feeCollector, maxAmount: FEE_CAP_ATOMS, intentHash: feeIntent,
+      recipient: req.feeCollector, maxAmount: feeCapAtoms(req.feeEstimate), intentHash: feeIntent,
     }),
   ]);
 

@@ -62,6 +62,8 @@ export interface PaymentRequirements {
   relayBackend?: string;
   /** oneshot-pl only: where the buyer pays the relayer's gas fee. */
   feeCollector?: `0x${string}` | null;
+  /** Live gas-fee estimate (USDC atoms); the buyer caps the fee leg at estimate × buffer. */
+  feeEstimate?: string | null;
 }
 
 /**
@@ -93,6 +95,7 @@ export async function fetch402(path: string = RESOURCE_PATH): Promise<PaymentReq
     subscription: extra.subscription ?? null,
     relayBackend: extra.relayBackend,
     feeCollector: extra.feeCollector ?? null,
+    feeEstimate: extra.feeEstimate ?? null,
   };
 }
 

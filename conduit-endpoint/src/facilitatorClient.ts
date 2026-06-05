@@ -17,6 +17,8 @@ export interface ConduitCapabilities {
   relayBackend: string;
   /** oneshot-pl only: where the buyer pays the relayer's gas fee. */
   feeCollector?: `0x${string}` | null;
+  /** Live gas-fee estimate (USDC atoms); buyer sizes the fee cap to it. */
+  feeEstimate?: string | null;
 }
 
 export interface VerifyResult {
@@ -50,6 +52,7 @@ export async function fetchCapabilities(): Promise<ConduitCapabilities> {
           redeemer: `0x${string}` | null;
           relayBackend: string;
           feeCollector?: `0x${string}` | null;
+          feeEstimate?: string | null;
         };
       };
     }>;

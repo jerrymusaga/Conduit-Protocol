@@ -99,5 +99,10 @@ export interface RelayBackend {
    * due to a warm-up race. No-op for backends that are ready synchronously.
    */
   ensureReady?(): Promise<void>;
+  /**
+   * Current live gas-fee estimate in token (USDC) atoms, so the buyer can size
+   * the bounded fee delegation to the real quote instead of a hardcoded ceiling.
+   * Returns null if the backend can't estimate (e.g. viem-direct). */
+  estimateFeeAtoms?(): Promise<bigint | null>;
   submit(params: RelaySubmitParams): Promise<RelayResult>;
 }
