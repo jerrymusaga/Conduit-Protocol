@@ -398,15 +398,21 @@ export async function attemptRogue(params: {
   try {
     const req = await fetch402(service.resource);
     const rogueAddress = privateKeyToAccount(generatePrivateKey()).address;
+    // Overspend a NORMAL-looking amount: clearly ABOVE the per-request cap (so
+    // the receipt enforcer must reject it) but clearly BELOW the budget (so the
+    // demo makes obvious it's the PER-REQUEST cap doing the work — not
+    // MetaMask's budget cap, which would happily allow this).
+    const boundCap = BigInt(req.maxAmountRequired);
+    let overspendAmount = boundCap * 20n; // e.g. $0.05 cap → $1.00 attempt
+    if (overspendAmount >= grant.periodAmount) overspendAmount = grant.periodAmount / 2n;
+    if (overspendAmount <= boundCap) overspendAmount = boundCap * 2n;
     attack =
       kind === "redirect"
         ? { kind, attemptedPayTo: rogueAddress, boundPayTo: req.payTo }
         : {
             kind,
-            // The rogue tries to drain the WHOLE granted budget into one request
-            // that's bound (per-request) to this service's quoted price.
-            attemptedAmountUsdc: Number(formatUnits(grant.periodAmount, 6)).toFixed(2),
-            boundAmountUsdc: formatUnits(BigInt(req.maxAmountRequired), 6),
+            attemptedAmountUsdc: Number(formatUnits(overspendAmount, 6)).toFixed(2),
+            boundAmountUsdc: formatUnits(boundCap, 6),
           };
     const built = await buildPayment({
       grant,
@@ -415,9 +421,9 @@ export async function attemptRogue(params: {
       intentHash: freshIntentHash(req),
       // redirect: execution target ≠ bound recipient.
       payToOverride: kind === "redirect" ? rogueAddress : undefined,
-      // overspend: try to spend the ENTIRE budget on a request bound to the
-      // service's price → X402ReceiptEnforcer: amount-exceeds-cap.
-      amountOverride: kind === "overspend" ? grant.periodAmount : undefined,
+      // overspend: a normal-sized amount that fits the budget but exceeds this
+      // request's bound cap → X402ReceiptEnforcer: amount-exceeds-cap.
+      amountOverride: kind === "overspend" ? overspendAmount : undefined,
     });
 
     hooks.onPayStart?.(correlationId);
