@@ -13,7 +13,7 @@
  *     relayer (3-hop). The literal "agents delegating to agents".
  */
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
-import { formatUnits, parseUnits, type Hex } from "viem";
+import { formatUnits, type Hex } from "viem";
 import { fetchCatalog, fetch402, payAndClaim, type CatalogService } from "./endpoint";
 import { buildPayment, buildOneshotPayment, freshIntentHash } from "./payment";
 import { publicClient } from "./chain";
@@ -378,9 +378,15 @@ export async function attemptRogue(params: {
 
   // --- redirect / overspend: build a fresh malicious payment ---------------
   const catalog = await fetchCatalog();
-  const service = [...catalog].sort(
+  const cheapest = [...catalog].sort(
     (a, b) => Number(a.priceBaseUnits) - Number(b.priceBaseUnits)
   )[0];
+  // Overspend targets a recognizable agent (Data Agent) so the bound per-request
+  // cap shown on screen is a real, named service price; redirect uses cheapest.
+  const service =
+    kind === "overspend"
+      ? catalog.find((s) => s.id === "staking-data") ?? cheapest
+      : cheapest;
 
   // Captured after fetch402 so the result carries the real attack values.
   let attack: RogueAttack | undefined;
@@ -397,7 +403,9 @@ export async function attemptRogue(params: {
         ? { kind, attemptedPayTo: rogueAddress, boundPayTo: req.payTo }
         : {
             kind,
-            attemptedAmountUsdc: "5.00",
+            // The rogue tries to drain the WHOLE granted budget into one request
+            // that's bound (per-request) to this service's quoted price.
+            attemptedAmountUsdc: Number(formatUnits(grant.periodAmount, 6)).toFixed(2),
             boundAmountUsdc: formatUnits(BigInt(req.maxAmountRequired), 6),
           };
     const built = await buildPayment({
@@ -407,8 +415,9 @@ export async function attemptRogue(params: {
       intentHash: freshIntentHash(req),
       // redirect: execution target ≠ bound recipient.
       payToOverride: kind === "redirect" ? rogueAddress : undefined,
-      // overspend: execution amount far above the bound cap.
-      amountOverride: kind === "overspend" ? parseUnits("5", 6) : undefined,
+      // overspend: try to spend the ENTIRE budget on a request bound to the
+      // service's price → X402ReceiptEnforcer: amount-exceeds-cap.
+      amountOverride: kind === "overspend" ? grant.periodAmount : undefined,
     });
 
     hooks.onPayStart?.(correlationId);
