@@ -40,6 +40,8 @@ export interface CanvasCard {
   rogueKind?: RogueKind;
   /** The x402 attack vector (field-level) shown in the intruder lane. */
   attack?: RogueAttack;
+  /** Rejected by the budget cap (a limit reached), not an attack — render amber. */
+  budgetCapped?: boolean;
 }
 
 interface Budget {
@@ -53,6 +55,7 @@ interface Budget {
 const CYAN = "#00E5FF";
 const VIOLET = "#7C3AED";
 const MAGENTA = "#EC4899";
+const AMBER = "#F5A623"; // budget cap reached (a limit, not an attack)
 
 function short(a?: string | null) {
   return a ? `${a.slice(0, 6)}…${a.slice(-4)}` : "—";
@@ -397,19 +400,22 @@ function SpecialistColumn({
         style={{ background: p.working ? `${p.accent}55` : "rgba(255,255,255,0.08)" }}
       />
 
-      {/* gate cell — glows as the payment passes through */}
+      {/* gate cell — glows as the payment passes through. Budget-cap rejections
+          render amber (a limit reached), distinct from magenta attacks. */}
       <div
         className={`w-full rounded-md border px-2 py-1 text-center ${p.working ? "gate-active" : ""}`}
-        style={{ borderColor: `${p.accent}55` }}
+        style={{ borderColor: `${card.budgetCapped ? AMBER : p.accent}55` }}
       >
-        <span className="mono text-[10px]" style={{ color: p.accent }}>{p.gate}</span>
+        <span className="mono text-[10px]" style={{ color: card.budgetCapped ? AMBER : p.accent }}>
+          {card.budgetCapped ? "BUDGET CAP ✋" : p.gate}
+        </span>
       </div>
       <span className="text-conduit-muted/30">▼</span>
 
       {/* service result */}
       <div className="w-full text-center">
-        <span className="mono text-[10px]" style={{ color: p.done ? CYAN : p.blocked ? MAGENTA : "#5b6472" }}>
-          {p.service}
+        <span className="mono text-[10px]" style={{ color: card.budgetCapped ? AMBER : p.done ? CYAN : p.blocked ? MAGENTA : "#5b6472" }}>
+          {card.budgetCapped ? "over budget" : p.service}
         </span>
         {card.txHash && card.txHash.startsWith("0x") && (
           <a
@@ -426,7 +432,11 @@ function SpecialistColumn({
             ✦ via Venice
           </span>
         )}
-        {card.reason && <p className="mono mt-0.5 text-[9px] leading-tight text-conduit-magenta/80">{card.reason}</p>}
+        {card.reason && (
+          <p className="mono mt-0.5 text-[9px] leading-tight" style={{ color: card.budgetCapped ? `${AMBER}cc` : undefined }}>
+            <span className={card.budgetCapped ? "" : "text-conduit-magenta/80"}>{card.reason}</span>
+          </p>
+        )}
       </div>
     </div>
   );

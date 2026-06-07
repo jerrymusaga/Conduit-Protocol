@@ -68,6 +68,8 @@ interface FeedCard {
   rogueKind?: RogueKind;
   /** The x402 attack vector detail (field-level) for the intruder lane. */
   attack?: RogueAttack;
+  /** Rejected because it would exceed the granted budget (not a rogue/attack). */
+  budgetCapped?: boolean;
 }
 
 /** One purchased provider's contribution to the aggregated report. */
@@ -231,6 +233,7 @@ export default function DemoPage() {
   const [budgetState, setBudgetState] = useState<BudgetState | null>(null); // on-chain truth
   const [cards, setCards] = useState<FeedCard[]>([]);
   const [market, setMarket] = useState<DiscoveredAgent[]>([]); // discovered on ERC-8004
+  const [budgetForecast, setBudgetForecast] = useState<{ planTotal: bigint; budget: bigint } | null>(null);
   const [report, setReport] = useState<ReportSection[] | null>(null); // aggregated final report
   const reportRef = useRef<ReportSection[]>([]); // accumulates outputs during a run
   const [reportMarkdown, setReportMarkdown] = useState<string | null>(null); // Venice-aggregated prose
@@ -688,6 +691,7 @@ export default function DemoPage() {
     setReportMarkdown(null);
     setReportCover(null);
     reportRef.current = [];
+    setBudgetForecast(null);
     setSpent(0); // each campaign meters its own spend against the period cap
     try {
       await runCampaign({
@@ -699,6 +703,7 @@ export default function DemoPage() {
         hooks: {
           log: append,
           onDiscover: (agents) => setMarket(agents),
+          onBudgetForecast: (info) => setBudgetForecast(info),
           onPlan: (items: PlannedItem[]) => {
             setCards(
               items.map((i) => ({
@@ -750,7 +755,7 @@ export default function DemoPage() {
                 });
               }
             } else {
-              setCardStage(r.correlationId, { stage: "denied", reason: r.error });
+              setCardStage(r.correlationId, { stage: "denied", reason: r.error, budgetCapped: r.budgetCapped });
             }
           },
         },
@@ -1149,6 +1154,11 @@ export default function DemoPage() {
             </div>
           </section>
 
+          {/* Budget-cap safety beat — the budget enforcer blocked the overflow. */}
+          {(budgetForecast || cards.some((c) => c.budgetCapped)) && (
+            <BudgetCapPanel cards={cards} forecast={budgetForecast} capUsdc={displayAmount} />
+          )}
+
           {/* The payoff: the aggregated report assembled from purchased outputs */}
           {report && (
             <ReportPanel sections={report} markdown={reportMarkdown} cover={reportCover} cards={cards} />
@@ -1186,6 +1196,74 @@ export default function DemoPage() {
 }
 
 // --- report panel ----------------------------------------------------------
+
+/** The budget-cap safety beat — the ERC20PeriodTransferEnforcer blocks payments
+ *  that would exceed the granted budget. Styled amber (a limit reached), distinct
+ *  from the magenta rogue/attack beat. */
+function BudgetCapPanel({
+  cards,
+  forecast,
+  capUsdc,
+}: {
+  cards: FeedCard[];
+  forecast: { planTotal: bigint; budget: bigint } | null;
+  capUsdc: string;
+}) {
+  const blocked = cards.filter((c) => c.budgetCapped);
+  const hired = cards.filter((c) => c.stage === "settled" || c.stage === "settling");
+  const usd = (a: bigint) => (Number(a) / 1e6).toFixed(2);
+  return (
+    <section className="panel reveal mt-6 border-amber-400/40 p-6">
+      <div className="flex items-center gap-2">
+        <span aria-hidden>🛡</span>
+        <h2 className="text-base font-semibold text-white">Budget cap reached</h2>
+        <span className="mono rounded bg-amber-400/15 px-2 py-0.5 text-[10px] text-amber-300">
+          ERC20PeriodTransferEnforcer
+        </span>
+      </div>
+      <p className="mt-1.5 text-[13px] leading-relaxed text-conduit-muted">
+        The coordinator tried to hire more than your{" "}
+        <span className="font-semibold text-white">{capUsdc} USDC</span> budget allows. The budget
+        cap blocked the overflow payments <span className="text-white">on-chain</span> — a
+        compromised or over-eager agent can never spend beyond what you granted.
+      </p>
+      {forecast && (
+        <p className="mono mt-2 text-[12px] text-conduit-muted">
+          plan needed <span className="text-amber-300">{usd(forecast.planTotal)} USDC</span> · budget{" "}
+          <span className="text-white">{usd(forecast.budget)} USDC</span>
+        </p>
+      )}
+      <div className="mt-4 grid gap-4 sm:grid-cols-2">
+        <div>
+          <p className="text-[11px] uppercase tracking-wide text-conduit-muted/70">
+            ✓ Hired within budget ({hired.length})
+          </p>
+          <div className="mt-1.5 flex flex-wrap gap-1.5">
+            {hired.map((c) => (
+              <span key={c.correlationId} className="mono rounded-md border border-conduit-cyan/40 px-2 py-1 text-[11px] text-conduit-cyan">
+                {c.label} · {c.priceUsdc}
+              </span>
+            ))}
+            {hired.length === 0 && <span className="text-[11px] text-conduit-muted/60">—</span>}
+          </div>
+        </div>
+        <div>
+          <p className="text-[11px] uppercase tracking-wide text-conduit-muted/70">
+            ✋ Blocked by the cap ({blocked.length})
+          </p>
+          <div className="mt-1.5 flex flex-wrap gap-1.5">
+            {blocked.map((c) => (
+              <span key={c.correlationId} className="mono rounded-md border border-amber-400/40 px-2 py-1 text-[11px] text-amber-300">
+                {c.label} · {c.priceUsdc}
+              </span>
+            ))}
+            {blocked.length === 0 && <span className="text-[11px] text-conduit-muted/60">none yet</span>}
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
 
 const REPORT_HEADINGS: Record<string, string> = {
   research: "Research",

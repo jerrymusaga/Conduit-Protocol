@@ -118,6 +118,49 @@ export function planForPrompt(prompt: string, agents: DiscoveredAgent[]): PlanIt
   return picks;
 }
 
+/**
+ * Venice-powered selection — the coordinator's REASONING step. Asks /api/plan
+ * (Venice) to pick the best agent per capability the prompt needs, with a short
+ * rationale each. Returns null on any failure so the caller falls back to the
+ * deterministic planForPrompt (so it always works, even with no Venice credits).
+ */
+export async function planWithVenice(
+  prompt: string,
+  agents: DiscoveredAgent[]
+): Promise<PlanItem[] | null> {
+  try {
+    const res = await fetch("/api/plan", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        prompt,
+        agents: agents.map((a) => ({
+          id: a.id, name: a.name, role: a.role, priceUsdc: a.priceUsdc, description: a.description,
+        })),
+      }),
+    });
+    if (!res.ok) return null;
+    const { picks } = (await res.json()) as { picks?: { id: string; reason?: string }[] | null };
+    if (!picks || picks.length === 0) return null;
+    const items: PlanItem[] = [];
+    const seen = new Set<string>();
+    for (const p of picks) {
+      if (seen.has(p.id)) continue;
+      const agent = agents.find((a) => a.id === p.id);
+      if (!agent) continue;
+      seen.add(p.id);
+      items.push({
+        service: agentToService(agent),
+        agent: agent.role,
+        rationale: p.reason ?? "Selected by the coordinator.",
+      });
+    }
+    return items.length ? items : null;
+  } catch {
+    return null;
+  }
+}
+
 // --- Orchestration ---------------------------------------------------------
 
 export type A2AMode = "looped" | "a2a";
@@ -134,8 +177,17 @@ export interface RunHooks {
   onTask?: (task: A2ATask, agentAddress: Hex) => void;
   /** A service purchase result (settled or rejected). */
   onResult?: (r: ServiceResult) => void;
+  /** Fired before the run when the plan costs more than the granted budget. */
+  onBudgetForecast?: (info: { planTotal: bigint; budget: bigint }) => void;
   /** Free-form log line. */
   log?: (text: string) => void;
+}
+
+/** Does a revert reason look like the budget cap (ERC20PeriodTransferEnforcer)
+ *  rather than a per-request cap or other failure? In the normal run loop a
+ *  payment only fails on amount when the period budget is exhausted. */
+export function isBudgetCapRevert(err?: string): boolean {
+  return !!err && /period|available/i.test(err);
 }
 
 export interface ServiceResult {
@@ -145,6 +197,8 @@ export interface ServiceResult {
   ok: boolean;
   intentHash: Hex;
   amount: bigint;
+  /** Rejected because it would exceed the granted budget (ERC20PeriodTransferEnforcer). */
+  budgetCapped?: boolean;
   txHash?: string | null;
   /** Settlement job id — poll the facilitator's GET /jobs/:id for the on-chain
    *  tx hash + terminal status (settlement is async). */
@@ -211,9 +265,15 @@ export async function runCampaign(params: {
   }
   await sleep(250);
 
-  // --- Plan: pick the best agent per role the prompt needs ------------------
+  // --- Plan: the coordinator reasons (Venice) over the prompt + marketplace -
   log("coordinator › reasoning over the prompt + marketplace…");
-  const rawPlan = planForPrompt(prompt, procurement);
+  let rawPlan = await planWithVenice(prompt, procurement);
+  if (rawPlan && rawPlan.length > 0) {
+    log("coordinator › Venice picked the team");
+  } else {
+    rawPlan = planForPrompt(prompt, procurement);
+    log("coordinator › picked the team (rules)");
+  }
   // Assign a stable correlation id per item so the client cards and the SSE
   // events from the facilitator line up.
   const plan: PlannedItem[] = rawPlan.map((i) => ({
@@ -222,6 +282,18 @@ export async function runCampaign(params: {
   }));
   hooks.onPlan?.(plan);
   log(`coordinator › hired: ${plan.map((i) => i.service.label).join(", ")}`);
+
+  // Proactive budget forecast: if the plan costs more than the granted budget,
+  // warn up front — the ERC20PeriodTransferEnforcer will block the overflow
+  // payments on-chain (the budget-cap safety beat).
+  const planTotal = plan.reduce((s, i) => s + BigInt(i.service.priceBaseUnits), 0n);
+  if (planTotal > grant.periodAmount) {
+    log(
+      `coordinator › ⚠ this team costs ${formatUnits(planTotal, 6)} USDC but the budget is ` +
+        `${formatUnits(grant.periodAmount, 6)} — the budget cap will block the overflow on-chain`
+    );
+    hooks.onBudgetForecast?.({ planTotal, budget: grant.periodAmount });
+  }
 
   const results: ServiceResult[] = [];
   let totalSpent = 0n;
@@ -294,11 +366,16 @@ export async function runCampaign(params: {
           }
         }
       } else {
+        const budgetCapped = isBudgetCapRevert(claim.error);
         result = {
           correlationId, service, agent, ok: false, intentHash, amount: built.amount,
-          error: claim.error,
+          error: claim.error, budgetCapped,
         };
-        log(`${agent} › rejected · ${claim.error}`);
+        log(
+          budgetCapped
+            ? `${agent} › budget cap reached · blocked on-chain · ${claim.error}`
+            : `${agent} › rejected · ${claim.error}`
+        );
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
