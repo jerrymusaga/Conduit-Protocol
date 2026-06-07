@@ -9,7 +9,7 @@ import {
 } from "./facilitatorClient.js";
 import { buildPaymentRequired } from "./paymentRequired.js";
 import { SERVICES, LEGACY_SERVICE, getService, type Service } from "./services.js";
-import { veniceChat, veniceRpc, veniceEnabled } from "./venice.js";
+import { veniceChat, veniceRpc, veniceImage, veniceSpeech, veniceEnabled } from "./venice.js";
 import { hexToBigInt } from "viem";
 
 const app = express();
@@ -21,7 +21,7 @@ app.use((req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*");
   res.header(
     "Access-Control-Allow-Headers",
-    "Content-Type, X-PAYMENT, X-AGENT, X-CORRELATION-ID"
+    "Content-Type, X-PAYMENT, X-AGENT, X-CORRELATION-ID, X-TOPIC"
   );
   res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.header("Access-Control-Expose-Headers", "X-PAYMENT-RESPONSE");
@@ -60,37 +60,34 @@ app.get("/services", (_req, res) => {
       label: s.label,
       description: s.description,
       kind: s.kind,
+      role: s.role,
+      veniceEndpoint: s.veniceEndpoint,
       priceUsdc: s.priceUsdc,
       priceBaseUnits: s.priceBaseUnits.toString(),
       resource: `/services/${s.id}`,
+      ...(s.subscription
+        ? { subscription: { subscriptionId: s.subscription.subscriptionId, periodSeconds: s.subscription.periodSeconds } }
+        : {}),
     })),
   });
 });
 
-// --- Provider intelligence (Venice-powered, canned fallback) ----------------
-// The seller generates what it sells via Venice AFTER the erc7710 payment
-// settles. Every Venice call is best-effort; on any failure the canned value is
-// returned so the demo stays reliable. `source` labels what produced the output
-// so the report can attribute it ("via Venice · on-chain" vs "cached").
+// --- Agent outputs (Venice-powered, canned fallback) ------------------------
+// Each agent produces its part ABOUT THE USER'S TOPIC via its Venice endpoint,
+// AFTER the erc7710 payment settles. Every Venice call is best-effort; on any
+// failure a canned value is returned so the demo stays reliable. `source` labels
+// what produced the output ("venice:chat · web-search" vs "cached").
 
-const CANNED = {
-  data: {
-    stakingTVL: "$160B", stakedETH: "34.2M", percentSupplyStaked: "28.4%",
-    activeValidators: 1_068_000, apr: "3.1%",
-  } as Record<string, unknown>,
-  news:
-    "ETH staking inflows rose ~12% this week on renewed ETF demand; net new " +
-    "deposits outpaced exits, and the validator entry queue lengthened slightly.",
-  analytics:
-    "Staking remains concentrated among large liquid-staking protocols, though " +
-    "Lido's share is gradually declining as solo + restaking options grow. " +
-    "Outlook: stable issuance, modest restaking-driven growth, watch LST concentration.",
-};
+const DEFAULT_TOPIC = "an AI product launch";
 
-// Ethereum mainnet contracts the Data Agent reads via Venice's RPC proxy.
+// Ethereum mainnet contracts the Onchain Scout reads via Venice's RPC proxy.
 const ETH2_DEPOSIT = "0x00000000219ab540356cBB839Cbe05303d7705Fa"; // beacon deposit contract
 const LIDO_STETH = "0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84"; // stETH
 const SELECTOR_TOTAL_SUPPLY = "0x18160ddd"; // totalSupply()
+const CANNED_ONCHAIN = {
+  stakingTVL: "$160B", stakedETH: "34.2M", percentSupplyStaked: "28.4%",
+  activeValidators: 1_068_000, apr: "3.1%",
+} as Record<string, unknown>;
 
 /** wei (bigint) → "34.21M ETH" style human string. */
 function fmtEth(wei: bigint): string {
@@ -100,80 +97,111 @@ function fmtEth(wei: bigint): string {
   return `${eth.toFixed(2)} ETH`;
 }
 
-/** Data Agent: real on-chain ETH-staking metrics via Venice crypto-rpc. */
-async function stakingDataOutput(): Promise<Record<string, unknown>> {
+type Output = Record<string, unknown>;
+
+/** Researcher: web-search-grounded research on the topic (Venice chat+search). */
+async function researchOutput(topic: string): Promise<Output> {
+  const text = await veniceChat(
+    "You are a research analyst. Reply with a tight 3-4 sentence research summary — " +
+      "grounded, concrete, current. No preamble, no markdown.",
+    `Research this topic for a brief: ${topic}`,
+    { webSearch: "on", stripThinking: true, maxTokens: 350 }
+  );
+  return text
+    ? { type: "text", source: "venice:chat · web-search", content: text }
+    : { type: "text", source: "cached", content: `Research summary on ${topic}: an active, fast-moving space — note the key players, recent moves, and adoption signals.` };
+}
+
+/** Copywriter: a punchy positioning brief on the topic (Venice chat). */
+async function copyOutput(topic: string): Promise<Output> {
+  const text = await veniceChat(
+    "You are a senior copywriter. Reply with a punchy 2-3 sentence positioning brief. " +
+      "No preamble, no markdown.",
+    `Write launch copy / a positioning brief for: ${topic}`,
+    { stripThinking: true, maxTokens: 250 }
+  );
+  return text
+    ? { type: "text", source: "venice:chat", content: text }
+    : { type: "text", source: "cached", content: `${topic} — built for the moment. Clear value, sharp positioning, ready to ship.` };
+}
+
+/** Analyst: market/landscape analysis + outlook (Venice reasoning model). */
+async function analysisOutput(topic: string): Promise<Output> {
+  const text = await veniceChat(
+    "You are a market analyst. Reply with a 3-4 sentence analysis + a one-line " +
+      "outlook. No preamble, no markdown.",
+    `Analyze the market/landscape for: ${topic}`,
+    { reasoningEffort: "low", stripThinking: true, maxTokens: 400 }
+  );
+  return text
+    ? { type: "text", source: "venice:chat · reasoning", content: text }
+    : { type: "text", source: "cached", content: `Analysis of ${topic}: balanced fundamentals, real competition, a clear adoption path. Outlook: cautiously positive.` };
+}
+
+/** Onchain Scout: real on-chain crypto metrics via Venice crypto-rpc. */
+async function onchainOutput(): Promise<Output> {
   const net = "ethereum-mainnet";
   const [blockHex, depositBalHex, lidoSupplyHex] = await Promise.all([
     veniceRpc(net, "eth_blockNumber", []),
     veniceRpc(net, "eth_getBalance", [ETH2_DEPOSIT, "latest"]),
     veniceRpc(net, "eth_call", [{ to: LIDO_STETH, data: SELECTOR_TOTAL_SUPPLY }, "latest"]),
   ]);
-
-  // If nothing came back live, serve the canned snapshot.
   if (!blockHex && !depositBalHex && !lidoSupplyHex) {
-    return { type: "data", source: "cached", content: CANNED.data };
+    return { type: "data", source: "cached", content: CANNED_ONCHAIN };
   }
-
-  const content: Record<string, unknown> = { ...CANNED.data };
+  const content: Record<string, unknown> = { ...CANNED_ONCHAIN };
   if (depositBalHex) content.totalDepositedETH = fmtEth(hexToBigInt(depositBalHex as `0x${string}`));
   if (lidoSupplyHex) content.lidoStakedETH = fmtEth(hexToBigInt(lidoSupplyHex as `0x${string}`));
   if (blockHex) content.atBlock = Number(hexToBigInt(blockHex as `0x${string}`));
   return { type: "data", source: "venice:crypto-rpc · ethereum-mainnet", content };
 }
 
-/** News Agent: recent ETH-staking news via Venice chat + web search. */
-async function stakingNewsOutput(): Promise<Record<string, unknown>> {
-  const text = await veniceChat(
-    "You are a crypto news analyst. Reply with 2-3 sentences of the most recent " +
-      "Ethereum staking news. Be concrete and current. No preamble, no markdown.",
-    "Summarize this week's notable Ethereum staking news (flows, queue, ETFs, LSTs).",
-    { webSearch: "on", stripThinking: true, maxTokens: 300 }
+/** Illustrator: a cover image for the topic (Venice image) → data URL. */
+async function imageOutput(topic: string): Promise<Output> {
+  const url = await veniceImage(
+    `Editorial cover illustration for "${topic}". Clean, modern, high-end, abstract. ` +
+      "No text, no words, no letters."
   );
-  return text
-    ? { type: "text", source: "venice:chat · web-search", content: text }
-    : { type: "text", source: "cached", content: CANNED.news };
+  return url
+    ? { type: "image", source: "venice:image", content: url }
+    : { type: "image", source: "cached", content: null, note: "image unavailable (no Venice key/credits)" };
 }
 
-/** Analytics Agent: ETH-staking market analysis via a Venice reasoning model. */
-async function stakingAnalyticsOutput(): Promise<Record<string, unknown>> {
-  const text = await veniceChat(
-    "You are an Ethereum staking market analyst. Reply with a 3-4 sentence " +
-      "analysis: liquid-staking concentration, restaking, and a short outlook. " +
-      "No preamble, no markdown.",
-    "Analyze the current Ethereum staking market structure and give an outlook.",
-    { reasoningEffort: "low", stripThinking: true, maxTokens: 400 }
-  );
-  return text
-    ? { type: "text", source: "venice:chat · reasoning", content: text }
-    : { type: "text", source: "cached", content: CANNED.analytics };
+/** Narrator: a spoken summary of the deliverable (Venice TTS) → playable audio. */
+async function voiceOutput(topic: string): Promise<Output> {
+  const script =
+    (await veniceChat(
+      "Write ONE spoken sentence (max 30 words) summarizing a deliverable for a " +
+        "voiceover. No preamble, no markdown.",
+      `One spoken sentence summarizing a brief about: ${topic}`,
+      { stripThinking: true, maxTokens: 80 }
+    )) ?? `Here is your brief on ${topic}.`;
+  const audio = await veniceSpeech(script);
+  return audio
+    ? { type: "audio", source: "venice:tts", content: audio, transcript: script }
+    : { type: "audio", source: "cached", content: null, transcript: script, note: "voiceover unavailable (no Venice key/credits)" };
 }
 
-/** Produce the success payload for a settled service. */
-async function serviceResult(service: Service): Promise<Record<string, unknown>> {
-  // Per-provider staking outputs the procurement agent aggregates into a report.
-  switch (service.id) {
-    case "staking-data":
-      return stakingDataOutput();
-    case "staking-news":
-      return stakingNewsOutput();
-    case "staking-analytics":
-      return stakingAnalyticsOutput();
-  }
-  switch (service.kind) {
-    case "image":
-      return { type: "image", note: "image generation placeholder (Venice next)",
-        prompt: service.label };
-    case "text":
-      return { type: "text", content: `Generated copy for: ${service.label}` };
-    case "subscription":
-      return { type: "subscription", content: {
-        service: service.id,
-        feed: "market-pulse",
-        period: service.subscription?.periodSeconds,
-        sample: { index: Math.random().toString(36).slice(2, 8), at: Date.now() },
-      } };
-    default:
-      return { type: "data", content: { service: service.id, sample: true } };
+/** Subscription feed: a recurring sample (the period mechanic is the demo beat). */
+function feedOutput(service: Service): Output {
+  return { type: "subscription", source: "venice:chat", content: {
+    service: service.id,
+    period: service.subscription?.periodSeconds,
+    sample: { index: Math.random().toString(36).slice(2, 8), at: Date.now() },
+  } };
+}
+
+/** Produce the success payload for a settled service — by ROLE, about `topic`. */
+async function serviceResult(service: Service, topic: string): Promise<Output> {
+  switch (service.role) {
+    case "research": return researchOutput(topic);
+    case "copy": return copyOutput(topic);
+    case "analysis": return analysisOutput(topic);
+    case "onchain": return onchainOutput();
+    case "image": return imageOutput(topic);
+    case "voice": return voiceOutput(topic);
+    case "feed": return feedOutput(service);
+    default: return { type: "text", source: "cached", content: `Generated output for: ${service.label}` };
   }
 }
 
@@ -262,10 +290,22 @@ async function handlePaidResource(
     })
   ).toString("base64");
 
+  // The agent produces its output ABOUT the user's topic (X-TOPIC header,
+  // URL-encoded by the dapp for header-safety).
+  let topic = DEFAULT_TOPIC;
+  const rawTopic = req.header("X-TOPIC");
+  if (rawTopic) {
+    try {
+      topic = decodeURIComponent(rawTopic).slice(0, 300).trim() || DEFAULT_TOPIC;
+    } catch {
+      /* malformed encoding — keep default */
+    }
+  }
+
   res.setHeader("X-PAYMENT-RESPONSE", paymentResponse);
   res.json({
     service: service.id,
-    data: await serviceResult(service),
+    data: await serviceResult(service, topic),
     servedAt: new Date().toISOString(),
     settlement: {
       jobId: settlement.jobId,

@@ -12,7 +12,7 @@ export interface CatalogService {
   id: string;
   label: string;
   description: string;
-  kind: "image" | "text" | "data" | "subscription";
+  kind: "image" | "audio" | "text" | "data" | "subscription";
   priceUsdc: string;
   priceBaseUnits: string;
   /** Relative resource path, e.g. "/services/venice-image". */
@@ -146,12 +146,14 @@ export async function fetchJob(jobId: string): Promise<JobState | null> {
  */
 export async function payAndClaim(
   paymentPayload: unknown,
-  opts: { path?: string; agent?: string; correlationId?: string } = {}
+  opts: { path?: string; agent?: string; correlationId?: string; topic?: string } = {}
 ): Promise<ClaimResult> {
   const header = btoa(JSON.stringify(paymentPayload));
   const headers: Record<string, string> = { "X-PAYMENT": header };
   if (opts.agent) headers["X-AGENT"] = opts.agent;
   if (opts.correlationId) headers["X-CORRELATION-ID"] = opts.correlationId;
+  // The topic (user prompt) → the agent produces its output about it (X-TOPIC).
+  if (opts.topic) headers["X-TOPIC"] = encodeURIComponent(opts.topic).slice(0, 600);
   const res = await fetch(`${config.endpointUrl}${opts.path ?? RESOURCE_PATH}`, {
     headers,
   });

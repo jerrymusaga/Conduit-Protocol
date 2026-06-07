@@ -13,10 +13,12 @@
  *     relayer (3-hop). The literal "agents delegating to agents".
  */
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
-import { formatUnits, type Hex } from "viem";
+import { formatUnits, parseUnits, type Hex } from "viem";
 import { fetchCatalog, fetch402, payAndClaim, type CatalogService } from "./endpoint";
 import { buildPayment, buildOneshotPayment, freshIntentHash } from "./payment";
 import { publicClient } from "./chain";
+import { discoverAgents, type DiscoveredAgent } from "./discovery";
+import type { AgentRole } from "./agents";
 import type { Coordinator, GrantResult } from "./grant";
 import type { Eip7702Authorization } from "./payment";
 
@@ -54,53 +56,76 @@ export interface A2ATask {
   budgetCap: string; // base units the specialist may spend (= the price)
 }
 
-// --- Reasoning (pluggable) -------------------------------------------------
+// --- Planning: pick the BEST agent per role the prompt needs ----------------
 
-export interface Planner {
-  plan(prompt: string, catalog: CatalogService[]): Promise<PlanItem[]>;
+function roleKind(role: AgentRole): CatalogService["kind"] {
+  switch (role) {
+    case "image": return "image";
+    case "voice": return "audio";
+    case "onchain": return "data";
+    case "feed": return "subscription";
+    default: return "text"; // research, copy, analysis
+  }
 }
 
+/** A discovered agent → the payment-flow service shape (resource + price). */
+function agentToService(a: DiscoveredAgent): CatalogService {
+  return {
+    id: a.id,
+    label: a.name,
+    description: a.description,
+    kind: roleKind(a.role),
+    priceUsdc: a.priceUsdc,
+    priceBaseUnits: parseUnits(a.priceUsdc, 6).toString(),
+    resource: a.resource,
+  };
+}
+
+/** Which roles a prompt needs. `always` roles are included in every plan
+ *  (research grounds any brief; the narrator voices every deliverable). */
+const ROLE_RULES: { role: AgentRole; test: RegExp; always?: boolean; why: string }[] = [
+  { role: "research", test: /.^/, always: true, why: "Research the topic." },
+  { role: "copy", test: /(brief|copy|launch|positioning|announce|write|marketing|pitch|tagline)/, why: "Write the brief / copy." },
+  { role: "image", test: /(cover|image|visual|illustrat|design|art|graphic|logo|poster)/, why: "Design a cover image." },
+  { role: "analysis", test: /(analy|market|compar|competit|outlook|assess|risk|trend|insight|strategy)/, why: "Analyze the landscape." },
+  { role: "onchain", test: /(eth|staking|on-?chain|crypto|token|defi|tvl|validator|wallet|blockchain|web3)/, why: "Pull real on-chain data." },
+  { role: "voice", test: /.^/, always: true, why: "Narrate a voiceover summary." },
+];
+
 /**
- * Deterministic stub planner — maps prompt keywords to services so the demo
- * works with no API key. Swapped for the Venice text planner once a key exists
- * (same interface). Always returns at least one item.
+ * Deterministic best-per-role planner. From the prompt + the discovered
+ * marketplace, decide which roles the task needs and pick the BEST agent for
+ * each: premium prompts get the highest-quality (priciest) provider, otherwise
+ * the best value (cheapest). Surfaces the choice as the rationale.
  */
-export const stubPlanner: Planner = {
-  async plan(prompt, catalog) {
-    const p = prompt.toLowerCase();
-    const want = (id: string) => catalog.find((s) => s.id === id);
-    const picks: PlanItem[] = [];
-    const add = (id: string, agent: string, rationale: string) => {
-      const service = want(id);
-      if (service && !picks.some((x) => x.service.id === id))
-        picks.push({ service, agent, rationale });
-    };
+export function planForPrompt(prompt: string, agents: DiscoveredAgent[]): PlanItem[] {
+  const p = prompt.toLowerCase();
+  const wantsPremium = /(premium|high[- ]?res|hi[- ]?res|4k|deep|best quality|top[- ]?tier|\bpro\b)/.test(p);
+  const picks: PlanItem[] = [];
 
-    // A full report / staking / market-intelligence request procures all three
-    // providers; otherwise match the specific capability asked for.
-    const wantsReport = /(report|staking|market|intelligence|overview|research|analysis)/.test(p);
-    if (wantsReport || /(data|tvl|metric|on-?chain|supply|validator)/.test(p))
-      add("staking-data", "data", "Needs on-chain staking metrics.");
-    if (wantsReport || /(news|inflow|headline|recent|sentiment|flow)/.test(p))
-      add("staking-news", "news", "Needs recent staking news.");
-    if (wantsReport || /(analy|insight|concentration|trend|outlook)/.test(p))
-      add("staking-analytics", "analytics", "Needs market analysis + insights.");
-
-    // Fallback: procure the full provider set (a complete report).
-    if (picks.length === 0) {
-      add("staking-data", "data", "Procure on-chain staking metrics.");
-      add("staking-news", "news", "Procure recent staking news.");
-      add("staking-analytics", "analytics", "Procure market analysis.");
-    }
-    return picks;
-  },
-};
+  for (const rule of ROLE_RULES) {
+    if (!rule.always && !rule.test.test(p)) continue;
+    const candidates = agents.filter((a) => a.role === rule.role);
+    if (candidates.length === 0) continue;
+    const sorted = [...candidates].sort((a, b) => Number(a.priceUsdc) - Number(b.priceUsdc));
+    const best = wantsPremium ? sorted[sorted.length - 1] : sorted[0];
+    const rationale =
+      candidates.length > 1
+        ? `${rule.why} Picked ${best.name} (${wantsPremium ? "best quality" : "best value"}) over ${candidates.length - 1} other${candidates.length > 2 ? "s" : ""}.`
+        : rule.why;
+    picks.push({ service: agentToService(best), agent: best.role, rationale });
+  }
+  return picks;
+}
 
 // --- Orchestration ---------------------------------------------------------
 
 export type A2AMode = "looped" | "a2a";
 
 export interface RunHooks {
+  /** The discovered marketplace (all registered agents) — for the canvas to show
+   *  the full set with the chosen ones highlighted. */
+  onDiscover?: (agents: DiscoveredAgent[]) => void;
   /** Coordinator reasoning / planning narration (each item has a correlationId). */
   onPlan?: (items: PlannedItem[]) => void;
   /** A payment is about to be attempted (card → "paying"). */
@@ -166,28 +191,29 @@ export async function runCampaign(params: {
   grant: GrantResult;
   coordinator: Coordinator;
   mode: A2AMode;
-  planner?: Planner;
   /** Consumed by the first payment to designate the user EOA (then cleared). */
   authorization?: Eip7702Authorization | null;
   hooks?: RunHooks;
 }): Promise<RunResult> {
   const { prompt, grant, coordinator, mode } = params;
-  const planner = params.planner ?? stubPlanner;
   const hooks = params.hooks ?? {};
   const log = hooks.log ?? (() => {});
 
-  // --- Discovery beat: search the registry, surface providers one by one ----
-  log("coordinator › searching the provider registry…");
-  const catalog = await fetchCatalog();
-  const providers = catalog.filter((s) => s.kind !== "subscription");
-  for (const s of providers) {
-    await sleep(450);
-    log(`coordinator › ✓ found ${s.label} · ${s.priceUsdc} USDC`);
+  // --- Discovery: read the ERC-8004 registry, surface the marketplace --------
+  log("coordinator › querying the ERC-8004 agent registry…");
+  const market = await discoverAgents();
+  const procurement = market.filter((m) => m.paymentKind === "one-shot");
+  hooks.onDiscover?.(procurement);
+  for (const ag of procurement) {
+    await sleep(280);
+    const tag = ag.source === "registry" && ag.agentId ? ` · agent #${ag.agentId}` : "";
+    log(`coordinator › ✓ ${ag.name} · ${ag.role} · ${ag.priceUsdc} USDC${tag}`);
   }
-  await sleep(300);
+  await sleep(250);
 
-  log("coordinator › reasoning over the prompt…");
-  const rawPlan = await planner.plan(prompt, catalog);
+  // --- Plan: pick the best agent per role the prompt needs ------------------
+  log("coordinator › reasoning over the prompt + marketplace…");
+  const rawPlan = planForPrompt(prompt, procurement);
   // Assign a stable correlation id per item so the client cards and the SSE
   // events from the facilitator line up.
   const plan: PlannedItem[] = rawPlan.map((i) => ({
@@ -195,7 +221,7 @@ export async function runCampaign(params: {
     correlationId: crypto.randomUUID(),
   }));
   hooks.onPlan?.(plan);
-  log(`coordinator › plan: ${plan.map((i) => i.service.id).join(", ")}`);
+  log(`coordinator › hired: ${plan.map((i) => i.service.label).join(", ")}`);
 
   const results: ServiceResult[] = [];
   let totalSpent = 0n;
@@ -237,6 +263,7 @@ export async function runCampaign(params: {
         path: service.resource,
         agent,
         correlationId,
+        topic: prompt,
       });
       if (claim.ok) {
         totalSpent += built.amount;
@@ -377,15 +404,17 @@ export async function attemptRogue(params: {
   }
 
   // --- redirect / overspend: build a fresh malicious payment ---------------
-  const catalog = await fetchCatalog();
+  // Target one-shot agents only (subscriptions use a different enforcer/flow).
+  const catalog = (await fetchCatalog()).filter((s) => s.kind !== "subscription");
   const cheapest = [...catalog].sort(
     (a, b) => Number(a.priceBaseUnits) - Number(b.priceBaseUnits)
   )[0];
-  // Overspend targets a recognizable agent (Data Agent) so the bound per-request
-  // cap shown on screen is a real, named service price; redirect uses cheapest.
+  // Overspend targets a recognizable agent (the Researcher) so the bound
+  // per-request cap shown on screen is a real, named service price; redirect
+  // uses the cheapest.
   const service =
     kind === "overspend"
-      ? catalog.find((s) => s.id === "staking-data") ?? cheapest
+      ? catalog.find((s) => s.id === "researcher") ?? cheapest
       : cheapest;
 
   // Captured after fetch402 so the result carries the real attack values.

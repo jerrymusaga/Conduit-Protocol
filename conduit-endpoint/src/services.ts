@@ -2,19 +2,34 @@ import { keccak256, parseUnits, toHex } from "viem";
 import { config } from "./config.js";
 
 /**
- * The catalog of paid x402 services the demo seller offers. The prompt-driven
- * coordinator picks which of these to buy; each becomes a real priced x402
- * resource (its own 402 envelope + payment event in the Conduit console).
+ * The Venice-powered agent MARKETPLACE the demo seller offers. Each service is
+ * an autonomous AGENT that sells a capability powered by a Venice endpoint and
+ * gets paid through Conduit (x402 + erc7710). The prompt-driven coordinator
+ * discovers these on the ERC-8004 registry, picks the BEST per role, and hires
+ * + pays each. Variety per role (competing providers at different price/quality)
+ * makes "find the best" meaningful.
  *
  * `kind` tells the resource handler what to return on success:
- *   - "image": a generated image (Venice later; placeholder for now)
- *   - "text":  generated copy/text
- *   - "data":  a JSON data payload
- *   - "subscription": a RECURRING data feed — bound by X402SubscriptionEnforcer
+ *   - "image": a generated image (Venice image)
+ *   - "audio": generated speech (Venice TTS) — a playable voiceover clip
+ *   - "text":  generated copy/research/analysis (Venice chat)
+ *   - "data":  a JSON data payload (Venice crypto-rpc / on-chain)
+ *   - "subscription": a RECURRING feed — bound by X402SubscriptionEnforcer
  *      (fixed price, one merchant, at most once per period). Distinct from the
  *      one-shot kinds above, which are bound by X402ReceiptEnforcer.
  */
-export type ServiceKind = "image" | "text" | "data" | "subscription";
+export type ServiceKind = "image" | "audio" | "text" | "data" | "subscription";
+
+/** The capability category a procurement agent fills — the coordinator picks the
+ *  BEST agent per role the task needs. */
+export type AgentRole =
+  | "research"
+  | "copy"
+  | "image"
+  | "analysis"
+  | "onchain"
+  | "voice"
+  | "feed"; // subscription feeds
 
 /** Subscription-only terms a recurring service advertises in its 402 envelope. */
 export interface SubscriptionTerms {
@@ -31,6 +46,10 @@ export interface Service {
   /** What this agent sells. */
   description: string;
   kind: ServiceKind;
+  /** The capability category (for discovery + best-per-role selection). */
+  role: AgentRole;
+  /** Which Venice endpoint powers this agent (shown as a badge in the tree). */
+  veniceEndpoint: string;
   /** Human price in USDC. For a subscription this is the EXACT charge per period. */
   priceUsdc: string;
   /** Price in base units (bigint, 6-decimals). */
@@ -43,6 +62,8 @@ function svc(
   id: string,
   label: string,
   kind: ServiceKind,
+  role: AgentRole,
+  veniceEndpoint: string,
   priceUsdc: string,
   description: string,
   subscription?: SubscriptionTerms
@@ -51,6 +72,8 @@ function svc(
     id,
     label,
     kind,
+    role,
+    veniceEndpoint,
     priceUsdc,
     priceBaseUnits: parseUnits(priceUsdc, 6),
     description,
@@ -58,29 +81,50 @@ function svc(
   };
 }
 
+const subTerms = (id: string, periodSeconds: number): SubscriptionTerms => ({
+  subscriptionId: keccak256(toHex(`conduit:${id}`)),
+  periodSeconds,
+});
+
 /**
- * The catalog is a set of AGENTS that sell a capability and get paid through
- * Conduit — the recipient side of agent-to-agent commerce. A coordinator agent
- * hires them; each is paid (x402+erc7710) through the facilitator, which earns
- * its fee on every hop. Prices are tiny (testnet) but distinct so the console
- * shows varied costs draining one budget.
+ * The marketplace: a set of Venice-powered AGENTS that sell a capability and get
+ * paid through Conduit. A coordinator hires them; each is paid (x402+erc7710)
+ * through the facilitator. Prices are tiny (testnet) but distinct so the console
+ * shows varied costs draining one budget — and so "best value per role" is real.
  */
 export const SERVICES: Service[] = [
-  // The provider agents a procurement coordinator buys from to assemble an ETH
-  // staking market report. Each is a real priced x402 + erc7710 service.
-  svc("staking-data", "Data Agent", "data", "0.05",
-    "Sells on-chain ETH staking metrics (TVL, staked supply, validators)."),
-  svc("staking-news", "News Agent", "text", "0.03",
-    "Sells a recent ETH staking news summary."),
-  svc("staking-analytics", "Analytics Agent", "text", "0.07",
-    "Sells ETH staking market analysis + insights."),
-  // Recurring service — bound by X402SubscriptionEnforcer. Fixed price, one
-  // merchant, at most once per period. The period is short (60s) so the demo
-  // can show the cadence + the on-chain "already-charged-this-period" guard
-  // without waiting a month. subscriptionId is deterministic from the id.
-  svc("pulse-feed", "Pulse Feed Agent", "subscription", "0.01",
-    "Recurring market-pulse data feed (subscription).",
-    { subscriptionId: keccak256(toHex("conduit:pulse-feed")), periodSeconds: 60 }),
+  // --- PROCUREMENT agents (one-shot, X402ReceiptEnforcer) -------------------
+  // Competing providers per role so the coordinator's "best" pick is meaningful.
+  svc("researcher", "Researcher", "text", "research", "venice:chat+search", "0.05",
+    "Researches a topic with web search + synthesis."),
+  svc("researcher-pro", "Premium Researcher", "text", "research", "venice:reasoning", "0.09",
+    "Deep research via a Venice reasoning model — higher quality, higher price."),
+  svc("copywriter", "Copywriter", "text", "copy", "venice:chat", "0.04",
+    "Writes the brief / marketing copy on the topic."),
+  svc("illustrator", "Illustrator", "image", "image", "venice:image", "0.06",
+    "Generates a cover image for the deliverable (fast)."),
+  svc("illustrator-pro", "Pro Illustrator", "image", "image", "venice:image-4k", "0.15",
+    "High-resolution cover art — premium image model."),
+  svc("analyst", "Analyst", "text", "analysis", "venice:reasoning", "0.07",
+    "Analyzes the topic + gives an outlook (reasoning model)."),
+  svc("onchain-scout", "Onchain Scout", "data", "onchain", "venice:crypto-rpc", "0.05",
+    "Pulls real on-chain data via Venice's RPC proxy (for crypto topics)."),
+  svc("narrator", "Narrator", "audio", "voice", "venice:tts", "0.07",
+    "Speaks a summary of the deliverable — a playable voiceover (Venice TTS)."),
+
+  // --- SUBSCRIPTION agents (recurring, X402SubscriptionEnforcer) ------------
+  // Variety of periods for the portfolio showcase; the LIVE demo drives the 60s
+  // one so the cadence + the on-chain "already-charged-this-period" guard show
+  // fast. subscriptionId is deterministic from the id.
+  svc("pulse-feed", "Realtime Pulse Feed", "subscription", "feed", "venice:chat", "0.01",
+    "Recurring real-time market-pulse updates (demo cadence: 60s).",
+    subTerms("pulse-feed", 60)),
+  svc("daily-digest", "Daily AI Digest", "subscription", "feed", "venice:chat+search", "0.10",
+    "A once-a-day AI/market digest (subscription).",
+    subTerms("daily-digest", 86_400)),
+  svc("weekly-trends", "Weekly Trend Report", "subscription", "feed", "venice:reasoning", "0.50",
+    "A weekly deep trend report (subscription).",
+    subTerms("weekly-trends", 604_800)),
 ];
 
 export function getService(id: string): Service | undefined {
@@ -92,6 +136,8 @@ export const LEGACY_SERVICE: Service = svc(
   "paid-data",
   "Protected demo resource",
   "data",
+  "research",
+  "venice:chat",
   config.priceUsdc,
   config.resourceDescription
 );

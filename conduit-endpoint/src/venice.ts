@@ -117,6 +117,50 @@ export async function veniceRpc(
   });
 }
 
+/** POST /image/generate → a data: URL (png), or null on any failure. */
+export async function veniceImage(prompt: string): Promise<string | null> {
+  return safe("image", async () => {
+    const res = await fetch(`${VENICE_BASE}/image/generate`, {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({
+        model: "z-image-turbo",
+        prompt,
+        width: 1024,
+        height: 1024,
+        format: "png",
+        safe_mode: true,
+        return_binary: false,
+      }),
+    });
+    if (!res.ok) throw new Error(`image ${res.status}: ${await res.text()}`);
+    const json = (await res.json()) as { images?: string[] };
+    const b64 = json.images?.[0];
+    if (!b64) throw new Error("no image");
+    return `data:image/png;base64,${b64}`;
+  });
+}
+
+/** POST /audio/speech → a data: URL (mp3) for a playable voiceover, or null. */
+export async function veniceSpeech(text: string): Promise<string | null> {
+  return safe("speech", async () => {
+    const res = await fetch(`${VENICE_BASE}/audio/speech`, {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({
+        model: "tts-kokoro",
+        input: text,
+        voice: "af_sky",
+        response_format: "mp3",
+      }),
+    });
+    if (!res.ok) throw new Error(`speech ${res.status}: ${await res.text()}`);
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (buf.length === 0) throw new Error("empty audio");
+    return `data:audio/mp3;base64,${buf.toString("base64")}`;
+  });
+}
+
 export interface SearchResult {
   title: string;
   url: string;
