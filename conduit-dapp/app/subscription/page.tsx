@@ -22,6 +22,7 @@ import {
   type CatalogService,
   type PaymentRequirements,
 } from "@/lib/endpoint";
+import { discoverAgents, type DiscoveredAgent } from "@/lib/discovery";
 import {
   grantSubscription,
   buildSubscriptionPayment,
@@ -86,6 +87,9 @@ export default function SubscriptionPage() {
   // Subscription catalog + 402 requirements (loaded once).
   const [service, setService] = useState<CatalogService | null>(null);
   const [req, setReq] = useState<PaymentRequirements | null>(null);
+  // The subscription marketplace: pick which recurring service to opt into.
+  const [subServices, setSubServices] = useState<CatalogService[]>([]);
+  const [subAgents, setSubAgents] = useState<DiscoveredAgent[]>([]); // registry tags
 
   // Grant / charge state.
   const coordinatorRef = useRef<Coordinator | null>(null);
@@ -122,23 +126,28 @@ export default function SubscriptionPage() {
     requestAnimationFrame(() => logEndRef.current?.scrollIntoView({ behavior: "smooth" }));
   }, []);
 
-  // Load the subscription service + its 402 envelope once.
+  // Discover the subscription marketplace; default-select the fast (60s) feed so
+  // the recurring beat shows quickly. The user can pick another before subscribing.
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const catalog = await fetchCatalog();
-        const sub = catalog.find((s) => s.kind === "subscription");
-        if (!sub) {
-          append("No subscription service in the catalog.");
+        const [catalog, market] = await Promise.all([fetchCatalog(), discoverAgents()]);
+        const subs = catalog.filter((s) => s.kind === "subscription");
+        if (subs.length === 0) {
+          append("No subscription services in the catalog.");
           return;
         }
-        const requirements = await fetch402(sub.resource);
         if (cancelled) return;
-        setService(sub);
+        setSubServices(subs);
+        setSubAgents(market.filter((m) => m.paymentKind === "subscription"));
+        const def = subs.find((s) => s.id === "pulse-feed") ?? subs[0];
+        const requirements = await fetch402(def.resource);
+        if (cancelled) return;
+        setService(def);
         setReq(requirements);
       } catch (e) {
-        append(`Could not load subscription service · ${errMsg(e)}`);
+        append(`Could not load subscription services · ${errMsg(e)}`);
       }
     })();
     return () => {
@@ -252,6 +261,19 @@ export default function SubscriptionPage() {
       append(`Cancel failed · ${errMsg(e)}`);
     } finally {
       setBusy(false);
+    }
+  };
+
+  // Pick a different subscription to opt into (only before subscribing).
+  const selectService = async (svc: CatalogService) => {
+    if (busy || subscribed || svc.id === service?.id) return;
+    try {
+      const requirements = await fetch402(svc.resource);
+      setService(svc);
+      setReq(requirements);
+      append(`Selected ${svc.label} · every ${requirements.subscription?.periodSeconds ?? "?"}s`);
+    } catch (e) {
+      append(`Could not load ${svc.label} · ${errMsg(e)}`);
     }
   };
 
@@ -447,6 +469,41 @@ export default function SubscriptionPage() {
               <div className="mt-4 rounded-lg border border-conduit-magenta/40 bg-conduit-magenta/5 p-3 text-[12px] text-conduit-magenta">
                 Subscription cancelled — the delegation is revoked on-chain; no further charges
                 can settle. Approve again to start a new one.
+              </div>
+            )}
+
+            {/* Subscription marketplace — discovered on ERC-8004; pick one. */}
+            {subServices.length > 0 && (
+              <div className="mt-4">
+                <p className="text-[11px] uppercase tracking-wide text-conduit-muted/70">
+                  Discovered on ERC-8004 · {subServices.length} subscriptions
+                  {subAgents.some((a) => a.source === "registry") ? " (on-chain)" : ""}
+                </p>
+                <div className="mt-2 grid gap-2 sm:grid-cols-3">
+                  {subServices.map((s) => {
+                    const sel = s.id === service?.id;
+                    const agent = subAgents.find((a) => a.id === s.id);
+                    return (
+                      <button
+                        key={s.id}
+                        onClick={() => selectService(s)}
+                        disabled={busy || subscribed}
+                        className={`rounded-lg border p-2.5 text-left transition disabled:cursor-not-allowed ${
+                          sel ? "border-conduit-cyan/60 bg-conduit-cyan/10" : "border-conduit-border/60 hover:border-conduit-cyan/40"
+                        } ${subscribed && !sel ? "opacity-40" : ""}`}
+                      >
+                        <p className="text-[12px] font-semibold text-white">{sel ? "● " : ""}{s.label}</p>
+                        <p className="mono mt-0.5 text-[10px] text-conduit-muted">
+                          {s.priceUsdc} USDC · every {fmtPeriod(agent?.subscription?.periodSeconds)}
+                        </p>
+                        {agent?.agentId && (
+                          <p className="mono mt-0.5 text-[9.5px] text-conduit-cyan/80">on-chain · agent #{agent.agentId}</p>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+                {subscribed && <p className="mt-1.5 text-[10px] text-conduit-muted/60">Cancel to switch subscriptions.</p>}
               </div>
             )}
 
@@ -817,6 +874,16 @@ function Arrow() {
 function shorten(addr: string | null): string {
   if (!addr) return "—";
   return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
+}
+
+/** Human-friendly billing period: 60→"60s", 86400→"day", 604800→"week". */
+function fmtPeriod(s?: number): string {
+  if (!s) return "—";
+  if (s < 3600) return `${s}s`;
+  if (s < 86_400) return `${Math.round(s / 3600)}h`;
+  if (s < 604_800) return "day";
+  if (s < 2_592_000) return "week";
+  return "month";
 }
 function toLocalDatetime(ms: number): string {
   const off = new Date(ms).getTimezoneOffset() * 60_000;
