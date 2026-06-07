@@ -122,6 +122,13 @@ export function CoordinationCanvas({
   // Which discovered agents got hired (by service id) — for the marketplace row.
   const hiredIds = new Set(legit.map((c) => c.service));
   const veniceFor = (serviceId: string) => market.find((m) => m.id === serviceId)?.veniceEndpoint;
+  const planned = hiredIds.size > 0; // the coordinator has chosen → highlight/dim
+  const avatar = (id: string) => `https://api.dicebear.com/9.x/bottts/svg?seed=${encodeURIComponent(id)}`;
+  const REGISTRY_BY_CHAIN: Record<number, string> = {
+    84532: "0x8004A818BFB912233c491871b3d84c89A494BD9e",
+    8453: "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432",
+  };
+  const registry = REGISTRY_BY_CHAIN[config.chainId];
 
   if (cards.length === 0) {
     return (
@@ -171,33 +178,77 @@ export function CoordinationCanvas({
         <Connector />
       </div>
 
-      {/* DISCOVERY — the marketplace found on ERC-8004; hired ones highlighted. */}
+      {/* DISCOVERY — the marketplace found on ERC-8004, as rich agent cards.
+          They appear staggered (discovery), then the chosen glow + the rest dim
+          (selection) once the coordinator plans. */}
       {market.length > 0 && (
-        <div className={`mx-auto mb-3 max-w-4xl ${dim}`}>
-          <p className="mb-1.5 text-center text-[10px] uppercase tracking-wide text-conduit-muted/60">
-            discovered on ERC-8004 · {market.length} agents{market.some((m) => m.source === "registry") ? " (on-chain)" : ""}
-          </p>
-          <div className="flex flex-wrap justify-center gap-1.5">
-            {market.map((m) => {
+        <div className={`mx-auto mb-4 max-w-5xl ${dim}`}>
+          <div className="mb-2 flex items-center justify-center gap-2 text-[10px] uppercase tracking-wide">
+            <span className="h-px w-8 bg-conduit-border/60" />
+            <span className="text-conduit-muted/70">
+              Discovered on ERC-8004 · {market.length} agents
+              {market.some((m) => m.source === "registry") ? " · on-chain" : ""}
+            </span>
+            <span className="mono rounded bg-conduit-cyan/10 px-1.5 py-0.5 text-[9px] normal-case text-conduit-cyan">x402</span>
+            <span className="mono rounded bg-conduit-violet/15 px-1.5 py-0.5 text-[9px] normal-case text-conduit-violet">ERC-7710</span>
+            <span className="h-px w-8 bg-conduit-border/60" />
+          </div>
+
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
+            {market.map((m, i) => {
               const hired = hiredIds.has(m.id);
+              const unit = m.role === "feed" ? "/period" : "/req";
               return (
-                <span
+                <div
                   key={m.id}
-                  title={`${m.veniceEndpoint} · ${m.priceUsdc} USDC${m.agentId ? ` · agent #${m.agentId}` : ""}`}
-                  className={`mono rounded-md border px-2 py-1 text-[9.5px] transition ${
-                    hired
-                      ? "border-conduit-cyan/50 bg-conduit-cyan/10 text-conduit-cyan"
-                      : "border-conduit-border/50 text-conduit-muted/50"
-                  }`}
+                  className="reveal rounded-xl border p-2.5 text-center transition-all duration-500"
+                  style={{
+                    animationDelay: `${i * 70}ms`,
+                    borderColor: hired ? `${CYAN}88` : "rgba(255,255,255,0.10)",
+                    background: hired ? `${CYAN}12` : "transparent",
+                    boxShadow: hired ? `0 0 16px -3px ${CYAN}66` : undefined,
+                    opacity: planned && !hired ? 0.4 : 1,
+                  }}
                 >
-                  {hired ? "✓ " : ""}{m.name}
-                  <span className="ml-1 text-conduit-violet/80">{m.veniceEndpoint.replace(/^venice:/, "✦")}</span>
-                  <span className="ml-1 text-conduit-muted/60">{m.priceUsdc}</span>
-                </span>
+                  <div className="relative mx-auto h-12 w-12">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={avatar(m.id)} alt={m.name} className="h-12 w-12 rounded-lg bg-black/30" />
+                    {hired && (
+                      <span className="mono absolute -right-1 -top-1 rounded-full bg-conduit-cyan px-1 text-[8px] font-bold text-black">✓</span>
+                    )}
+                  </div>
+                  <p className="mono mt-1.5 truncate text-[11px] font-semibold text-white">{m.name}</p>
+                  <p className="mono truncate text-[9px] text-conduit-violet/90">{m.veniceEndpoint.replace(/^venice:/, "✦ ")}</p>
+                  <p className="mono mt-1 text-[12px] font-semibold text-white">
+                    ${m.priceUsdc}
+                    <span className="ml-0.5 text-[9px] font-normal text-conduit-muted">USDC{unit}</span>
+                  </p>
+                  <div className="mt-1.5 flex justify-center gap-1">
+                    <span className="mono rounded bg-conduit-cyan/10 px-1 py-0.5 text-[8px] text-conduit-cyan">x402</span>
+                    <span className="mono rounded bg-conduit-violet/15 px-1 py-0.5 text-[8px] text-conduit-violet">erc7710</span>
+                  </div>
+                  {m.agentId && registry ? (
+                    <a
+                      href={`${config.explorerUrl}/nft/${registry}/${m.agentId}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="mono mt-1 block text-[9px] text-conduit-cyan/90 underline-offset-2 hover:underline"
+                    >
+                      agent #{m.agentId} ↗
+                    </a>
+                  ) : (
+                    <span className="mono mt-1 block text-[9px] text-conduit-muted/50">catalog</span>
+                  )}
+                </div>
               );
             })}
           </div>
-          <div className="mt-2 flex justify-center"><span className="text-conduit-muted/30">▼ hires the best per role ▼</span></div>
+
+          <p className="mt-3 text-center text-[10px] text-conduit-muted/70">
+            {planned
+              ? `Coordinator hired ${hiredIds.size} — the best agent for each role ↓`
+              : "Coordinator is selecting the best agent for each role…"}
+          </p>
         </div>
       )}
 
