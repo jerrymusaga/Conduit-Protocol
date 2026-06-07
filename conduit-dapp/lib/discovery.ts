@@ -40,11 +40,21 @@ export async function discoverAgents(): Promise<DiscoveredAgent[]> {
   const registrant = process.env.NEXT_PUBLIC_AGENT_REGISTRANT as Hex | undefined;
   if (registrant && config.chainId === 84532) {
     try {
+      // Public RPCs cap eth_getLogs at a 2000-block range AND reject toBlock past
+      // the head. Our agents register in one tight window, so scan a small fixed
+      // window anchored at the registration block (never grows past the limit),
+      // capped at the current head. Re-registration should bump
+      // NEXT_PUBLIC_AGENT_REGISTRY_FROM_BLOCK.
+      const fromBlock = BigInt(process.env.NEXT_PUBLIC_AGENT_REGISTRY_FROM_BLOCK ?? "42517477");
+      const head = await publicClient.getBlockNumber();
+      const windowEnd = fromBlock + 500n;
+      const toBlock = windowEnd < head ? windowEnd : head;
       const logs = await publicClient.getLogs({
         address: REGISTRY,
         event: REGISTERED_EVENT,
         args: { owner: registrant },
-        fromBlock: 0n,
+        fromBlock,
+        toBlock,
       });
       const seen = new Set<string>();
       const discovered: DiscoveredAgent[] = [];
