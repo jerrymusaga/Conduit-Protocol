@@ -85,10 +85,22 @@ function phaseOf(stage: CanvasCard["stage"]): Phase {
   }
 }
 
+/** A discovered marketplace agent (from the ERC-8004 registry / catalog). */
+export interface MarketAgent {
+  id: string;
+  name: string;
+  role: string;
+  veniceEndpoint: string;
+  priceUsdc: string;
+  agentId?: string;
+  source: "registry" | "catalog";
+}
+
 export function CoordinationCanvas({
   userAddress,
   coordinatorAddress,
   cards,
+  market = [],
   mode,
   budget,
   revoked = false,
@@ -96,6 +108,7 @@ export function CoordinationCanvas({
   userAddress?: string | null;
   coordinatorAddress?: string | null;
   cards: CanvasCard[];
+  market?: MarketAgent[];
   mode: "a2a" | "looped";
   budget: Budget;
   revoked?: boolean;
@@ -106,6 +119,9 @@ export function CoordinationCanvas({
   // The rogue is an EXTERNAL attacker — keep it out of your authorized tree.
   const legit = cards.filter((c) => c.agent !== "rogue");
   const rogues = cards.filter((c) => c.agent === "rogue");
+  // Which discovered agents got hired (by service id) — for the marketplace row.
+  const hiredIds = new Set(legit.map((c) => c.service));
+  const veniceFor = (serviceId: string) => market.find((m) => m.id === serviceId)?.veniceEndpoint;
 
   if (cards.length === 0) {
     return (
@@ -155,6 +171,36 @@ export function CoordinationCanvas({
         <Connector />
       </div>
 
+      {/* DISCOVERY — the marketplace found on ERC-8004; hired ones highlighted. */}
+      {market.length > 0 && (
+        <div className={`mx-auto mb-3 max-w-4xl ${dim}`}>
+          <p className="mb-1.5 text-center text-[10px] uppercase tracking-wide text-conduit-muted/60">
+            discovered on ERC-8004 · {market.length} agents{market.some((m) => m.source === "registry") ? " (on-chain)" : ""}
+          </p>
+          <div className="flex flex-wrap justify-center gap-1.5">
+            {market.map((m) => {
+              const hired = hiredIds.has(m.id);
+              return (
+                <span
+                  key={m.id}
+                  title={`${m.veniceEndpoint} · ${m.priceUsdc} USDC${m.agentId ? ` · agent #${m.agentId}` : ""}`}
+                  className={`mono rounded-md border px-2 py-1 text-[9.5px] transition ${
+                    hired
+                      ? "border-conduit-cyan/50 bg-conduit-cyan/10 text-conduit-cyan"
+                      : "border-conduit-border/50 text-conduit-muted/50"
+                  }`}
+                >
+                  {hired ? "✓ " : ""}{m.name}
+                  <span className="ml-1 text-conduit-violet/80">{m.veniceEndpoint.replace(/^venice:/, "✦")}</span>
+                  <span className="ml-1 text-conduit-muted/60">{m.priceUsdc}</span>
+                </span>
+              );
+            })}
+          </div>
+          <div className="mt-2 flex justify-center"><span className="text-conduit-muted/30">▼ hires the best per role ▼</span></div>
+        </div>
+      )}
+
       {/* SPECIALISTS row — only the agents YOU authorized (rogue is external) */}
       <div className={`flex flex-wrap items-stretch justify-center gap-3 ${dim}`}>
         {legit.map((c, i) => (
@@ -163,6 +209,7 @@ export function CoordinationCanvas({
             card={c}
             index={i}
             mode={mode}
+            venice={veniceFor(c.service)}
             selected={selected === c.correlationId}
             onSelect={() => setSelected(selected === c.correlationId ? null : c.correlationId)}
           />
@@ -253,12 +300,14 @@ function SpecialistColumn({
   card,
   index,
   mode,
+  venice,
   selected,
   onSelect,
 }: {
   card: CanvasCard;
   index: number;
   mode: "a2a" | "looped";
+  venice?: string;
   selected: boolean;
   onSelect: () => void;
 }) {
@@ -280,12 +329,14 @@ function SpecialistColumn({
       >
         <div className="flex items-center gap-1.5">
           <span className={`h-2 w-2 rounded-full ${p.working ? "animate-pulse" : ""}`} style={{ background: p.accent, boxShadow: `0 0 8px ${p.accent}` }} />
-          <span className="mono text-[11px] font-semibold text-white">
-            ◇ {card.agent}
+          <span className="mono truncate text-[11px] font-semibold text-white">
+            ◇ {card.label}
           </span>
         </div>
-        <p className="mono mt-0.5 truncate text-[10px] text-conduit-muted">pays {card.label}</p>
-        <p className="mono mt-0.5 text-[10px] text-conduit-muted/70">{short(card.agentAddress) !== "—" ? short(card.agentAddress) : ""}</p>
+        {venice && (
+          <p className="mono mt-0.5 truncate text-[9.5px] text-conduit-violet/90">{venice.replace(/^venice:/, "✦ ")}</p>
+        )}
+        <p className="mono mt-0.5 truncate text-[10px] text-conduit-muted/70">{short(card.agentAddress) !== "—" ? short(card.agentAddress) : card.agent}</p>
         <p className="mono mt-1 text-[10px] underline-offset-2 hover:underline" style={{ color: p.accent }}>inspect ⌄</p>
       </button>
 

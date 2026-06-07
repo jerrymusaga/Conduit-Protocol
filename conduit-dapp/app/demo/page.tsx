@@ -35,6 +35,7 @@ import { config } from "@/lib/config";
 import { publicClient } from "@/lib/chain";
 import { readBudgetState, type BudgetState } from "@/lib/onchain";
 import { CoordinationCanvas } from "@/components/CoordinationCanvas";
+import { type DiscoveredAgent } from "@/lib/discovery";
 
 /* ===========================================================================
    Conduit — facilitator operations console.
@@ -74,7 +75,7 @@ interface ReportSection {
   agent: string;
   label: string;
   priceUsdc: string;
-  output: { type?: string; content?: unknown; source?: string };
+  output: { type?: string; content?: unknown; source?: string; transcript?: string };
   /** Ties the section back to its payment card for live settlement state. */
   correlationId: string;
 }
@@ -229,6 +230,7 @@ export default function DemoPage() {
   const [spent, setSpent] = useState(0); // micro-USDC settled (optimistic, during a run)
   const [budgetState, setBudgetState] = useState<BudgetState | null>(null); // on-chain truth
   const [cards, setCards] = useState<FeedCard[]>([]);
+  const [market, setMarket] = useState<DiscoveredAgent[]>([]); // discovered on ERC-8004
   const [report, setReport] = useState<ReportSection[] | null>(null); // aggregated final report
   const reportRef = useRef<ReportSection[]>([]); // accumulates outputs during a run
   const [reportMarkdown, setReportMarkdown] = useState<string | null>(null); // Venice-aggregated prose
@@ -696,6 +698,7 @@ export default function DemoPage() {
         authorization,
         hooks: {
           log: append,
+          onDiscover: (agents) => setMarket(agents),
           onPlan: (items: PlannedItem[]) => {
             setCards(
               items.map((i) => ({
@@ -1027,64 +1030,68 @@ export default function DemoPage() {
         </section>
       </div>
 
-      <div className="mx-auto grid max-w-7xl gap-6 px-6 pb-8 pt-6 lg:grid-cols-12">
-        {/* LEFT: the prompt + run + the compromised-agent beat */}
-        <div className="flex flex-col gap-6 lg:col-span-3">
-          {/* Prompt */}
-          <section className="panel p-6">
-            <div className="flex items-center justify-between">
-              <h2 className="text-sm font-semibold uppercase tracking-wide text-conduit-muted">
-                Prompt
-              </h2>
-              <button
-                onClick={toggleRecord}
-                disabled={busy || transcribing}
-                title={recording ? "Stop & transcribe" : "Speak your request (Venice)"}
-                className={`mono flex items-center gap-1.5 rounded-md px-2 py-1 text-[11px] transition disabled:opacity-40 ${
-                  recording
-                    ? "bg-conduit-magenta/20 text-conduit-magenta animate-pulse"
-                    : "border border-conduit-border text-conduit-muted hover:text-conduit-cyan"
-                }`}
-              >
-                {/* mic glyph (inline SVG — no icon lib) */}
-                <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <rect x="9" y="2" width="6" height="11" rx="3" />
-                  <path d="M5 10a7 7 0 0 0 14 0" />
-                  <line x1="12" y1="19" x2="12" y2="22" />
-                </svg>
-                {recording ? "Recording… stop" : transcribing ? "Transcribing…" : "Speak"}
-              </button>
+      {/* PROMPT — full-width bar so the tree below gets the width. Prompt input
+          on the left; the hijacked-agent (safety) controls on the right. */}
+      <div className="mx-auto max-w-7xl px-6 pt-4">
+        <section className="panel p-6">
+          <div className="flex flex-col gap-6 lg:flex-row lg:items-start lg:justify-between">
+            {/* prompt input */}
+            <div className="flex-1">
+              <div className="flex items-center justify-between">
+                <h2 className="text-sm font-semibold uppercase tracking-wide text-conduit-muted">
+                  Prompt
+                </h2>
+                <button
+                  onClick={toggleRecord}
+                  disabled={busy || transcribing}
+                  title={recording ? "Stop & transcribe" : "Speak your request (Venice)"}
+                  className={`mono flex items-center gap-1.5 rounded-md px-2 py-1 text-[11px] transition disabled:opacity-40 ${
+                    recording
+                      ? "bg-conduit-magenta/20 text-conduit-magenta animate-pulse"
+                      : "border border-conduit-border text-conduit-muted hover:text-conduit-cyan"
+                  }`}
+                >
+                  <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <rect x="9" y="2" width="6" height="11" rx="3" />
+                    <path d="M5 10a7 7 0 0 0 14 0" />
+                    <line x1="12" y1="19" x2="12" y2="22" />
+                  </svg>
+                  {recording ? "Recording… stop" : transcribing ? "Transcribing…" : "Speak"}
+                </button>
+              </div>
+              <textarea
+                value={prompt}
+                onChange={(e) => setPrompt(e.target.value)}
+                disabled={busy}
+                rows={2}
+                className="mono mt-3 w-full resize-none rounded-lg border border-conduit-border bg-transparent px-3 py-2 text-[13px] text-white outline-none focus:border-conduit-cyan disabled:opacity-40"
+              />
+              <div className="mt-3 flex items-center gap-4">
+                <button
+                  onClick={run}
+                  disabled={!granted || busy || !!runBlock}
+                  className="btn-primary justify-center px-8 text-sm disabled:opacity-40"
+                >
+                  {busy ? "Running…" : "Run"}
+                </button>
+                <p className="mono text-[10px] text-conduit-muted/70">
+                  <span className="text-conduit-violet">✦</span> voice · research · image · voiceover — powered by Venice
+                </p>
+              </div>
+              {runBlock && (
+                <p className="mt-2 text-[11px] leading-relaxed text-conduit-magenta">
+                  {runBlock}
+                  {expired && (
+                    <span className="mt-1 block text-conduit-muted">
+                      Grant a new permission to continue.
+                    </span>
+                  )}
+                </p>
+              )}
             </div>
-            <textarea
-              value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
-              disabled={busy}
-              rows={3}
-              className="mono mt-3 w-full resize-none rounded-lg border border-conduit-border bg-transparent px-3 py-2 text-[13px] text-white outline-none focus:border-conduit-cyan disabled:opacity-40"
-            />
-            <p className="mono mt-2 text-[10px] text-conduit-muted/70">
-              <span className="text-conduit-violet">✦</span> voice · research · report — powered by Venice
-            </p>
-            <button
-              onClick={run}
-              disabled={!granted || busy || !!runBlock}
-              className="btn-primary mt-4 w-full justify-center text-sm disabled:opacity-40"
-            >
-              {busy ? "Running…" : "Run"}
-            </button>
-            {runBlock && (
-              <p className="mt-2 text-center text-[11px] leading-relaxed text-conduit-magenta">
-                {runBlock}
-                {expired && (
-                  <span className="mt-1 block text-conduit-muted">
-                    Grant a new permission to continue.
-                  </span>
-                )}
-              </p>
-            )}
 
-            {/* The compromised-agent beat — real on-chain rejections. */}
-            <div className="mt-5 border-t border-conduit-border/60 pt-4">
+            {/* The compromised-agent (safety) beat — real on-chain rejections. */}
+            <div className="w-full lg:w-80 lg:shrink-0 lg:border-l lg:border-conduit-border/60 lg:pl-6">
               <p className="text-[11px] uppercase tracking-wide text-conduit-muted">
                 Simulate a hijacked agent
               </p>
@@ -1104,11 +1111,13 @@ export default function DemoPage() {
                 ))}
               </div>
             </div>
-          </section>
-        </div>
+          </div>
+        </section>
+      </div>
 
-        {/* CENTER: the live event feed — the star */}
-        <div className="lg:col-span-6">
+      <div className="mx-auto grid max-w-7xl gap-6 px-6 pb-8 pt-6 lg:grid-cols-12">
+        {/* CENTER: the live event feed — the star (widened) */}
+        <div className="lg:col-span-9">
           <section className="panel p-0">
             <div className="flex items-center justify-between border-b border-conduit-border/60 px-5 py-3">
               <h2 className="text-sm font-semibold uppercase tracking-wide text-conduit-muted">
@@ -1123,6 +1132,10 @@ export default function DemoPage() {
                 userAddress={address}
                 coordinatorAddress={coordinatorRef.current?.address}
                 cards={cards}
+                market={market.map((m) => ({
+                  id: m.id, name: m.name, role: m.role, veniceEndpoint: m.veniceEndpoint,
+                  priceUsdc: m.priceUsdc, agentId: m.agentId, source: m.source,
+                }))}
                 mode={mode}
                 budget={{
                   capUsdc: displayAmount,
@@ -1175,9 +1188,12 @@ export default function DemoPage() {
 // --- report panel ----------------------------------------------------------
 
 const REPORT_HEADINGS: Record<string, string> = {
-  data: "Market Data",
-  news: "Recent News",
-  analytics: "Analysis",
+  research: "Research",
+  copy: "Brief",
+  analysis: "Analysis",
+  onchain: "On-chain Data",
+  image: "Cover",
+  voice: "Voiceover",
 };
 
 function ReportPanel({
@@ -1377,6 +1393,27 @@ function inlineBold(text: string): ReactNode {
 
 function ReportOutput({ output }: { output: ReportSection["output"] }) {
   const content = output?.content;
+  // Illustrator → a cover image (data URL).
+  if (output?.type === "image") {
+    if (typeof content === "string" && content.startsWith("data:")) {
+      // eslint-disable-next-line @next/next/no-img-element
+      return <img src={content} alt="Cover" className="mt-1 max-h-64 w-full rounded-lg border border-conduit-border object-cover" />;
+    }
+    return <p className="text-[12px] text-conduit-muted/70">image unavailable (no Venice key/credits)</p>;
+  }
+  // Narrator → a playable voiceover (data URL) + transcript.
+  if (output?.type === "audio") {
+    const transcript = output?.transcript;
+    if (typeof content === "string" && content.startsWith("data:")) {
+      return (
+        <div>
+          <audio controls src={content} className="w-full" />
+          {transcript && <p className="mt-1 text-[12px] italic text-conduit-muted/80">“{transcript}”</p>}
+        </div>
+      );
+    }
+    return <p className="text-[12px] text-conduit-muted/70">{transcript ? `“${transcript}”` : "voiceover unavailable (no Venice key/credits)"}</p>;
+  }
   if (output?.type === "data" && content && typeof content === "object") {
     return (
       <ul className="mono space-y-0.5 text-[12px]">
