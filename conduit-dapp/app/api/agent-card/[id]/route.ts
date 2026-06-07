@@ -15,10 +15,6 @@ import { config } from "@/lib/config";
 export const runtime = "nodejs";
 
 const CAIP2 = `eip155:${config.chainId}`;
-const MM_FACILITATOR =
-  config.chainId === 8453
-    ? "https://tx-sentinel-base-mainnet.api.cx.metamask.io/platform/v2/x402"
-    : "https://tx-sentinel-base-sepolia.api.cx.metamask.io/platform/v2/x402";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -53,8 +49,11 @@ export function GET(req: Request, { params }: { params: { id: string } }) {
       },
     ],
     x402Support: true,
-    // Conduit-specific marketplace metadata (price, role, payment model, the
-    // erc7710 facilitator list — Conduit + MetaMask + any compliant facilitator).
+    // Conduit-specific marketplace metadata. `assetTransferMethod: erc7710` is
+    // the operative bit — ANY erc7710-compatible facilitator can settle a payment
+    // to this agent (the buyer picks the facilitator; its redeemer comes from the
+    // 402 envelope at pay-time). We only name the reference facilitator we run,
+    // which adds the X402ReceiptEnforcer intent-binding + gas in USDC via 1Shot.
     conduit: {
       role: agent.role,
       veniceEndpoint: agent.veniceEndpoint,
@@ -62,10 +61,8 @@ export function GET(req: Request, { params }: { params: { id: string } }) {
       paymentKind: agent.paymentKind,
       assetTransferMethod: "erc7710",
       network: CAIP2,
-      facilitators: [
-        { name: "Conduit", url: config.facilitatorUrl, network: CAIP2 },
-        { name: "MetaMask", url: MM_FACILITATOR, network: CAIP2 },
-      ],
+      facilitatorCompatibility: "any erc7710-compatible facilitator (e.g. MetaMask's hosted one)",
+      referenceFacilitator: { name: "Conduit", url: config.facilitatorUrl, network: CAIP2 },
       ...(agent.subscription
         ? {
             subscription: {
