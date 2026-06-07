@@ -11,8 +11,11 @@ import { publicClient } from "./chain";
 import { config } from "./config";
 import { AGENTS, getAgent, type Agent } from "./agents";
 
-// ERC-8004 Identity Registry — Base Sepolia singleton.
-const REGISTRY = "0x8004A818BFB912233c491871b3d84c89A494BD9e" as const;
+// ERC-8004 Identity Registry singletons (per chain) — follows CHAIN_ID.
+const REGISTRIES: Record<number, Hex> = {
+  84532: "0x8004A818BFB912233c491871b3d84c89A494BD9e", // Base Sepolia
+  8453: "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432", // Base mainnet
+};
 const REGISTERED_EVENT = parseAbiItem(
   "event Registered(uint256 indexed agentId, string agentURI, address indexed owner)"
 );
@@ -38,7 +41,8 @@ function idFromUri(uri: string): string | undefined {
  */
 export async function discoverAgents(): Promise<DiscoveredAgent[]> {
   const registrant = process.env.NEXT_PUBLIC_AGENT_REGISTRANT as Hex | undefined;
-  if (registrant && config.chainId === 84532) {
+  const REGISTRY = REGISTRIES[config.chainId];
+  if (registrant && REGISTRY) {
     try {
       // Public RPCs cap eth_getLogs at a 2000-block range AND reject toBlock past
       // the head. Our agents register in one tight window, so scan a small fixed

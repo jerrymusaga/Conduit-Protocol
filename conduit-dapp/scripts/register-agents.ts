@@ -21,15 +21,23 @@ import {
   toHex,
   decodeEventLog,
   type Hex,
+  type Chain,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { baseSepolia } from "viem/chains";
+import { base, baseSepolia } from "viem/chains";
 import { AGENTS } from "../lib/agents";
 
-// ERC-8004 Identity Registry — Base Sepolia singleton.
-const REGISTRY = "0x8004A818BFB912233c491871b3d84c89A494BD9e" as const;
+// ERC-8004 Identity Registry singletons — follows CHAIN_ID (default Base Sepolia).
+const CHAIN_ID = Number(process.env.CHAIN_ID ?? "84532");
+const CHAINS: Record<number, { chain: Chain; registry: Hex; rpc: string }> = {
+  84532: { chain: baseSepolia, registry: "0x8004A818BFB912233c491871b3d84c89A494BD9e", rpc: "https://sepolia.base.org" },
+  8453: { chain: base, registry: "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432", rpc: "https://mainnet.base.org" },
+};
+const CHAIN = CHAINS[CHAIN_ID];
+if (!CHAIN) throw new Error(`Unsupported CHAIN_ID ${CHAIN_ID} (known: 84532, 8453)`);
+const REGISTRY = CHAIN.registry;
 
-const RPC = process.env.RPC_URL ?? "https://sepolia.base.org";
+const RPC = process.env.RPC_URL ?? CHAIN.rpc;
 const CARD_BASE = (process.env.AGENT_CARD_BASE ?? "http://localhost:3000").replace(/\/$/, "");
 const PK = process.env.REGISTRANT_PRIVATE_KEY as Hex | undefined;
 
@@ -40,10 +48,10 @@ const abi = parseAbi([
 ]);
 
 async function main() {
-  if (!PK) throw new Error("set REGISTRANT_PRIVATE_KEY (a funded Base Sepolia EOA)");
+  if (!PK) throw new Error("set REGISTRANT_PRIVATE_KEY (a funded EOA on the target chain)");
   const account = privateKeyToAccount(PK);
-  const wallet = createWalletClient({ account, chain: baseSepolia, transport: http(RPC) });
-  const pub = createPublicClient({ chain: baseSepolia, transport: http(RPC) });
+  const wallet = createWalletClient({ account, chain: CHAIN.chain, transport: http(RPC) });
+  const pub = createPublicClient({ chain: CHAIN.chain, transport: http(RPC) });
 
   console.log(`registrant: ${account.address}`);
   console.log(`registry:   ${REGISTRY}`);
