@@ -61,6 +61,20 @@ export function GET(req: Request, { params }: { params: { id: string } }) {
       `${agent.priceUsdc} USDC per ${unit}, paid via x402 + ERC-7710 (intent-bound, gas in USDC via 1Shot).`,
     // Distinct per-agent avatar (robots = agents) so the marketplace isn't one logo.
     image: `https://api.dicebear.com/9.x/bottts/png?seed=${encodeURIComponent(agent.id)}`,
+    // Standard NFT-metadata attributes → rendered as "Properties" on NFT explorers
+    // like Basescan (the registry is an ERC-721). Harmless to ERC-8004 parsers.
+    attributes: [
+      { trait_type: "Role", value: agent.role },
+      { trait_type: "Venice endpoint", value: agent.veniceEndpoint.replace(/^venice:/, "") },
+      { trait_type: "Price", value: `${agent.priceUsdc} USDC / ${unit}` },
+      { trait_type: "Payment", value: "x402 + ERC-7710" },
+      { trait_type: "Settlement", value: "Conduit · gas in USDC (1Shot)" },
+      { trait_type: "x402 support", value: "Yes" },
+      { trait_type: "Trust", value: "On-chain payment binding" },
+      ...(agent.subscription
+        ? [{ trait_type: "Billing", value: `recurring · every ${agent.subscription.periodSeconds}s` }]
+        : [{ trait_type: "Billing", value: "one-shot · intent-bound" }]),
+    ],
     x402Support: true,
     active: true,
     // Honest: trust comes from the on-chain payment binding (X402ReceiptEnforcer),
