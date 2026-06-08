@@ -174,3 +174,47 @@ export async function payAndClaim(
     [b.error, b.detail].filter(Boolean).join(" · ") || `HTTP ${res.status}`;
   return { ok: false, status: res.status, error };
 }
+
+/** One agent's delivered output in an atomic commission. */
+export interface CommissionResult {
+  service: string;
+  label?: string;
+  role?: string;
+  data?: unknown;
+}
+
+export interface CommissionResponse {
+  ok: boolean;
+  status: number;
+  settlement?: { jobId?: string; status?: string; transaction?: string | null };
+  results?: CommissionResult[];
+  error?: string;
+}
+
+/**
+ * POST /commission — settle a whole team in ONE redeemDelegations batch, then
+ * receive every agent's output. All-or-nothing: an over-budget batch comes back
+ * as an error (1Shot rejected it pre-broadcast) with no USDC moved.
+ */
+export async function commissionAtomic(
+  paymentPayload: unknown,
+  opts: { services: string[]; topic?: string; agent?: string; correlationId?: string }
+): Promise<CommissionResponse> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (opts.agent) headers["X-AGENT"] = opts.agent;
+  if (opts.correlationId) headers["X-CORRELATION-ID"] = opts.correlationId;
+  const res = await fetch(`${config.endpointUrl}/commission`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ services: opts.services, topic: opts.topic, paymentPayload }),
+  });
+  const body = await res.json().catch(() => ({}) as Record<string, unknown>);
+
+  if (res.status === 200) {
+    const b = body as { settlement?: CommissionResponse["settlement"]; results?: CommissionResult[] };
+    return { ok: true, status: 200, settlement: b.settlement, results: b.results };
+  }
+  const b = body as { error?: string; detail?: string; settlement?: CommissionResponse["settlement"] };
+  const error = [b.error, b.detail].filter(Boolean).join(" · ") || `HTTP ${res.status}`;
+  return { ok: false, status: res.status, settlement: b.settlement, error };
+}

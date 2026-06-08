@@ -99,6 +99,99 @@ export interface MarketAgent {
   source: "registry" | "catalog";
 }
 
+/** The ERC-8004 marketplace row. Shown both while the coordinator is still
+ *  reasoning (nothing hired → all bright) and after it plans (hired glow, rest
+ *  dim). Shared by the pre-plan "working" view and the live coordination view. */
+function DiscoveryRow({
+  market,
+  hiredIds,
+  planned,
+  dim,
+}: {
+  market: MarketAgent[];
+  hiredIds: Set<string>;
+  planned: boolean;
+  dim: string;
+}) {
+  if (market.length === 0) return null;
+  const avatar = (id: string) => `https://api.dicebear.com/9.x/bottts/svg?seed=${encodeURIComponent(id)}`;
+  const REGISTRY_BY_CHAIN: Record<number, string> = {
+    84532: "0x8004A818BFB912233c491871b3d84c89A494BD9e",
+    8453: "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432",
+  };
+  const registry = REGISTRY_BY_CHAIN[config.chainId];
+  return (
+    <div className={`mx-auto mb-4 max-w-5xl ${dim}`}>
+      <div className="mb-2 flex items-center justify-center gap-2 text-[10px] uppercase tracking-wide">
+        <span className="h-px w-8 bg-conduit-border/60" />
+        <span className="text-conduit-muted/70">
+          Discovered on ERC-8004 · {market.length} agents
+          {market.some((m) => m.source === "registry") ? " · on-chain" : ""}
+        </span>
+        <span className="mono rounded bg-conduit-cyan/10 px-1.5 py-0.5 text-[9px] normal-case text-conduit-cyan">x402</span>
+        <span className="mono rounded bg-conduit-violet/15 px-1.5 py-0.5 text-[9px] normal-case text-conduit-violet">ERC-7710</span>
+        <span className="h-px w-8 bg-conduit-border/60" />
+      </div>
+
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
+        {market.map((m, i) => {
+          const hired = hiredIds.has(m.id);
+          const unit = m.role === "feed" ? "/period" : "/req";
+          return (
+            <div
+              key={m.id}
+              className="reveal rounded-xl border p-2.5 text-center transition-all duration-500"
+              style={{
+                animationDelay: `${i * 70}ms`,
+                borderColor: hired ? `${CYAN}88` : "rgba(255,255,255,0.10)",
+                background: hired ? `${CYAN}12` : "transparent",
+                boxShadow: hired ? `0 0 16px -3px ${CYAN}66` : undefined,
+                opacity: planned && !hired ? 0.4 : 1,
+              }}
+            >
+              <div className="relative mx-auto h-12 w-12">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={avatar(m.id)} alt={m.name} className="h-12 w-12 rounded-lg bg-black/30" />
+                {hired && (
+                  <span className="mono absolute -right-1 -top-1 rounded-full bg-conduit-cyan px-1 text-[8px] font-bold text-black">✓</span>
+                )}
+              </div>
+              <p className="mono mt-1.5 truncate text-[11px] font-semibold text-white">{m.name}</p>
+              <p className="mono truncate text-[9px] text-conduit-violet/90">{m.veniceEndpoint.replace(/^venice:/, "✦ ")}</p>
+              <p className="mono mt-1 text-[12px] font-semibold text-white">
+                ${m.priceUsdc}
+                <span className="ml-0.5 text-[9px] font-normal text-conduit-muted">USDC{unit}</span>
+              </p>
+              <div className="mt-1.5 flex justify-center gap-1">
+                <span className="mono rounded bg-conduit-cyan/10 px-1 py-0.5 text-[8px] text-conduit-cyan">x402</span>
+                <span className="mono rounded bg-conduit-violet/15 px-1 py-0.5 text-[8px] text-conduit-violet">erc7710</span>
+              </div>
+              {m.agentId && registry ? (
+                <a
+                  href={`${config.explorerUrl}/nft/${registry}/${m.agentId}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="mono mt-1 block text-[9px] text-conduit-cyan/90 underline-offset-2 hover:underline"
+                >
+                  agent #{m.agentId} ↗
+                </a>
+              ) : (
+                <span className="mono mt-1 block text-[9px] text-conduit-muted/50">catalog</span>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      <p className="mt-3 text-center text-[10px] text-conduit-muted/70">
+        {planned
+          ? `Coordinator hired ${hiredIds.size} — the best agent for each role ↓`
+          : "Coordinator is selecting the best agent for each role…"}
+      </p>
+    </div>
+  );
+}
+
 export function CoordinationCanvas({
   userAddress,
   coordinatorAddress,
@@ -107,6 +200,7 @@ export function CoordinationCanvas({
   mode,
   budget,
   revoked = false,
+  busy = false,
 }: {
   userAddress?: string | null;
   coordinatorAddress?: string | null;
@@ -115,6 +209,8 @@ export function CoordinationCanvas({
   mode: "a2a" | "looped";
   budget: Budget;
   revoked?: boolean;
+  /** A run is in progress — drives the "discovering / reasoning…" pre-plan view. */
+  busy?: boolean;
 }) {
   const [selected, setSelected] = useState<string | null>(null);
   const selectedCard = cards.find((c) => c.correlationId === selected) ?? null;
@@ -126,24 +222,39 @@ export function CoordinationCanvas({
   const hiredIds = new Set(legit.map((c) => c.service));
   const veniceFor = (serviceId: string) => market.find((m) => m.id === serviceId)?.veniceEndpoint;
   const planned = hiredIds.size > 0; // the coordinator has chosen → highlight/dim
-  const avatar = (id: string) => `https://api.dicebear.com/9.x/bottts/svg?seed=${encodeURIComponent(id)}`;
-  const REGISTRY_BY_CHAIN: Record<number, string> = {
-    84532: "0x8004A818BFB912233c491871b3d84c89A494BD9e",
-    8453: "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432",
-  };
-  const registry = REGISTRY_BY_CHAIN[config.chainId];
 
   if (cards.length === 0) {
+    const discovering = market.length > 0;
+    // Truly idle — no run underway and nothing discovered yet → the start prompt.
+    if (!busy && !discovering) {
+      return (
+        <div className="flex min-h-[460px] flex-col items-center justify-center text-center">
+          <Node kind="you" label="YOU" sub={`one permission · up to ${budget.capUsdc} USDC`} accent={CYAN} />
+          <Connector />
+          <Node kind="coordinator" label="COORDINATOR" sub="waiting for a prompt" accent="#5b6472" idle />
+          <p className="mx-auto mt-8 max-w-md text-[12px] leading-relaxed text-conduit-muted/70">
+            Describe what you need, then hit <span className="text-white">Hire the team</span>.
+            A coordinator finds the right specialists and pays them for you — and every
+            payment is checked, so a hijacked agent can&rsquo;t misuse your budget.
+          </p>
+        </div>
+      );
+    }
+    // A run is underway but no plan yet — show the coordinator working + the
+    // discovered marketplace so the discovery/reasoning window isn't a dead screen.
     return (
-      <div className="flex min-h-[460px] flex-col items-center justify-center text-center">
-        <Node kind="you" label="YOU" sub={`one permission · up to ${budget.capUsdc} USDC`} accent={CYAN} />
-        <Connector />
-        <Node kind="coordinator" label="COORDINATOR" sub="waiting for a prompt" accent="#5b6472" idle />
-        <p className="mx-auto mt-8 max-w-md text-[12px] leading-relaxed text-conduit-muted/70">
-          Enter a prompt and hit Run. The coordinator will hire specialist agents
-          (A2A) and pay each through Conduit — every payment bound so a hijacked
-          agent can&rsquo;t misuse your one permission.
-        </p>
+      <div className="min-h-[460px] py-2">
+        <div className="flex flex-col items-center">
+          <Node kind="you" label="● YOU" sub={`one permission · up to ${budget.capUsdc} USDC`} accent={CYAN} />
+          <Connector />
+          <Node kind="coordinator" label="◆ COORDINATOR" sub={short(coordinatorAddress)} accent={VIOLET} />
+          <p className="mt-2 flex items-center gap-1.5 text-[10px] uppercase tracking-wide text-conduit-violet/80">
+            <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-conduit-violet" />
+            {discovering ? "choosing the best team for the job…" : "finding available specialists…"}
+          </p>
+          <Connector />
+        </div>
+        <DiscoveryRow market={market} hiredIds={hiredIds} planned={false} dim="" />
       </div>
     );
   }
@@ -184,76 +295,7 @@ export function CoordinationCanvas({
       {/* DISCOVERY — the marketplace found on ERC-8004, as rich agent cards.
           They appear staggered (discovery), then the chosen glow + the rest dim
           (selection) once the coordinator plans. */}
-      {market.length > 0 && (
-        <div className={`mx-auto mb-4 max-w-5xl ${dim}`}>
-          <div className="mb-2 flex items-center justify-center gap-2 text-[10px] uppercase tracking-wide">
-            <span className="h-px w-8 bg-conduit-border/60" />
-            <span className="text-conduit-muted/70">
-              Discovered on ERC-8004 · {market.length} agents
-              {market.some((m) => m.source === "registry") ? " · on-chain" : ""}
-            </span>
-            <span className="mono rounded bg-conduit-cyan/10 px-1.5 py-0.5 text-[9px] normal-case text-conduit-cyan">x402</span>
-            <span className="mono rounded bg-conduit-violet/15 px-1.5 py-0.5 text-[9px] normal-case text-conduit-violet">ERC-7710</span>
-            <span className="h-px w-8 bg-conduit-border/60" />
-          </div>
-
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
-            {market.map((m, i) => {
-              const hired = hiredIds.has(m.id);
-              const unit = m.role === "feed" ? "/period" : "/req";
-              return (
-                <div
-                  key={m.id}
-                  className="reveal rounded-xl border p-2.5 text-center transition-all duration-500"
-                  style={{
-                    animationDelay: `${i * 70}ms`,
-                    borderColor: hired ? `${CYAN}88` : "rgba(255,255,255,0.10)",
-                    background: hired ? `${CYAN}12` : "transparent",
-                    boxShadow: hired ? `0 0 16px -3px ${CYAN}66` : undefined,
-                    opacity: planned && !hired ? 0.4 : 1,
-                  }}
-                >
-                  <div className="relative mx-auto h-12 w-12">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={avatar(m.id)} alt={m.name} className="h-12 w-12 rounded-lg bg-black/30" />
-                    {hired && (
-                      <span className="mono absolute -right-1 -top-1 rounded-full bg-conduit-cyan px-1 text-[8px] font-bold text-black">✓</span>
-                    )}
-                  </div>
-                  <p className="mono mt-1.5 truncate text-[11px] font-semibold text-white">{m.name}</p>
-                  <p className="mono truncate text-[9px] text-conduit-violet/90">{m.veniceEndpoint.replace(/^venice:/, "✦ ")}</p>
-                  <p className="mono mt-1 text-[12px] font-semibold text-white">
-                    ${m.priceUsdc}
-                    <span className="ml-0.5 text-[9px] font-normal text-conduit-muted">USDC{unit}</span>
-                  </p>
-                  <div className="mt-1.5 flex justify-center gap-1">
-                    <span className="mono rounded bg-conduit-cyan/10 px-1 py-0.5 text-[8px] text-conduit-cyan">x402</span>
-                    <span className="mono rounded bg-conduit-violet/15 px-1 py-0.5 text-[8px] text-conduit-violet">erc7710</span>
-                  </div>
-                  {m.agentId && registry ? (
-                    <a
-                      href={`${config.explorerUrl}/nft/${registry}/${m.agentId}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="mono mt-1 block text-[9px] text-conduit-cyan/90 underline-offset-2 hover:underline"
-                    >
-                      agent #{m.agentId} ↗
-                    </a>
-                  ) : (
-                    <span className="mono mt-1 block text-[9px] text-conduit-muted/50">catalog</span>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-
-          <p className="mt-3 text-center text-[10px] text-conduit-muted/70">
-            {planned
-              ? `Coordinator hired ${hiredIds.size} — the best agent for each role ↓`
-              : "Coordinator is selecting the best agent for each role…"}
-          </p>
-        </div>
-      )}
+      <DiscoveryRow market={market} hiredIds={hiredIds} planned={planned} dim={dim} />
 
       {/* SPECIALISTS row — only the agents YOU authorized (rogue is external) */}
       <div className={`flex flex-wrap items-stretch justify-center gap-3 ${dim}`}>
@@ -277,10 +319,10 @@ export function CoordinationCanvas({
           style={{ borderColor: `${CYAN}66`, background: `${CYAN}0d` }}
         >
           <span className="mono text-[11px] font-semibold tracking-wide" style={{ color: CYAN }}>
-            ╪ CONDUIT GATE ╪
+            ╪ CONDUIT ╪
           </span>
-          <span className="mono ml-2 text-[10px] text-conduit-muted">
-            verify caveat → settle · gas in USDC via 1Shot
+          <span className="ml-2 text-[10px] text-conduit-muted">
+            every payment checked before it&rsquo;s sent · fees paid in USDC
           </span>
         </div>
       </div>
@@ -407,7 +449,7 @@ function SpecialistColumn({
         style={{ borderColor: `${card.budgetCapped ? AMBER : p.accent}55` }}
       >
         <span className="mono text-[10px]" style={{ color: card.budgetCapped ? AMBER : p.accent }}>
-          {card.budgetCapped ? "BUDGET CAP ✋" : p.gate}
+          {card.budgetCapped ? "Over budget ✋" : p.gate}
         </span>
       </div>
       <span className="text-conduit-muted/30">▼</span>
@@ -433,7 +475,11 @@ function SpecialistColumn({
           </span>
         )}
         {card.reason && (
-          <p className="mono mt-0.5 text-[9px] leading-tight" style={{ color: card.budgetCapped ? `${AMBER}cc` : undefined }}>
+          <p
+            className="mono mt-0.5 line-clamp-2 break-words text-[9px] leading-tight"
+            title={card.reason}
+            style={{ color: card.budgetCapped ? `${AMBER}cc` : undefined }}
+          >
             <span className={card.budgetCapped ? "" : "text-conduit-magenta/80"}>{card.reason}</span>
           </p>
         )}

@@ -89,3 +89,39 @@ export async function settle(facilitatorRequest: unknown): Promise<SettleResult>
   });
   return (await res.json()) as SettleResult;
 }
+
+export interface JobState {
+  status: string; // "submitted" | "pending" | "confirmed" | "failed"
+  transaction?: string | null;
+  error?: string | null;
+}
+
+/** GET /jobs/:id — the current state of an async settlement job. */
+export async function getJob(jobId: string): Promise<JobState | null> {
+  try {
+    const res = await fetch(`${config.facilitatorUrl}/jobs/${jobId}`);
+    if (!res.ok) return null;
+    const b = (await res.json()) as { status?: string; transaction?: string | null; error?: string | null };
+    if (!b.status) return null;
+    return { status: b.status, transaction: b.transaction ?? null, error: b.error ?? null };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Block until an async settlement reaches a terminal state. Settlement via 1Shot
+ * is async (accepted first, mines out of band), so callers that must NOT act
+ * until the payment actually settled — e.g. the atomic commission, which only
+ * delivers work once the batch is on-chain — poll the job to confirmation.
+ */
+export async function waitForSettlement(jobId: string, timeoutMs = 90_000): Promise<JobState> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 3000));
+    const job = await getJob(jobId);
+    if (!job) continue;
+    if (job.status === "confirmed" || job.status === "failed") return job;
+  }
+  return { status: "timeout", error: "the payment did not confirm in time" };
+}

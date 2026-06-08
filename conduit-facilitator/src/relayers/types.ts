@@ -48,19 +48,34 @@ export interface OneshotExecution {
   data: Hex;
 }
 
+/** One intent-bound payment leg of an atomic commission: a bound delegation
+ *  CHAIN [leaf, …, root] plus the USDC.transfer execution it authorizes. */
+export interface OneshotWork {
+  chain: OneshotDelegation[];
+  execution: OneshotExecution;
+}
+
 /**
  * The structured payload the dapp builds for a 1Shot submission:
- *  - workDelegation/workExecution: Conduit's intent-bound payment (the seller).
- *  - feeDelegation: a SEPARATE, buyer-signed loose delegation that pays 1Shot's
- *    gas fee in USDC (the fee execution is built by the backend from the live
- *    quote, so it always matches the relayer's required amount).
+ *  - work(s): Conduit's intent-bound payment(s) (the seller(s)). Either a single
+ *    workChain/workExecution (the looped-payment path) OR a `works` array (the
+ *    ATOMIC COMMISSION path — N legs settled in one redeemDelegations batch).
+ *  - feeChain: a SEPARATE, buyer-signed loose delegation that pays 1Shot's gas
+ *    fee in USDC (the fee execution is built by the backend from the live quote,
+ *    so it always matches the relayer's required amount). ONE fee leg covers the
+ *    whole batch — N payments, one gas fee.
  * The token + paymentToken let the backend quote + build the fee execution.
  */
 export interface OneshotSubmit {
   paymentToken: Address;
-  /** The work delegation CHAIN [leaf, …, root] (intent-bound payment). */
-  workChain: OneshotDelegation[];
-  workExecution: OneshotExecution;
+  /** Single-work path: the work delegation CHAIN [leaf, …, root] + its execution.
+   *  Omitted when `works` is supplied (atomic multi-buy). */
+  workChain?: OneshotDelegation[];
+  workExecution?: OneshotExecution;
+  /** Atomic-commission path: N intent-bound work legs merged into ONE
+   *  redeemDelegations batch. All-or-nothing: if any leg trips a caveat (e.g. the
+   *  budget cap), the whole batch reverts and no seller is paid. */
+  works?: OneshotWork[];
   /** The fee delegation CHAIN [leaf, …, root] (bounded fee payment). */
   feeChain: OneshotDelegation[];
 }
