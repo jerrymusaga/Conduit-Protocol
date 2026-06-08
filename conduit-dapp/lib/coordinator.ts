@@ -14,8 +14,8 @@
  */
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { formatUnits, parseUnits, type Hex } from "viem";
-import { fetchCatalog, fetch402, payAndClaim, type CatalogService } from "./endpoint";
-import { buildPayment, buildOneshotPayment, freshIntentHash } from "./payment";
+import { fetchCatalog, fetch402, payAndClaim, commissionAtomic, type CatalogService } from "./endpoint";
+import { buildPayment, buildOneshotPayment, buildAtomicCommission, freshIntentHash } from "./payment";
 import { publicClient } from "./chain";
 import { discoverAgents, type DiscoveredAgent } from "./discovery";
 import type { AgentRole } from "./agents";
@@ -230,9 +230,17 @@ export interface RogueAttack {
 }
 
 export interface RunResult {
+  /** "ok" = the run executed the payment loop (some payments may still have been
+   *  rejected on-chain). "paused-budget" = the full plan costs more than the
+   *  granted budget, so the run STOPPED before any payment — nothing was spent.
+   *  The user must raise the cap or re-run trimmed-to-fit. */
+  status: "ok" | "paused-budget";
   plan: PlanItem[];
   results: ServiceResult[];
   totalSpent: bigint; // base units actually settled
+  /** Present when status === "paused-budget": the gap to surface to the user. */
+  planTotal?: bigint;
+  budget?: bigint;
 }
 
 /**
@@ -247,6 +255,11 @@ export async function runCampaign(params: {
   mode: A2AMode;
   /** Consumed by the first payment to designate the user EOA (then cleared). */
   authorization?: Eip7702Authorization | null;
+  /** Budget-overflow policy. false (default) → if the plan exceeds the budget,
+   *  PAUSE before any payment and return status "paused-budget" (spend nothing).
+   *  true → drop the lowest-priority items that don't fit and run only the
+   *  affordable subset. Either way the user never pays for an incomplete plan. */
+  trimToFit?: boolean;
   hooks?: RunHooks;
 }): Promise<RunResult> {
   const { prompt, grant, coordinator, mode } = params;
@@ -283,23 +296,62 @@ export async function runCampaign(params: {
   hooks.onPlan?.(plan);
   log(`coordinator › hired: ${plan.map((i) => i.service.label).join(", ")}`);
 
-  // Proactive budget forecast: if the plan costs more than the granted budget,
-  // warn up front — the ERC20PeriodTransferEnforcer will block the overflow
-  // payments on-chain (the budget-cap safety beat).
+  // Pre-flight budget gate. A quote is FREE — the full plan cost is known here,
+  // before any USDC moves — so the spend/no-spend decision happens BEFORE the
+  // payment loop. The on-chain enforcer only bounds spend per payment; it can't
+  // guarantee the user gets a COMPLETE result, and left alone it lets the
+  // affordable items settle and bounces the overflow → money spent, report
+  // incomplete. So when the plan overflows the budget we either pause (spend
+  // nothing) or trim to the affordable subset — we never pay for a partial plan.
+  let runnable = plan;
   const planTotal = plan.reduce((s, i) => s + BigInt(i.service.priceBaseUnits), 0n);
   if (planTotal > grant.periodAmount) {
-    log(
-      `coordinator › ⚠ this team costs ${formatUnits(planTotal, 6)} USDC but the budget is ` +
-        `${formatUnits(grant.periodAmount, 6)} — the budget cap will block the overflow on-chain`
-    );
     hooks.onBudgetForecast?.({ planTotal, budget: grant.periodAmount });
+    if (!params.trimToFit) {
+      // PAUSE: stop before a single payment. The user raises the cap or re-runs
+      // trimmed. Returning here is the "no wasted USDC" guarantee.
+      log(
+        `coordinator › ⏸ this team costs ${formatUnits(planTotal, 6)} USDC but the budget is ` +
+          `${formatUnits(grant.periodAmount, 6)} — pausing before any payment. ` +
+          `Raise the budget or run within it; nothing has been spent.`
+      );
+      return {
+        status: "paused-budget",
+        plan,
+        results: [],
+        totalSpent: 0n,
+        planTotal,
+        budget: grant.periodAmount,
+      };
+    }
+    // TRIM-TO-FIT: the plan is already ranked (Venice/rules), so a running-sum
+    // prefix is the highest-priority affordable set. Keep what fits, drop the rest.
+    const affordable: PlannedItem[] = [];
+    const dropped: PlannedItem[] = [];
+    let running = 0n;
+    for (const item of plan) {
+      const price = BigInt(item.service.priceBaseUnits);
+      if (running + price <= grant.periodAmount) {
+        running += price;
+        affordable.push(item);
+      } else {
+        dropped.push(item);
+      }
+    }
+    runnable = affordable;
+    hooks.onPlan?.(affordable); // re-render cards to reflect what's actually bought
+    log(
+      `coordinator › trimmed to fit the ${formatUnits(grant.periodAmount, 6)} USDC budget · ` +
+        `running ${affordable.map((a) => a.service.label).join(", ") || "nothing"} · ` +
+        `dropped ${dropped.map((d) => d.service.label).join(", ") || "none"}`
+    );
   }
 
   const results: ServiceResult[] = [];
   let totalSpent = 0n;
   let auth = params.authorization ?? undefined;
 
-  for (const item of plan) {
+  for (const item of runnable) {
     const { service, agent, correlationId } = item;
 
     // A2A: spin up a real specialist key and hand it the task envelope.
@@ -389,7 +441,179 @@ export async function runCampaign(params: {
     hooks.onResult?.(result);
   }
 
-  return { plan, results, totalSpent };
+  return { status: "ok", plan, results, totalSpent };
+}
+
+// --- Atomic commission (one redeemDelegations batch) -----------------------
+
+export interface CommissionRunResult {
+  /** "ok" = the whole team settled in one tx. "paused-budget" = plan exceeds the
+   *  budget, stopped before paying (nothing spent). "failed" = the batch was
+   *  rejected (e.g. over budget) before broadcast — also nothing spent. */
+  status: "ok" | "paused-budget" | "failed";
+  plan: PlannedItem[];
+  planTotal?: bigint;
+  budget?: bigint;
+  /** The "failed" was specifically the budget cap → show the friendly over-budget
+   *  choice (add budget / smaller team) instead of a generic error. */
+  budgetCapped?: boolean;
+  totalSpent: bigint;
+  settlement?: { jobId?: string; status?: string; transaction?: string | null };
+  error?: string;
+}
+
+/** De-jargon a relayer/chain error into one short, user-readable line. */
+function friendlyError(raw?: string): string {
+  if (!raw) return "Payment couldn't be completed.";
+  if (/cover the total|insufficient|balance/i.test(raw)) return "Not enough balance to cover the network fee.";
+  if (/timed out|timeout/i.test(raw)) return "The network took too long — please try again.";
+  return "Payment couldn't be completed.";
+}
+
+/**
+ * Commission a whole team ATOMICALLY: discover → plan → (pre-flight budget gate)
+ * → build ONE batch (N intent-bound legs + 1 shared fee leg) → settle in a
+ * single redeemDelegations. All-or-nothing — either every agent is paid in one
+ * tx, or the batch is rejected and nobody is paid. The hard-guarantee rung of
+ * the budget trust-ladder (the soft rung is the pause/trim gate it shares).
+ */
+export async function runCommissionAtomic(params: {
+  prompt: string;
+  grant: GrantResult;
+  coordinator: Coordinator;
+  authorization?: Eip7702Authorization | null;
+  trimToFit?: boolean;
+  hooks?: RunHooks;
+}): Promise<CommissionRunResult> {
+  const { prompt, grant, coordinator } = params;
+  const hooks = params.hooks ?? {};
+  const log = hooks.log ?? (() => {});
+
+  // --- Discover the ERC-8004 marketplace -------------------------------------
+  log("Coordinator › finding available specialists…");
+  const market = await discoverAgents();
+  const procurement = market.filter((m) => m.paymentKind === "one-shot");
+  hooks.onDiscover?.(procurement);
+  for (const ag of procurement) {
+    await sleep(200);
+    log(`Coordinator › found ${ag.name} · ${ag.role} · ${ag.priceUsdc} USDC`);
+  }
+
+  // --- Plan (Venice, with rules fallback) ------------------------------------
+  log("Coordinator › choosing the best team for the job…");
+  let rawPlan = await planWithVenice(prompt, procurement);
+  if (rawPlan && rawPlan.length > 0) log("Coordinator › Venice chose the team");
+  else {
+    rawPlan = planForPrompt(prompt, procurement);
+    log("Coordinator › chose the team");
+  }
+  const plan: PlannedItem[] = rawPlan.map((i) => ({ ...i, correlationId: crypto.randomUUID() }));
+  hooks.onPlan?.(plan);
+  log(`Coordinator › hiring: ${plan.map((i) => i.service.label).join(", ")}`);
+
+  // --- Pre-flight budget gate (shared trust-ladder: pause or trim) -----------
+  let runnable = plan;
+  const planTotal = plan.reduce((s, i) => s + BigInt(i.service.priceBaseUnits), 0n);
+  if (planTotal > grant.periodAmount) {
+    hooks.onBudgetForecast?.({ planTotal, budget: grant.periodAmount });
+    if (!params.trimToFit) {
+      log(
+        `Coordinator › this team would cost ${formatUnits(planTotal, 6)} USDC but your budget is ` +
+          `${formatUnits(grant.periodAmount, 6)} — stopping before any payment. Nothing was charged.`
+      );
+      return { status: "paused-budget", plan, planTotal, budget: grant.periodAmount, totalSpent: 0n };
+    }
+    const affordable: PlannedItem[] = [];
+    const dropped: PlannedItem[] = [];
+    let running = 0n;
+    for (const item of plan) {
+      const price = BigInt(item.service.priceBaseUnits);
+      if (running + price <= grant.periodAmount) {
+        running += price;
+        affordable.push(item);
+      } else dropped.push(item);
+    }
+    runnable = affordable;
+    hooks.onPlan?.(affordable);
+    log(
+      `Coordinator › trimmed to fit your ${formatUnits(grant.periodAmount, 6)} USDC budget · ` +
+        `left out ${dropped.map((d) => d.service.label).join(", ") || "none"}`
+    );
+  }
+
+  // --- Build ONE atomic batch ------------------------------------------------
+  log(`Coordinator › getting your team ready · ${runnable.length} specialists, one payment…`);
+  runnable.forEach((it) => hooks.onPayStart?.(it.correlationId));
+  const reqs = await Promise.all(runnable.map((it) => fetch402(it.service.resource)));
+  const built = await buildAtomicCommission({
+    grant,
+    coordinator,
+    reqs,
+    authorization: params.authorization ?? undefined,
+  });
+
+  // --- Settle the whole team in a single redeemDelegations -------------------
+  log(`Coordinator › paying the team — ${formatUnits(built.total, 6)} USDC in one payment, then waiting for the network to confirm…`);
+  const resp = await commissionAtomic(built.paymentPayload, {
+    services: runnable.map((it) => it.service.id),
+    topic: prompt,
+    correlationId: crypto.randomUUID(),
+  });
+
+  if (!resp.ok) {
+    // Rejected (e.g. over budget) BEFORE broadcast — all-or-nothing, nothing spent.
+    const budgetCapped = isBudgetCapRevert(resp.error);
+    // Keep the cards clean: a budget rejection is explained by the friendly
+    // over-budget panel, so DON'T stamp the raw enforcer string on each card
+    // (that's what overlapped). Non-budget failures get one short line.
+    const cardReason = budgetCapped ? undefined : friendlyError(resp.error);
+    runnable.forEach((it) =>
+      hooks.onResult?.({
+        correlationId: it.correlationId,
+        service: it.service,
+        agent: it.agent,
+        ok: false,
+        intentHash: "0x" as Hex,
+        amount: BigInt(it.service.priceBaseUnits),
+        error: cardReason,
+        budgetCapped,
+      })
+    );
+    log(`Coordinator › no one was charged · ${budgetCapped ? "over budget" : friendlyError(resp.error)}`);
+    return {
+      status: "failed",
+      plan: runnable,
+      totalSpent: 0n,
+      settlement: resp.settlement,
+      error: resp.error,
+      budgetCapped,
+      planTotal,
+      budget: grant.periodAmount,
+    };
+  }
+
+  // Settled atomically → mark every card settled with the SINGLE tx + its output.
+  const tx = resp.settlement?.transaction ?? null;
+  const byId = new Map((resp.results ?? []).map((r) => [r.service, r]));
+  runnable.forEach((it, i) => {
+    const leg = built.legs[i];
+    hooks.onResult?.({
+      correlationId: it.correlationId,
+      service: it.service,
+      agent: it.agent,
+      ok: true,
+      intentHash: leg.intentHash,
+      amount: leg.amount,
+      txHash: tx,
+      jobId: resp.settlement?.jobId,
+      output: byId.get(it.service.id)?.data,
+    });
+  });
+  log(
+    `Coordinator › ✓ your team is hired · all ${runnable.length} paid in one payment` +
+      (tx ? ` · receipt ${tx.slice(0, 10)}…` : "")
+  );
+  return { status: "ok", plan: runnable, totalSpent: built.total, settlement: resp.settlement };
 }
 
 // --- The compromised-agent beat (real on-chain rejections) -----------------

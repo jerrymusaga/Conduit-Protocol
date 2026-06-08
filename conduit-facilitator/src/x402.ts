@@ -36,14 +36,30 @@ const oneshotDelegationSchema = z.object({
   signature: z.string(),
 });
 
-/** Structured payload for the oneshot-pl backend: the buyer-signed fee
- *  delegation + the intent-bound work delegation/execution. */
-const oneshotSubmitSchema = z.object({
-  paymentToken: address,
-  workChain: z.array(oneshotDelegationSchema),
-  workExecution: z.object({ target: address, value: z.string(), data: hex }),
-  feeChain: z.array(oneshotDelegationSchema),
+const oneshotExecutionSchema = z.object({ target: address, value: z.string(), data: hex });
+
+/** One intent-bound payment leg of an atomic commission. */
+const oneshotWorkSchema = z.object({
+  chain: z.array(oneshotDelegationSchema),
+  execution: oneshotExecutionSchema,
 });
+
+/** Structured payload for the oneshot-pl backend: the buyer-signed fee
+ *  delegation + either a single intent-bound work (looped path) OR a `works`
+ *  array (atomic-commission path: N legs in one redeemDelegations batch). */
+const oneshotSubmitSchema = z
+  .object({
+    paymentToken: address,
+    // Single-work path (back-compat): present unless `works` is supplied.
+    workChain: z.array(oneshotDelegationSchema).optional(),
+    workExecution: oneshotExecutionSchema.optional(),
+    // Atomic-commission path: N intent-bound legs settled atomically.
+    works: z.array(oneshotWorkSchema).nonempty().optional(),
+    feeChain: z.array(oneshotDelegationSchema),
+  })
+  .refine((o) => o.works || (o.workChain && o.workExecution), {
+    message: "oneshot payload needs either `works` (atomic) or workChain+workExecution",
+  });
 
 /** The erc7710-specific payment payload. */
 const erc7710PayloadSchema = z.object({

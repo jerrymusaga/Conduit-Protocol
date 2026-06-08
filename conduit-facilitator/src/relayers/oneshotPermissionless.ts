@@ -100,12 +100,37 @@ export const oneshotPermissionlessBackend: RelayBackend = {
       return { jobId: job.id, status: "failed", error };
     }
 
+    // Normalize to a list of work legs. The atomic-commission path supplies
+    // `works` (N legs → one redeemDelegations batch); the looped path supplies a
+    // single workChain/workExecution. One fee leg covers the whole batch.
+    const works =
+      o.works ??
+      (o.workChain && o.workExecution
+        ? [{ chain: o.workChain, execution: o.workExecution }]
+        : []);
+    if (works.length === 0) {
+      const error = "oneshot-pl: no work legs (need `works` or workChain+workExecution)";
+      updateJob(job.id, { status: "failed", error });
+      return { jobId: job.id, status: "failed", error };
+    }
+
     try {
       const chainCaps = await caps();
 
       // 1) Live fee quote (signed price-lock context). Floor at minFee.
+      //    Gas sizing: ONE redeemDelegations carries every work transfer PLUS
+      //    the fee transfer — so the batch is N+1 executions, not N. The single-
+      //    payment baseline (ESTIMATED_GAS) already covers fee+1work, so leave it
+      //    untouched at N==1; for a real batch, size to all N+1 legs and add
+      //    headroom for the quote→settle gas swing (the buyer's fee cap is sized
+      //    generously to absorb it). Undercounting here is exactly what makes
+      //    1Shot reject with "payment does not cover the total price".
       const fee = await getFeeData(relayerUrl, chainIdStr, o.paymentToken);
-      const feeAtoms = computeFeeAtoms(fee, ESTIMATED_GAS);
+      const n = works.length;
+      const feeAtoms =
+        n === 1
+          ? computeFeeAtoms(fee, ESTIMATED_GAS)
+          : (computeFeeAtoms(fee, ESTIMATED_GAS * BigInt(n + 1)) * 3n) / 2n;
       const feeCollector = (fee.feeCollector ?? chainCaps.feeCollector) as Address;
 
       // 2) Build the fee execution from the live quote (always matches the
@@ -144,9 +169,13 @@ export const oneshotPermissionlessBackend: RelayBackend = {
               ],
             }
           : {}),
+        // ONE batch: the shared fee leg first, then every intent-bound work leg.
+        // 1Shot merges these into a single redeemDelegations — so the budget
+        // enforcer accumulates across the legs and the whole batch is
+        // all-or-nothing (verified: test/AtomicBatchBudget.fork.t.sol).
         transactions: [
           { permissionContext: o.feeChain, executions: [feeExecution] },
-          { permissionContext: o.workChain, executions: [o.workExecution] },
+          ...works.map((w) => ({ permissionContext: w.chain, executions: [w.execution] })),
         ],
       };
 

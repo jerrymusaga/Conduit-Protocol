@@ -442,3 +442,139 @@ export async function buildOneshotPayment(params: {
 
   return { paymentPayload, intentHash: workIntent, amount: workAmount, payTo };
 }
+
+// --- Atomic commission (1Shot batch) ---------------------------------------
+
+export interface CommissionLeg {
+  intentHash: Hex;
+  amount: bigint;
+  payTo: `0x${string}`;
+  resource: string;
+}
+
+export interface BuiltCommission {
+  paymentPayload: unknown;
+  /** One entry per hired agent — the bound intent + what it pays. */
+  legs: CommissionLeg[];
+  /** Sum of all legs' amounts (the plan total actually being settled). */
+  total: bigint;
+}
+
+/**
+ * Build the x402 payload for an ATOMIC COMMISSION on the oneshot-pl backend:
+ * N intent-bound work legs (one per hired agent) + ONE shared fee leg, all
+ * rooted in the same ERC-7715 budget grant. 1Shot merges them into a single
+ * `redeemDelegations`, so the budget enforcer accumulates across the legs and
+ * the batch is all-or-nothing — either every agent is paid in one tx, or the
+ * over-budget leg reverts the whole tx and no one is paid (proven on the live
+ * framework in test/AtomicBatchBudget.fork.t.sol).
+ *
+ * `reqs` is one PaymentRequirements per service (each from a free 402). They
+ * share the same redeemer/feeCollector/token (same facilitator), so fee config
+ * is taken from the first.
+ */
+export async function buildAtomicCommission(params: {
+  grant: GrantResult;
+  coordinator: Coordinator;
+  reqs: PaymentRequirements[];
+  intentHashes?: Hex[]; // optional override (tests); else fresh per leg
+  authorization?: Eip7702Authorization;
+  /** Optional specialist per leg → real 3-hop A2A on that leg's work payment. */
+  subAgents?: (Coordinator | undefined)[];
+}): Promise<BuiltCommission> {
+  const { grant, coordinator, reqs, subAgents } = params;
+  if (reqs.length === 0) throw new Error("buildAtomicCommission: no services");
+  const head = reqs[0];
+  if (!head.redeemer) throw new Error("402 advertised no redeemer (targetAddress)");
+  if (!head.feeCollector) throw new Error("402 advertised no feeCollector (oneshot-pl)");
+
+  const token = head.asset;
+  const redeemer = head.redeemer;
+
+  // One intent-bound work CHAIN + its USDC.transfer execution, per agent.
+  const legs: CommissionLeg[] = [];
+  const workChains = await Promise.all(
+    reqs.map(async (req, i) => {
+      const amount = BigInt(req.maxAmountRequired);
+      const intentHash = params.intentHashes?.[i] ?? freshIntentHash(req);
+      legs.push({ intentHash, amount, payTo: req.payTo, resource: req.resource });
+      const chain = await buildBoundChain({
+        grant,
+        coordinator,
+        redeemer,
+        token,
+        recipient: req.payTo,
+        maxAmount: amount,
+        intentHash,
+        subAgent: subAgents?.[i],
+      });
+      const execution = {
+        target: token,
+        value: "0",
+        data: encodeFunctionData({
+          abi: erc20Abi,
+          functionName: "transfer",
+          args: [req.payTo, amount],
+        }),
+      };
+      return { chain, execution };
+    })
+  );
+
+  // ONE fee leg covers the whole batch (one redeemDelegations = one gas fee).
+  // Size the cap to the per-leg estimate × leg count (the cap is a ceiling; the
+  // backend fills the real quote ≤ cap), bound to 1Shot's feeCollector.
+  const feeIntent = keccak256(
+    encodeAbiParameters(
+      [{ type: "bytes32" }, { type: "string" }],
+      [legs[0].intentHash, "commission-fee"]
+    )
+  );
+  // Cap covers the relayer fee for a batch of N+1 executions (works + fee leg),
+  // with the per-leg 3× buffer feeCapAtoms already bakes in. The cap is a
+  // CEILING — the backend fills the real quote ≤ cap — so generous is safe.
+  const feeCap = feeCapAtoms(head.feeEstimate) * BigInt(reqs.length + 1);
+  const feeChain = await buildBoundChain({
+    grant,
+    coordinator,
+    redeemer,
+    token,
+    recipient: head.feeCollector,
+    maxAmount: feeCap,
+    intentHash: feeIntent,
+  });
+
+  const rootDelegator = decodeDelegations(grant.context).slice(-1)[0].delegator;
+  const total = legs.reduce((s, l) => s + l.amount, 0n);
+
+  const paymentPayload = {
+    x402Version: 2,
+    scheme: head.scheme,
+    network: head.network,
+    payload: {
+      delegationManager: grant.delegationManager,
+      // Schema-compat top level (the oneshot backend uses the structured block).
+      permissionContext: encodeDelegations(workChains[0].chain),
+      delegator: rootDelegator,
+      executionCallData: encodeExecutionCalldata([
+        createExecution({
+          target: token,
+          value: 0n,
+          callData: encodeFunctionData({
+            abi: erc20Abi,
+            functionName: "transfer",
+            args: [legs[0].payTo, legs[0].amount],
+          }),
+        }),
+      ]),
+      ...(params.authorization ? { authorization: params.authorization } : {}),
+      oneshot: {
+        paymentToken: token,
+        works: workChains, // [{ chain, execution }] — the atomic batch
+        feeChain,
+      },
+    },
+  };
+
+  return { paymentPayload, legs, total };
+}

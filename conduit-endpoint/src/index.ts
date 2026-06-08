@@ -5,6 +5,7 @@ import {
   fetchCapabilities,
   settle,
   verify,
+  waitForSettlement,
   type ConduitCapabilities,
 } from "./facilitatorClient.js";
 import { buildPaymentRequired } from "./paymentRequired.js";
@@ -320,6 +321,103 @@ app.get("/services/:id", async (req: Request, res: Response) => {
   const service = getService(req.params.id ?? "");
   if (!service) return res.status(404).json({ error: "unknown service" });
   return handlePaidResource(service, req, res);
+});
+
+/**
+ * POST /commission — the ATOMIC COMMISSION beat. Settle a whole team of agents
+ * in ONE redeemDelegations batch (the buyer's `paymentPayload` carries N
+ * intent-bound work legs + one shared fee leg), then deliver every agent's
+ * Venice output. All-or-nothing: if the batch overflows the budget, 1Shot
+ * rejects it pre-broadcast → settlement fails → nothing is delivered and no
+ * USDC moves. On success, every seller was paid in a single transaction.
+ *
+ * Body: { services: string[] (catalog ids, in plan order), topic, paymentPayload }
+ */
+app.post("/commission", async (req: Request, res: Response) => {
+  const body = req.body as {
+    services?: unknown;
+    topic?: unknown;
+    paymentPayload?: unknown;
+  };
+
+  const ids = Array.isArray(body.services) ? body.services : [];
+  if (ids.length === 0 || !ids.every((s) => typeof s === "string")) {
+    return res.status(400).json({ error: "services must be a non-empty string[]" });
+  }
+  if (!body.paymentPayload || typeof body.paymentPayload !== "object") {
+    return res.status(400).json({ error: "paymentPayload (the batch) is required" });
+  }
+  const services = (ids as string[]).map((id) => getService(id));
+  const missing = (ids as string[]).filter((_id, i) => !services[i]);
+  if (missing.length > 0) {
+    return res.status(404).json({ error: `unknown service(s): ${missing.join(", ")}` });
+  }
+
+  const topic =
+    typeof body.topic === "string" && body.topic.trim()
+      ? body.topic.slice(0, 300).trim()
+      : DEFAULT_TOPIC;
+
+  // Settle the whole batch ONCE. paymentRequirements is optional for erc7710
+  // (verification is simulation-based); the batch is self-contained.
+  const settlement = await settle({
+    x402Version: 2,
+    paymentPayload: body.paymentPayload,
+    meta: {
+      service: "commission",
+      agent: req.header("X-AGENT") ?? "coordinator",
+      correlationId: req.header("X-CORRELATION-ID") ?? undefined,
+    },
+  });
+
+  if (!settlement.success) {
+    // Rejected at submission → the atomic batch never broadcast.
+    return res.status(502).json({
+      error: "commission settlement failed",
+      detail: settlement.error ?? "unknown",
+      settlement,
+    });
+  }
+
+  // CRITICAL for all-or-nothing: settlement via 1Shot is async (accepted now,
+  // mines later). We must NOT deliver any work until the batch actually settles
+  // on-chain — otherwise a batch that later reverts (over budget, gas) would
+  // still hand over outputs for a payment that never stuck. So wait for the job
+  // to confirm; only then produce the agents' outputs.
+  let tx = settlement.transaction ?? null;
+  if (settlement.jobId && settlement.status !== "confirmed") {
+    const final = await waitForSettlement(settlement.jobId);
+    if (final.status !== "confirmed") {
+      return res.status(502).json({
+        error: "commission settlement failed",
+        detail: final.error ?? "the payment did not go through",
+        settlement: { jobId: settlement.jobId, status: final.status, transaction: final.transaction ?? tx },
+      });
+    }
+    tx = final.transaction ?? tx;
+  }
+
+  // Settled on-chain → every agent produces its Venice output about the topic.
+  const results = await Promise.all(
+    (services as Service[]).map(async (s) => ({
+      service: s.id,
+      label: s.label,
+      role: s.role,
+      data: await serviceResult(s, topic),
+    }))
+  );
+
+  res.json({
+    commission: true,
+    count: results.length,
+    settlement: {
+      jobId: settlement.jobId,
+      status: "confirmed",
+      transaction: tx,
+    },
+    results,
+    servedAt: new Date().toISOString(),
+  });
 });
 
 // Legacy single resource (kept for back-compat with the earlier demo flow).

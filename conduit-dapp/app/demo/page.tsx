@@ -22,9 +22,12 @@ import {
 } from "@/lib/grant";
 import {
   runCampaign,
+  runCommissionAtomic,
   attemptRogue,
   type A2AMode,
+  type PlanItem,
   type PlannedItem,
+  type ServiceResult,
   type RogueKind,
   type RogueAttack,
 } from "@/lib/coordinator";
@@ -33,7 +36,7 @@ import { useFacilitatorEvents } from "@/lib/useFacilitatorEvents";
 import { fetchJob } from "@/lib/endpoint";
 import { config } from "@/lib/config";
 import { publicClient } from "@/lib/chain";
-import { readBudgetState, type BudgetState } from "@/lib/onchain";
+import { readBudgetState, readUsdcBalance, type BudgetState } from "@/lib/onchain";
 import { CoordinationCanvas } from "@/components/CoordinationCanvas";
 import { type DiscoveredAgent } from "@/lib/discovery";
 
@@ -231,9 +234,17 @@ export default function DemoPage() {
   const [busy, setBusy] = useState(false);
   const [spent, setSpent] = useState(0); // micro-USDC settled (optimistic, during a run)
   const [budgetState, setBudgetState] = useState<BudgetState | null>(null); // on-chain truth
+  const [usdcBalance, setUsdcBalance] = useState<bigint | null>(null); // user's live USDC
   const [cards, setCards] = useState<FeedCard[]>([]);
   const [market, setMarket] = useState<DiscoveredAgent[]>([]); // discovered on ERC-8004
   const [budgetForecast, setBudgetForecast] = useState<{ planTotal: bigint; budget: bigint } | null>(null);
+  // Plan cost > budget: the run paused before spending. Drives the pause panel.
+  // `atomic` records which path paused so the continuation resumes the same one.
+  const [budgetPause, setBudgetPause] = useState<{ planTotal: bigint; budget: bigint; atomic?: boolean } | null>(null);
+  // Set when an atomic commission settles: the SINGLE tx that paid the whole team.
+  const [atomicResult, setAtomicResult] = useState<
+    { tx: string | null; jobId?: string; count: number; total: bigint } | null
+  >(null);
   const [report, setReport] = useState<ReportSection[] | null>(null); // aggregated final report
   const reportRef = useRef<ReportSection[]>([]); // accumulates outputs during a run
   const [reportMarkdown, setReportMarkdown] = useState<string | null>(null); // Venice-aggregated prose
@@ -364,6 +375,30 @@ export default function DemoPage() {
     return () => clearInterval(id);
   }, [granted, grantResult, refreshBudget]);
 
+  // The user's live USDC balance — shown from the moment a wallet connects
+  // (independent of any grant) and refreshed after each run.
+  const refreshBalance = useCallback(async () => {
+    if (!address) {
+      setUsdcBalance(null);
+      return;
+    }
+    try {
+      setUsdcBalance(await readUsdcBalance(address as `0x${string}`));
+    } catch {
+      /* transient RPC error — keep the last known balance */
+    }
+  }, [address]);
+
+  useEffect(() => {
+    if (!connected || !address) {
+      setUsdcBalance(null);
+      return;
+    }
+    void refreshBalance();
+    const id = setInterval(() => void refreshBalance(), 12000);
+    return () => clearInterval(id);
+  }, [connected, address, refreshBalance]);
+
   // Keep the persisted session in sync as spend accrues / the 7702 auth is
   // consumed, so a mid-run refresh restores accurate budget + auth state.
   useEffect(() => {
@@ -482,8 +517,8 @@ export default function DemoPage() {
   };
 
   // Grant: coordinator EOA + 7702 auth (embedded wallet) + root delegation.
-  const grant = async () => {
-    if (busy) return;
+  const grant = async (): Promise<GrantResult | null> => {
+    if (busy) return null;
     if (wrongChain) {
       append("Wrong network — switch your wallet to Base Sepolia (approve the switch in MetaMask), then Grant.");
       try {
@@ -491,11 +526,11 @@ export default function DemoPage() {
       } catch {
         /* user declined; they can switch manually */
       }
-      return;
+      return null;
     }
     if (!walletClient || !address) {
       append("Waiting for wallet to bind… if it persists, switch your wallet to Base Sepolia and reconnect.");
-      return;
+      return null;
     }
     const embeddedWallet = getEmbeddedConnectedWallet(wallets);
     // An external EOA that isn't a smart account can't be 7702-upgraded from the
@@ -503,9 +538,10 @@ export default function DemoPage() {
     // Guide the user instead of letting settle revert cryptically.
     if (hasCode === false && !embeddedWallet) {
       append("This MetaMask account isn't a Smart Account yet — enable MetaMask Smart Account in your wallet (Settings → enable smart account), or sign in with email, then Grant.");
-      return;
+      return null;
     }
     setBusy(true);
+    let grantedResult: GrantResult | null = null;
     try {
       append("Creating coordinator session account…");
       const coordinator = createCoordinatorAccount();
@@ -559,6 +595,7 @@ export default function DemoPage() {
       setGranted(true);
       setRevoked(false);
       setCards([]);
+      grantedResult = result;
       // The session-sync effect persists grant+coordinator+auth+spent so a
       // refresh restores the active session (survives reload).
       append("Permission granted · the coordinator holds the root policy");
@@ -568,6 +605,9 @@ export default function DemoPage() {
     } finally {
       setBusy(false);
     }
+    // Return the fresh grant so callers (e.g. raise-budget-and-rerun) can use it
+    // immediately — the grantResult STATE won't be visible in their closure yet.
+    return grantedResult;
   };
 
   // Settlement is async: /settle returns once 1Shot ACCEPTS the redemption, but
@@ -584,7 +624,7 @@ export default function DemoPage() {
       if (job.status === "confirmed") {
         setCardStage(correlationId, { stage: "settled", txHash: job.transaction ?? null });
         if (job.transaction) {
-          append(`settled on-chain ✓ · tx ${job.transaction.slice(0, 10)}…`);
+          append(`paid ✓ · receipt ${job.transaction.slice(0, 10)}…`);
         }
         return;
       }
@@ -598,10 +638,33 @@ export default function DemoPage() {
     }
   };
 
+  // The atomic-commission panel has its own settlement state (the SINGLE batch
+  // tx). 1Shot returns "pending" first and the tx mines out of band, so poll the
+  // job and fill the tx hash → the panel flips from "settling" to a Basescan link.
+  const pollAtomicSettlement = async (jobId: string) => {
+    const deadline = Date.now() + 150_000;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 3000));
+      const job = await fetchJob(jobId);
+      if (!job) continue;
+      if (job.transaction) {
+        setAtomicResult((prev) => (prev ? { ...prev, tx: job.transaction ?? prev.tx } : prev));
+      }
+      if (job.status === "confirmed") {
+        if (job.transaction) append(`Payment confirmed ✓ · receipt ${job.transaction.slice(0, 10)}…`);
+        return;
+      }
+      if (job.status === "failed") {
+        append(`commission settlement failed · ${job.error ?? "unknown"}`);
+        return;
+      }
+    }
+  };
+
   // Venice report enrichment: prose aggregation (/api/report) + cover image
   // (/api/cover). Best-effort — failures leave the deterministic sections intact.
   const enrichReport = async (forPrompt: string, sections: ReportSection[]) => {
-    append("coordinator › Venice is writing the report…");
+    append("Coordinator › Venice is writing up your results…");
     try {
       const [rRes, cRes] = await Promise.allSettled([
         fetch("/api/report", {
@@ -619,7 +682,7 @@ export default function DemoPage() {
         const j = (await rRes.value.json()) as { markdown?: string | null };
         if (j.markdown) {
           setReportMarkdown(j.markdown);
-          append("coordinator › Venice report ready ✓");
+          append("Coordinator › polished by Venice ✓");
         }
       }
       if (cRes.status === "fulfilled" && cRes.value.ok) {
@@ -627,7 +690,7 @@ export default function DemoPage() {
         if (j.image) setReportCover(j.image);
       }
     } catch (e) {
-      append(`coordinator › Venice enrichment skipped · ${errMsg(e)}`);
+      append(`Coordinator › couldn't polish the write-up · ${errMsg(e)}`);
     }
   };
 
@@ -682,8 +745,12 @@ export default function DemoPage() {
   };
 
   // Run the prompt: coordinator plans, then pays each service through Conduit.
-  const run = async () => {
-    if (busy || !granted || !grantResult || !coordinatorRef.current) return;
+  // `atomic` switches to the ONE-tx commission path (all-or-nothing batch).
+  const run = async (opts?: { trimToFit?: boolean; grantOverride?: GrantResult; atomic?: boolean }) => {
+    // grantOverride lets the raise-budget path run against a JUST-minted grant
+    // whose value isn't in the grantResult state closure yet.
+    const activeGrant = opts?.grantOverride ?? grantResult;
+    if (busy || !granted || !activeGrant || !coordinatorRef.current) return;
     setBusy(true);
     setCards([]);
     setRevoked(false);
@@ -692,82 +759,142 @@ export default function DemoPage() {
     setReportCover(null);
     reportRef.current = [];
     setBudgetForecast(null);
+    setBudgetPause(null);
+    setAtomicResult(null);
     setSpent(0); // each campaign meters its own spend against the period cap
     try {
-      await runCampaign({
-        prompt,
-        grant: grantResult,
-        coordinator: coordinatorRef.current,
-        mode,
-        authorization,
-        hooks: {
-          log: append,
-          onDiscover: (agents) => setMarket(agents),
-          onBudgetForecast: (info) => setBudgetForecast(info),
-          onPlan: (items: PlannedItem[]) => {
-            setCards(
-              items.map((i) => ({
-                correlationId: i.correlationId,
-                service: i.service.id,
-                label: i.service.label,
-                agent: i.agent,
-                priceUsdc: i.service.priceUsdc,
-                rationale: i.rationale,
-                stage: "queued",
-              }))
-            );
-          },
-          onTask: (task, agentAddress) =>
-            setCardStage(task.taskId, { agentAddress, a2a: true }),
-          onPayStart: (cid) => setCardStage(cid, { stage: "requested" }),
-          onResult: (r) => {
-            if (r.ok) {
-              setSpent((s) => s + Number(r.amount));
-              // Stash the exact settled payload to fuel a real replay attempt.
-              if (r.settledPayload && r.resourcePath) {
-                lastSettledRef.current = {
-                  payload: r.settledPayload,
-                  resourcePath: r.resourcePath,
-                };
-              }
-              const source = (r.output as { source?: string } | undefined)?.source;
-              // Honest state: if we don't yet have a tx, the redemption is only
-              // ACCEPTED (not mined) — stay "settling" and poll for confirmation.
-              setCardStage(r.correlationId, {
-                stage: r.txHash ? "settled" : "settling",
-                txHash: r.txHash ?? null,
-                source,
-              });
-              if (!r.txHash && r.jobId) {
-                void pollSettlement(r.correlationId, r.jobId);
-              }
-              if (source?.startsWith("venice")) {
-                append(`${r.agent} › output generated by Venice (${source.replace(/^venice:/, "")})`);
-              }
-              // Collect the purchased output for the aggregated report.
-              if (r.output) {
-                reportRef.current.push({
-                  agent: r.agent,
-                  label: r.service.label,
-                  priceUsdc: r.service.priceUsdc,
-                  output: r.output as ReportSection["output"],
-                  correlationId: r.correlationId,
-                });
-              }
-            } else {
-              setCardStage(r.correlationId, { stage: "denied", reason: r.error, budgetCapped: r.budgetCapped });
-            }
-          },
+      // Identical card/report wiring for both the sequential and atomic paths.
+      const hooks = {
+        log: append,
+        onDiscover: (agents: DiscoveredAgent[]) => setMarket(agents),
+        onBudgetForecast: (info: { planTotal: bigint; budget: bigint }) => setBudgetForecast(info),
+        onPlan: (items: PlannedItem[]) => {
+          setCards(
+            items.map((i) => ({
+              correlationId: i.correlationId,
+              service: i.service.id,
+              label: i.service.label,
+              agent: i.agent,
+              priceUsdc: i.service.priceUsdc,
+              rationale: i.rationale,
+              stage: "queued" as const,
+            }))
+          );
         },
-      });
+        onTask: (task: { taskId: string }, agentAddress: `0x${string}`) =>
+          setCardStage(task.taskId, { agentAddress, a2a: true }),
+        onPayStart: (cid: string) => setCardStage(cid, { stage: "requested" }),
+        onResult: (r: ServiceResult) => {
+          if (r.ok) {
+            setSpent((s) => s + Number(r.amount));
+            // Stash the exact settled payload to fuel a real replay attempt.
+            if (r.settledPayload && r.resourcePath) {
+              lastSettledRef.current = {
+                payload: r.settledPayload,
+                resourcePath: r.resourcePath,
+              };
+            }
+            const source = (r.output as { source?: string } | undefined)?.source;
+            // Honest state: if we don't yet have a tx, the redemption is only
+            // ACCEPTED (not mined) — stay "settling" and poll for confirmation.
+            setCardStage(r.correlationId, {
+              stage: r.txHash ? "settled" : "settling",
+              txHash: r.txHash ?? null,
+              source,
+            });
+            if (!r.txHash && r.jobId) {
+              void pollSettlement(r.correlationId, r.jobId);
+            }
+            if (source?.startsWith("venice")) {
+              append(`${r.agent} › created by Venice (${source.replace(/^venice:/, "")})`);
+            }
+            // Collect the purchased output for the aggregated report.
+            if (r.output) {
+              reportRef.current.push({
+                agent: r.agent,
+                label: r.service.label,
+                priceUsdc: r.service.priceUsdc,
+                output: r.output as ReportSection["output"],
+                correlationId: r.correlationId,
+              });
+            }
+          } else {
+            setCardStage(r.correlationId, { stage: "denied", reason: r.error, budgetCapped: r.budgetCapped });
+          }
+        },
+      };
+
+      const outcome: {
+        status: "ok" | "paused-budget" | "failed";
+        planTotal?: bigint;
+        budget?: bigint;
+        budgetCapped?: boolean;
+        totalSpent: bigint;
+        plan: PlanItem[];
+        settlement?: { jobId?: string; status?: string; transaction?: string | null };
+      } = opts?.atomic
+        ? await runCommissionAtomic({
+            prompt,
+            grant: activeGrant,
+            coordinator: coordinatorRef.current,
+            authorization,
+            trimToFit: opts?.trimToFit,
+            hooks,
+          })
+        : await runCampaign({
+            prompt,
+            grant: activeGrant,
+            coordinator: coordinatorRef.current,
+            mode,
+            authorization,
+            trimToFit: opts?.trimToFit,
+            hooks,
+          });
+
+      // Budget gate tripped: the plan costs more than the grant, so the
+      // coordinator stopped BEFORE any payment — nothing was spent. Surface the
+      // choice (raise the cap, run within it, or cancel) and bail out early.
+      if (outcome.status === "paused-budget") {
+        setBudgetPause({ planTotal: outcome.planTotal!, budget: outcome.budget!, atomic: !!opts?.atomic });
+        append("Coordinator › stopped — nothing was charged. Add budget or hire a smaller team.");
+        return;
+      }
       // Clear the auth after the first run consumed it for designation.
       setAuthorization(null);
+
+      // Atomic commission couldn't go through → all-or-nothing, nothing charged.
+      // A budget rejection shows the same friendly "add budget / smaller team"
+      // choice as the pre-flight pause; anything else is a brief notice.
+      if (opts?.atomic && outcome.status === "failed") {
+        if (outcome.budgetCapped && outcome.planTotal && outcome.budget) {
+          setBudgetPause({ planTotal: outcome.planTotal, budget: outcome.budget, atomic: true });
+        } else {
+          append("Couldn't complete the hire — nothing was charged.");
+        }
+        return;
+      }
+      // Atomic success → record the single-tx settlement for the one-tx panel.
+      if (opts?.atomic && outcome.status === "ok") {
+        const jobId = outcome.settlement?.jobId;
+        setAtomicResult({
+          tx: outcome.settlement?.transaction ?? null,
+          jobId,
+          count: outcome.plan.length,
+          total: outcome.totalSpent,
+        });
+        // 1Shot returns pending first; poll until the batch tx mines so the
+        // panel shows the real Basescan link instead of "settling".
+        if (!outcome.settlement?.transaction && jobId) {
+          void pollAtomicSettlement(jobId);
+        }
+      }
+
       // Aggregate the purchased outputs into the final report.
       if (reportRef.current.length > 0) {
         const sections = [...reportRef.current];
-        append("coordinator › aggregating provider outputs into a report…");
+        append("Coordinator › putting your results together…");
         setReport(sections);
-        append("Report complete ✓");
+        append("Results ready ✓");
         // Enrich via Venice (best-effort): prose aggregation + a cover image.
         // Both fall back gracefully — the deterministic sections always render.
         void enrichReport(prompt, sections);
@@ -777,7 +904,33 @@ export default function DemoPage() {
     } finally {
       setBusy(false);
       void refreshBudget(); // reconcile the meter to on-chain truth post-run
+      void refreshBalance(); // the team got paid — reflect the new wallet balance
     }
+  };
+
+  // Pause-panel action: raise the cap to cover the real plan cost (+10% headroom
+  // for quote/gas drift), re-grant, then re-run against the FRESH grant. The user
+  // re-signs the bigger budget in their wallet; still nothing was spent on the
+  // paused attempt.
+  const raiseBudgetAndRun = async () => {
+    if (!budgetPause || busy) return;
+    const neededUsdc = Number(budgetPause.planTotal) / 1e6;
+    const suggested = (Math.ceil(neededUsdc * 1.1 * 100) / 100).toFixed(2);
+    const wasAtomic = !!budgetPause.atomic;
+    setBudgetPause(null);
+    setAmountInput(suggested);
+    append(`Raising the budget to ${suggested} USDC — approve the new grant in your wallet…`);
+    const fresh = await grant();
+    if (fresh) await run({ grantOverride: fresh, atomic: wasAtomic });
+  };
+
+  // Pause-panel action: keep the highest-priority agents that fit and run only
+  // those — a useful partial report that never overflows the budget.
+  const runWithinBudget = async () => {
+    if (!budgetPause || busy) return;
+    const wasAtomic = !!budgetPause.atomic;
+    setBudgetPause(null);
+    await run({ trimToFit: true, atomic: wasAtomic });
   };
 
   // The compromised-agent beat: submit a real malicious payment and let Conduit
@@ -785,7 +938,7 @@ export default function DemoPage() {
   const tryRogue = async (kind: RogueKind) => {
     if (busy || !granted || !grantResult || !coordinatorRef.current) return;
     if (kind === "replay" && !lastSettledRef.current) {
-      append("Run a successful payment first, then Replay can re-submit it.");
+      append("Hire the team first, then Replay can re-submit a real payment.");
       return;
     }
     setBusy(true);
@@ -998,8 +1151,15 @@ export default function DemoPage() {
               )}
             </div>
 
-            {/* budget meter + revoke (right rail) */}
+            {/* wallet balance + budget meter + revoke (right rail) */}
             <div className="w-full lg:w-72 lg:shrink-0">
+              <div className="mb-3 flex items-center justify-between rounded-lg border border-conduit-border/60 bg-white/[0.03] px-3 py-2">
+                <span className="text-xs text-conduit-muted">Your balance</span>
+                <span className="mono text-sm font-semibold text-white">
+                  {usdcBalance === null ? "—" : (Number(usdcBalance) / 1e6).toFixed(2)}
+                  <span className="ml-1 text-[11px] font-normal text-conduit-muted">USDC</span>
+                </span>
+              </div>
               <div className="flex justify-between text-xs text-conduit-muted">
                 <span>spent</span>
                 <span className="mono">
@@ -1023,10 +1183,10 @@ export default function DemoPage() {
                     disabled={busy}
                     className="w-full rounded-lg border border-conduit-magenta/40 px-3 py-2 text-xs font-medium text-conduit-magenta transition-colors hover:bg-conduit-magenta/10 disabled:opacity-40"
                   >
-                    {busy ? "Working…" : "Revoke budget — kill all agents (on-chain)"}
+                    {busy ? "Working…" : "Cancel budget — stop all agents"}
                   </button>
                   <p className="mt-1.5 text-[11px] leading-relaxed text-conduit-muted/70">
-                    Disables the root delegation; every task agent under it dies at once. Needs a little ETH.
+                    Instantly cuts off every agent&rsquo;s access to your budget. Needs a little ETH for the network fee.
                   </p>
                 </div>
               )}
@@ -1071,16 +1231,17 @@ export default function DemoPage() {
                 rows={2}
                 className="mono mt-3 w-full resize-none rounded-lg border border-conduit-border bg-transparent px-3 py-2 text-[13px] text-white outline-none focus:border-conduit-cyan disabled:opacity-40"
               />
-              <div className="mt-3 flex items-center gap-4">
+              <div className="mt-3 flex flex-wrap items-center gap-3">
                 <button
-                  onClick={run}
+                  onClick={() => run({ atomic: true })}
                   disabled={!granted || busy || !!runBlock}
+                  title="Hire everyone together in a single payment. If your budget can't cover the whole team, no one is charged."
                   className="btn-primary justify-center px-8 text-sm disabled:opacity-40"
                 >
-                  {busy ? "Running…" : "Run"}
+                  {busy ? "Hiring…" : "Hire the team"}
                 </button>
-                <p className="mono text-[10px] text-conduit-muted/70">
-                  <span className="text-conduit-violet">✦</span> voice · research · image · voiceover — powered by Venice
+                <p className="text-[10px] text-conduit-muted/70">
+                  <span className="text-conduit-violet">✦</span> everyone paid together · all-or-nothing · Venice-powered
                 </p>
               </div>
               {runBlock && (
@@ -1150,13 +1311,33 @@ export default function DemoPage() {
                   expiryText,
                 }}
                 revoked={revoked}
+                busy={busy}
               />
             </div>
           </section>
 
-          {/* Budget-cap safety beat — the budget enforcer blocked the overflow. */}
-          {(budgetForecast || cards.some((c) => c.budgetCapped)) && (
+          {/* Pre-flight budget gate — plan cost > budget, so the run paused
+              before spending. The user raises the cap or runs within it. */}
+          {budgetPause && (
+            <BudgetPausePanel
+              pause={budgetPause}
+              busy={busy}
+              onRaise={raiseBudgetAndRun}
+              onTrim={runWithinBudget}
+              onCancel={() => setBudgetPause(null)}
+            />
+          )}
+
+          {/* Budget-cap safety beat — the budget enforcer blocked an overflow
+              payment ON-CHAIN (only happens if a payment slipped past the gate,
+              e.g. concurrent agents draining one budget). */}
+          {!budgetPause && cards.some((c) => c.budgetCapped) && (
             <BudgetCapPanel cards={cards} forecast={budgetForecast} capUsdc={displayAmount} />
+          )}
+
+          {/* Atomic-commission proof: the whole team paid in ONE transaction. */}
+          {atomicResult && (
+            <AtomicCommissionPanel result={atomicResult} explorerBase={config.explorerUrl} />
           )}
 
           {/* The payoff: the aggregated report assembled from purchased outputs */}
@@ -1196,6 +1377,125 @@ export default function DemoPage() {
 }
 
 // --- report panel ----------------------------------------------------------
+
+/** The atomic-commission proof — the whole team was paid in ONE redeemDelegations
+ *  batch. All-or-nothing made hard: either every agent settled in this single tx
+ *  or none did. The headline differentiator, with the on-chain receipt. */
+function AtomicCommissionPanel({
+  result,
+  explorerBase,
+}: {
+  result: { tx: string | null; jobId?: string; count: number; total: bigint };
+  explorerBase: string;
+}) {
+  const usd = (a: bigint) => (Number(a) / 1e6).toFixed(2);
+  const pending = !result.tx;
+  return (
+    <section className="panel reveal mt-6 border-conduit-violet/40 p-6">
+      <div className="flex items-center gap-2.5">
+        <span className="grid h-8 w-8 place-items-center rounded-full bg-conduit-violet/15 text-conduit-violet" aria-hidden>
+          ✓
+        </span>
+        <h2 className="text-base font-semibold text-white">
+          {pending ? "Hiring your team…" : "Your team is hired"}
+        </h2>
+      </div>
+      <p className="mt-2 text-[13px] leading-relaxed text-conduit-muted">
+        All <span className="font-semibold text-white">{result.count} specialists</span> were paid{" "}
+        <span className="font-semibold text-white">{usd(result.total)} USDC</span> together in{" "}
+        <span className="text-white">one payment</span>, sharing a single network fee for the whole
+        team. It&apos;s all-or-nothing: if your budget couldn&apos;t cover everyone, no one would have
+        been charged — so you never pay for a half-finished job.
+      </p>
+      <div className="mt-4 flex flex-wrap items-center gap-2 text-[12px]">
+        <span className="rounded-full bg-white/5 px-2.5 py-1 text-conduit-muted">
+          <span className="font-semibold text-white">{result.count}</span> specialists
+        </span>
+        <span className="rounded-full bg-white/5 px-2.5 py-1 text-conduit-muted">
+          <span className="font-semibold text-white">{usd(result.total)} USDC</span> total
+        </span>
+        <span className="rounded-full bg-white/5 px-2.5 py-1 text-conduit-muted">
+          <span className="font-semibold text-white">1</span> shared fee
+        </span>
+        {result.tx ? (
+          <a
+            href={`${explorerBase}/tx/${result.tx}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="rounded-full bg-conduit-cyan/10 px-2.5 py-1 font-medium text-conduit-cyan transition hover:bg-conduit-cyan/20"
+          >
+            View receipt ↗
+          </a>
+        ) : (
+          <span className="flex items-center gap-1.5 rounded-full bg-white/5 px-2.5 py-1 text-conduit-muted/80">
+            <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-conduit-violet" />
+            Confirming payment…
+          </span>
+        )}
+      </div>
+    </section>
+  );
+}
+
+/** The pre-flight budget gate — the plan costs more than the grant, so the
+ *  coordinator STOPPED before any payment. Nothing was spent. The user chooses:
+ *  raise the cap (re-grant sized to the plan), run within the budget (trim to
+ *  the affordable subset), or cancel. This is the "no wasted USDC" beat. */
+function BudgetPausePanel({
+  pause,
+  busy,
+  onRaise,
+  onTrim,
+  onCancel,
+}: {
+  pause: { planTotal: bigint; budget: bigint };
+  busy: boolean;
+  onRaise: () => void;
+  onTrim: () => void;
+  onCancel: () => void;
+}) {
+  const usd = (a: bigint) => (Number(a) / 1e6).toFixed(2);
+  return (
+    <section className="panel reveal mt-6 border-amber-400/40 p-6">
+      <div className="flex items-center gap-2.5">
+        <span className="grid h-8 w-8 place-items-center rounded-full bg-amber-400/15 text-amber-300" aria-hidden>
+          !
+        </span>
+        <h2 className="text-base font-semibold text-white">Over budget — nothing was charged</h2>
+      </div>
+      <p className="mt-2 text-[13px] leading-relaxed text-conduit-muted">
+        This team would cost{" "}
+        <span className="font-semibold text-amber-300">{usd(pause.planTotal)} USDC</span>, but your
+        budget is <span className="font-semibold text-white">{usd(pause.budget)} USDC</span>. We
+        checked the full price <span className="text-white">before charging anything</span>, so
+        nothing has left your wallet. You can add a little budget, or hire a smaller team that fits.
+      </p>
+      <div className="mt-4 flex flex-wrap gap-2">
+        <button
+          onClick={onRaise}
+          disabled={busy}
+          className="rounded-lg border border-conduit-cyan/50 bg-conduit-cyan/10 px-3.5 py-2 text-[13px] font-medium text-conduit-cyan transition hover:bg-conduit-cyan/20 disabled:opacity-50"
+        >
+          Add budget &amp; try again
+        </button>
+        <button
+          onClick={onTrim}
+          disabled={busy}
+          className="rounded-lg border border-amber-400/40 bg-amber-400/10 px-3.5 py-2 text-[13px] font-medium text-amber-300 transition hover:bg-amber-400/20 disabled:opacity-50"
+        >
+          Hire a smaller team that fits
+        </button>
+        <button
+          onClick={onCancel}
+          disabled={busy}
+          className="rounded-lg border border-conduit-muted/30 px-3.5 py-2 text-[13px] font-medium text-conduit-muted transition hover:text-white disabled:opacity-50"
+        >
+          Cancel
+        </button>
+      </div>
+    </section>
+  );
+}
 
 /** The budget-cap safety beat — the ERC20PeriodTransferEnforcer blocks payments
  *  that would exceed the granted budget. Styled amber (a limit reached), distinct
@@ -1295,10 +1595,10 @@ function ReportPanel({
   const allSettled = states.length > 0 && states.every((c) => c?.stage === "settled");
   const anyFailed = states.some((c) => c?.stage === "failed");
   const settleBadge = allSettled
-    ? { cls: "bg-conduit-cyan/15 text-conduit-cyan", text: `✓ settled on-chain · ${txCount} tx` }
+    ? { cls: "bg-conduit-cyan/15 text-conduit-cyan", text: `✓ paid · ${txCount} receipt${txCount === 1 ? "" : "s"}` }
     : anyFailed
-      ? { cls: "bg-conduit-magenta/15 text-conduit-magenta", text: "⚠ settlement issue" }
-      : { cls: "bg-conduit-violet/15 text-conduit-violet animate-pulse", text: "delivered · settling on-chain…" };
+      ? { cls: "bg-conduit-magenta/15 text-conduit-magenta", text: "⚠ payment issue" }
+      : { cls: "bg-conduit-violet/15 text-conduit-violet animate-pulse", text: "delivered · confirming payment…" };
   return (
     <section className="panel reveal mt-6 p-6">
       <div className="flex items-center justify-between">
