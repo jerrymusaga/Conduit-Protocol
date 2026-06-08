@@ -3,9 +3,9 @@ import { config } from "./config.js";
 import { chainInfo } from "./chain.js";
 import {
   fetchCapabilities,
+  getJob,
   settle,
   verify,
-  waitForSettlement,
   type ConduitCapabilities,
 } from "./facilitatorClient.js";
 import { buildPaymentRequired } from "./paymentRequired.js";
@@ -324,41 +324,23 @@ app.get("/services/:id", async (req: Request, res: Response) => {
 });
 
 /**
- * POST /commission — the ATOMIC COMMISSION beat. Settle a whole team of agents
- * in ONE redeemDelegations batch (the buyer's `paymentPayload` carries N
- * intent-bound work legs + one shared fee leg), then deliver every agent's
- * Venice output. All-or-nothing: if the batch overflows the budget, 1Shot
- * rejects it pre-broadcast → settlement fails → nothing is delivered and no
- * USDC moves. On success, every seller was paid in a single transaction.
+ * POST /commission — the ATOMIC COMMISSION beat (submit half). Submit ONE
+ * redeemDelegations batch (the buyer's `paymentPayload` carries N intent-bound
+ * work legs + one shared fee leg) and return the settlement job IMMEDIATELY.
+ * The dapp polls the job to on-chain confirmation, then calls
+ * POST /commission/deliver for the outputs. Splitting submit from deliver keeps
+ * every request short, so a hosting proxy never has to hold a connection open
+ * for the ~15-30s the batch takes to mine.
  *
- * Body: { services: string[] (catalog ids, in plan order), topic, paymentPayload }
+ * Body: { paymentPayload }
  */
 app.post("/commission", async (req: Request, res: Response) => {
-  const body = req.body as {
-    services?: unknown;
-    topic?: unknown;
-    paymentPayload?: unknown;
-  };
-
-  const ids = Array.isArray(body.services) ? body.services : [];
-  if (ids.length === 0 || !ids.every((s) => typeof s === "string")) {
-    return res.status(400).json({ error: "services must be a non-empty string[]" });
-  }
+  const body = req.body as { paymentPayload?: unknown };
   if (!body.paymentPayload || typeof body.paymentPayload !== "object") {
     return res.status(400).json({ error: "paymentPayload (the batch) is required" });
   }
-  const services = (ids as string[]).map((id) => getService(id));
-  const missing = (ids as string[]).filter((_id, i) => !services[i]);
-  if (missing.length > 0) {
-    return res.status(404).json({ error: `unknown service(s): ${missing.join(", ")}` });
-  }
 
-  const topic =
-    typeof body.topic === "string" && body.topic.trim()
-      ? body.topic.slice(0, 300).trim()
-      : DEFAULT_TOPIC;
-
-  // Settle the whole batch ONCE. paymentRequirements is optional for erc7710
+  // Submit the whole batch ONCE. paymentRequirements is optional for erc7710
   // (verification is simulation-based); the batch is self-contained.
   const settlement = await settle({
     x402Version: 2,
@@ -371,7 +353,7 @@ app.post("/commission", async (req: Request, res: Response) => {
   });
 
   if (!settlement.success) {
-    // Rejected at submission → the atomic batch never broadcast.
+    // Rejected at submission (e.g. over budget) → the batch never broadcast.
     return res.status(502).json({
       error: "commission settlement failed",
       detail: settlement.error ?? "unknown",
@@ -379,22 +361,59 @@ app.post("/commission", async (req: Request, res: Response) => {
     });
   }
 
-  // CRITICAL for all-or-nothing: settlement via 1Shot is async (accepted now,
-  // mines later). We must NOT deliver any work until the batch actually settles
-  // on-chain — otherwise a batch that later reverts (over budget, gas) would
-  // still hand over outputs for a payment that never stuck. So wait for the job
-  // to confirm; only then produce the agents' outputs.
-  let tx = settlement.transaction ?? null;
-  if (settlement.jobId && settlement.status !== "confirmed") {
-    const final = await waitForSettlement(settlement.jobId);
-    if (final.status !== "confirmed") {
-      return res.status(502).json({
-        error: "commission settlement failed",
-        detail: final.error ?? "the payment did not go through",
-        settlement: { jobId: settlement.jobId, status: final.status, transaction: final.transaction ?? tx },
-      });
-    }
-    tx = final.transaction ?? tx;
+  // Return the job at once — delivery happens at /commission/deliver after the
+  // dapp confirms the batch settled on-chain.
+  res.json({
+    commission: true,
+    settlement: {
+      jobId: settlement.jobId,
+      status: settlement.status,
+      transaction: settlement.transaction ?? null,
+    },
+  });
+});
+
+/**
+ * POST /commission/deliver — produce every agent's output, but ONLY for a batch
+ * that actually settled on-chain. All-or-nothing is preserved: we verify the
+ * settlement job is `confirmed` before generating anything, so a payment that
+ * didn't stick yields no output (and no Venice spend). Returns 202 while still
+ * pending so the dapp keeps polling; 502 if it failed.
+ *
+ * Body: { jobId, services: string[] (catalog ids, in plan order), topic }
+ */
+app.post("/commission/deliver", async (req: Request, res: Response) => {
+  const body = req.body as { jobId?: unknown; services?: unknown; topic?: unknown };
+  if (typeof body.jobId !== "string" || !body.jobId) {
+    return res.status(400).json({ error: "jobId is required" });
+  }
+  const ids = Array.isArray(body.services) ? body.services : [];
+  if (ids.length === 0 || !ids.every((s) => typeof s === "string")) {
+    return res.status(400).json({ error: "services must be a non-empty string[]" });
+  }
+  const services = (ids as string[]).map((id) => getService(id));
+  const missing = (ids as string[]).filter((_id, i) => !services[i]);
+  if (missing.length > 0) {
+    return res.status(404).json({ error: `unknown service(s): ${missing.join(", ")}` });
+  }
+  const topic =
+    typeof body.topic === "string" && body.topic.trim()
+      ? body.topic.slice(0, 300).trim()
+      : DEFAULT_TOPIC;
+
+  // Gate delivery on real on-chain settlement — never hand over work (or spend
+  // Venice credits) for an unsettled or failed payment.
+  const job = await getJob(body.jobId);
+  if (!job) return res.status(404).json({ error: "unknown settlement job" });
+  if (job.status === "failed") {
+    return res.status(502).json({
+      error: "commission settlement failed",
+      detail: job.error ?? "the payment did not go through",
+    });
+  }
+  if (job.status !== "confirmed") {
+    // Still mining — tell the dapp to keep polling.
+    return res.status(202).json({ pending: true, status: job.status });
   }
 
   // Settled on-chain → every agent produces its Venice output about the topic.
@@ -410,11 +429,7 @@ app.post("/commission", async (req: Request, res: Response) => {
   res.json({
     commission: true,
     count: results.length,
-    settlement: {
-      jobId: settlement.jobId,
-      status: "confirmed",
-      transaction: tx,
-    },
+    settlement: { jobId: body.jobId, status: "confirmed", transaction: job.transaction ?? null },
     results,
     servedAt: new Date().toISOString(),
   });

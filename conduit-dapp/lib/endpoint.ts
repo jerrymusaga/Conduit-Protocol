@@ -192,9 +192,13 @@ export interface CommissionResponse {
 }
 
 /**
- * POST /commission — settle a whole team in ONE redeemDelegations batch, then
- * receive every agent's output. All-or-nothing: an over-budget batch comes back
- * as an error (1Shot rejected it pre-broadcast) with no USDC moved.
+ * Commission a whole team in ONE redeemDelegations batch — all-or-nothing.
+ *
+ * Done in three short requests (so no single connection is held open ~15-30s
+ * and a hosting proxy can't time it out): submit the batch → poll the
+ * facilitator job to on-chain confirmation → deliver the outputs. An over-budget
+ * batch comes back as an error (rejected with no USDC moved); the outputs are
+ * only ever fetched once the payment has actually settled.
  */
 export async function commissionAtomic(
   paymentPayload: unknown,
@@ -203,18 +207,58 @@ export async function commissionAtomic(
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (opts.agent) headers["X-AGENT"] = opts.agent;
   if (opts.correlationId) headers["X-CORRELATION-ID"] = opts.correlationId;
-  const res = await fetch(`${config.endpointUrl}/commission`, {
+  const fail = (status: number, body: { error?: string; detail?: string }, settlement?: CommissionResponse["settlement"]): CommissionResponse => ({
+    ok: false,
+    status,
+    settlement,
+    error: [body.error, body.detail].filter(Boolean).join(" · ") || `HTTP ${status}`,
+  });
+
+  // 1) Submit the batch — returns the settlement job immediately.
+  const sRes = await fetch(`${config.endpointUrl}/commission`, {
     method: "POST",
     headers,
-    body: JSON.stringify({ services: opts.services, topic: opts.topic, paymentPayload }),
+    body: JSON.stringify({ paymentPayload }),
   });
-  const body = await res.json().catch(() => ({}) as Record<string, unknown>);
+  const sBody = (await sRes.json().catch(() => ({}))) as {
+    error?: string; detail?: string; settlement?: CommissionResponse["settlement"];
+  };
+  if (sRes.status !== 200) return fail(sRes.status, sBody, sBody.settlement);
+  const jobId = sBody.settlement?.jobId;
+  if (!jobId) return fail(502, { error: "no settlement job returned" });
 
-  if (res.status === 200) {
-    const b = body as { settlement?: CommissionResponse["settlement"]; results?: CommissionResult[] };
-    return { ok: true, status: 200, settlement: b.settlement, results: b.results };
+  // 2) Poll the facilitator job until the batch confirms on-chain (or fails).
+  let tx = sBody.settlement?.transaction ?? null;
+  let confirmed = sBody.settlement?.status === "confirmed";
+  const deadline = Date.now() + 150_000; // ~2.5 min, matches the relayer window
+  while (!confirmed && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 3000));
+    const job = await fetchJob(jobId);
+    if (!job) continue;
+    if (job.status === "failed") {
+      return fail(502, { error: job.error ?? "the payment did not go through" }, { jobId, status: "failed", transaction: job.transaction });
+    }
+    if (job.status === "confirmed") {
+      tx = job.transaction ?? tx;
+      confirmed = true;
+    }
   }
-  const b = body as { error?: string; detail?: string; settlement?: CommissionResponse["settlement"] };
-  const error = [b.error, b.detail].filter(Boolean).join(" · ") || `HTTP ${res.status}`;
-  return { ok: false, status: res.status, settlement: b.settlement, error };
+  if (!confirmed) return fail(504, { error: "the payment did not confirm in time" }, { jobId, status: "pending", transaction: tx });
+
+  // 3) Deliver — fetch every agent's output now that the payment settled.
+  const dRes = await fetch(`${config.endpointUrl}/commission/deliver`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ jobId, services: opts.services, topic: opts.topic }),
+  });
+  const dBody = (await dRes.json().catch(() => ({}))) as {
+    error?: string; detail?: string; settlement?: CommissionResponse["settlement"]; results?: CommissionResult[];
+  };
+  if (dRes.status !== 200) return fail(dRes.status, dBody, { jobId, status: "confirmed", transaction: tx });
+  return {
+    ok: true,
+    status: 200,
+    settlement: dBody.settlement ?? { jobId, status: "confirmed", transaction: tx },
+    results: dBody.results,
+  };
 }
