@@ -32,8 +32,10 @@ import {
   type RogueAttack,
 } from "@/lib/coordinator";
 import type { Eip7702Authorization } from "@/lib/payment";
+import { keccak256 } from "viem";
 import { useFacilitatorEvents } from "@/lib/useFacilitatorEvents";
 import { fetchJob } from "@/lib/endpoint";
+import { registerGrant } from "@/lib/grants";
 import { config } from "@/lib/config";
 import { publicClient } from "@/lib/chain";
 import { readBudgetState, readUsdcBalance, type BudgetState } from "@/lib/onchain";
@@ -600,6 +602,21 @@ export default function DemoPage() {
       // The session-sync effect persists grant+coordinator+auth+spent so a
       // refresh restores the active session (survives reload).
       append("Permission granted · the coordinator holds the root policy");
+      // Register in the per-wallet grants index so /portfolio can enumerate it
+      // (ERC-7715 grants have no on-chain "created" event). Best-effort.
+      void registerGrant({
+        id: keccak256(result.context),
+        user: address,
+        kind: "budget",
+        label: deriveTitle(prompt) || "Agent budget",
+        coordinator: coordinator.address,
+        token: config.usdc,
+        amount: result.periodAmount.toString(),
+        expiry: result.expiry,
+        periodSeconds: result.periodDuration,
+        enforcer: config.erc20PeriodTransferEnforcer,
+        context: result.context,
+      });
     } catch (e) {
       console.error("[conduit] grant failed →", e);
       append(`Grant failed · ${errMsg(e)}`);
@@ -1033,6 +1050,12 @@ export default function DemoPage() {
               className="text-xs text-conduit-muted underline-offset-4 hover:text-white hover:underline"
             >
               subscriptions →
+            </Link>
+            <Link
+              href="/portfolio"
+              className="text-xs text-conduit-muted underline-offset-4 hover:text-white hover:underline"
+            >
+              portfolio →
             </Link>
             {connected && (
               <span className="mono flex items-center gap-1.5 text-[11px] text-conduit-muted">

@@ -6,6 +6,7 @@ import { supportedRouter } from "./routes/supported.js";
 import { verifyRouter } from "./routes/verify.js";
 import { settleRouter } from "./routes/settle.js";
 import { relayerWebhookRouter } from "./routes/relayerWebhook.js";
+import { grantsRouter } from "./routes/grants.js";
 import { setTerminalHook } from "./jobs.js";
 import { fireWebhook } from "./webhook.js";
 
@@ -54,6 +55,7 @@ app.use(supportedRouter(backend));
 app.use(verifyRouter(backend));
 app.use(settleRouter(backend));
 app.use(relayerWebhookRouter);
+app.use(grantsRouter());
 
 app.listen(config.port, () => {
   console.log(`conduit-facilitator listening on :${config.port}`);

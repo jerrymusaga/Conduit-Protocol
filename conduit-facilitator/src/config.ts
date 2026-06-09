@@ -29,6 +29,10 @@ const baseSchema = z.object({
   // When set, 1Shot POSTs Ed25519-signed status events here. Needs a public
   // tunnel in dev (e.g. ngrok). If unset, the backend polls relayer_getStatus.
   ONESHOT_WEBHOOK_URL: z.string().url().optional(),
+
+  // Where the per-wallet grants registry is persisted (JSON). Point this at a
+  // mounted volume in production so it survives redeploys. Defaults to ./data.
+  GRANTS_FILE: z.string().default("./data/grants.json"),
 });
 
 const parsed = baseSchema.safeParse(process.env);
@@ -52,6 +56,7 @@ export const config = {
     "0x9847Be9B20f23b2cb12C2D6C49B58772096E45eF") as `0x${string}`,
   relayBackend: "oneshot-pl" as const,
   webhookUrl: env.WEBHOOK_URL,
+  grantsFile: env.GRANTS_FILE,
   oneshot: {
     relayerUrl: env.ONESHOT_RELAYER_URL,
     gasToken: env.ONESHOT_GAS_TOKEN ?? "USDC",

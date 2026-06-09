@@ -6,3 +6,6 @@ dist/
 .DS_Store
 .vscode/
 .idea/
+
+# grants registry (persisted, runtime)
+data/

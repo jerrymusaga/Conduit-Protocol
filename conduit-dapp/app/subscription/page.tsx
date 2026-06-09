@@ -33,6 +33,7 @@ import {
   type SubscriptionGrant,
   type SubscriptionState,
 } from "@/lib/subscription";
+import { registerGrant, markGrantRevoked } from "@/lib/grants";
 import { useFacilitatorEvents } from "@/lib/useFacilitatorEvents";
 import { config } from "@/lib/config";
 import { publicClient } from "@/lib/chain";
@@ -255,6 +256,7 @@ export default function SubscriptionPage() {
       const tx = await cancelSubscription({ walletClient, userAddress: address, grant });
       append(`Revoke tx sent · ${shorten(tx)} — awaiting confirmation…`);
       await publicClient.waitForTransactionReceipt({ hash: tx });
+      void markGrantRevoked(grant.delegationHash, address); // reflect in /portfolio
       setCancelled(true);
       setGrant(null);
       setSubState(null);
@@ -345,6 +347,22 @@ export default function SubscriptionPage() {
       setGrant(g);
       setCancelled(false);
       append("Subscription approved · your signature binds merchant + amount + cadence on-chain");
+      // Register in the per-wallet grants index so /portfolio can list it.
+      void registerGrant({
+        id: g.delegationHash,
+        user: address,
+        kind: "subscription",
+        label: service.label,
+        coordinator: coordinator.address,
+        token: g.terms.token,
+        amount: g.terms.amountPerPeriod.toString(),
+        expiry: g.expiry,
+        periodSeconds: g.terms.periodSeconds,
+        delegationHash: g.delegationHash,
+        enforcer: g.terms.enforcer,
+        merchant: g.terms.recipient,
+        context: g.context,
+      });
     } catch (e) {
       console.error("[conduit] subscribe failed →", e);
       append(`Subscribe failed · ${errMsg(e)}`);
@@ -453,6 +471,12 @@ export default function SubscriptionPage() {
               className="text-xs text-conduit-muted underline-offset-4 hover:text-white hover:underline"
             >
               ← one-shot console
+            </Link>
+            <Link
+              href="/portfolio"
+              className="text-xs text-conduit-muted underline-offset-4 hover:text-white hover:underline"
+            >
+              portfolio →
             </Link>
             {connected && (
               <span className="mono flex items-center gap-1.5 text-[11px] text-conduit-muted">
