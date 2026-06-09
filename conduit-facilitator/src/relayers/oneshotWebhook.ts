@@ -161,7 +161,13 @@ export async function verifyWebhook(
   // signs safe-stable-stringify(body minus signature). Their wire JSON order can
   // differ, so we must RE-serialize with this exact lib (our hand-rolled sorted
   // form didn't match its output). Everything below is just defensive fallback.
-  candidates.push(["safe-stable", stableStringify(rest) ?? ""]);
+  const stable = stableStringify(rest) ?? "";
+  candidates.push(["safe-stable", stable]);
+  // 1Shot's relayer currently DOUBLE-serializes when signing —
+  // stringify(stringify(payload)) — a confirmed bug (fix incoming). Accept both
+  // the double form (works now) and the single form (works post-fix), so the
+  // webhook keeps verifying straight through their rollout.
+  candidates.push(["safe-stable-double", stableStringify(stable) ?? ""]);
   if (rawBody) {
     // Literal bytes, signature value emptied in place (common: sign with
     // `"signature":""`, then fill the value) — highest fidelity.
