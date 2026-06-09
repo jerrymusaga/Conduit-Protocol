@@ -83,7 +83,8 @@ async function getKeys(jwksUrl: string, force = false): Promise<Map<string, cryp
  */
 export async function verifyWebhook(
   body: Record<string, unknown>,
-  jwksUrl: string
+  jwksUrl: string,
+  rawBody?: string
 ): Promise<boolean> {
   const sigB64 = typeof body.signature === "string" ? body.signature : undefined;
   const keyId = typeof body.keyId === "string" ? body.keyId : undefined;
@@ -112,26 +113,65 @@ export async function verifyWebhook(
   }
 
   const { signature: _omit, ...rest } = body;
-  const sig = Buffer.from(sigB64, "base64");
+  // Normalize base64url → base64 so either signature encoding decodes.
+  const sig = Buffer.from(sigB64.replace(/-/g, "+").replace(/_/g, "/"), "base64");
 
-  // The relayer signs the body (minus `signature`) — but NOT in sorted-key form
-  // (the skill docs' "safe-stable-stringify" advice is wrong; the wire key order
-  // is type,data,timestamp,keyId,apiVersion, not alphabetical). JSON.parse
-  // preserves insertion order, so JSON.stringify(rest) reproduces the original
-  // serialization. Try that first, then the sorted form as a fallback, so we're
-  // robust to whichever canonicalization the relayer actually uses.
-  const original = JSON.stringify(rest);
-  const candidates = [original, canonicalJson(rest)];
-  for (const message of candidates) {
+  // The relayer signs the body MINUS `signature`. We don't know its exact
+  // serializer (the skill docs' sorted "safe-stable-stringify" is wrong — the
+  // wire order is type,data,timestamp,keyId,apiVersion, and even original-order
+  // JS compact didn't match → likely different whitespace/encoding). So try, in
+  // order of likelihood:
+  //   1. RAW bytes with the `signature` field surgically removed — the relayer's
+  //      LITERAL serialization, so whitespace/encoding match exactly.
+  //   2. JS compact (original key order).
+  //   3. Python-style json.dumps spacing (", " / ": "), original order.
+  //   4. Sorted canonical (the documented-but-wrong form).
+  const candidates: Array<[string, string]> = [];
+  if (rawBody) {
+    const stripped = stripSignatureField(rawBody);
+    if (stripped) candidates.push(["raw-stripped", stripped]);
+  }
+  candidates.push(["json-compact", JSON.stringify(rest)]);
+  candidates.push(["python-spaces", pythonJson(rest)]);
+  candidates.push(["sorted", canonicalJson(rest)]);
+
+  for (const [label, message] of candidates) {
     try {
-      if (crypto.verify(null, Buffer.from(message, "utf8"), pub, sig)) return true;
+      if (crypto.verify(null, Buffer.from(message, "utf8"), pub, sig)) {
+        console.log(`[webhook-verify] OK via "${label}"`);
+        return true;
+      }
     } catch (e) {
       console.warn(`[webhook-verify] crypto.verify threw: ${e instanceof Error ? e.message : e}`);
       return false;
     }
   }
   console.warn(
-    `[webhook-verify] Ed25519 verify=false for all canonicalizations · original[0:300]=${original.slice(0, 300)}`
+    `[webhook-verify] Ed25519 verify=false for all candidates · ` +
+      `raw[0:300]=${(rawBody ?? "").slice(0, 300)}`
   );
   return false;
+}
+
+/** Remove the trailing `,"signature":"…"` field from the raw JSON body, yielding
+ *  the exact bytes the relayer signed (signature is the last field on the wire). */
+function stripSignatureField(raw: string): string | null {
+  const m = raw.match(/^([\s\S]*?),\s*"signature"\s*:\s*"[^"]*"\s*\}\s*$/);
+  return m ? `${m[1]}}` : null;
+}
+
+/** Mimic Python's json.dumps default: ", " / ": " separators, insertion order,
+ *  no sorting (some signers use Python's stdlib serializer). */
+function pythonJson(value: unknown): string {
+  if (value === null) return "null";
+  const t = typeof value;
+  if (t === "number" || t === "boolean") return String(value);
+  if (t === "string") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(pythonJson).join(", ")}]`;
+  if (t === "object") {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .map(([k, v]) => `${JSON.stringify(k)}: ${pythonJson(v)}`)
+      .join(", ")}}`;
+  }
+  return "null";
 }

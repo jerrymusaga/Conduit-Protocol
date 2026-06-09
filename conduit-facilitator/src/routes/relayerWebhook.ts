@@ -29,8 +29,9 @@ export const relayerWebhookRouter = Router();
 
 relayerWebhookRouter.post("/relayer-webhook", async (req: Request, res: Response) => {
   const body = req.body as Record<string, unknown>;
+  const rawBody = (req as Request & { rawBody?: string }).rawBody;
 
-  const ok = await verifyWebhook(body, jwksUrl).catch(() => false);
+  const ok = await verifyWebhook(body, jwksUrl, rawBody).catch(() => false);
   if (!ok) {
     // Diagnostic: show where the signature lives + the payload shape, so we can
     // match our verification to 1Shot's actual signing scheme. (TEMP — remove

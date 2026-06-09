@@ -17,7 +17,17 @@ const backend = selectRelayBackend();
 setTerminalHook((job) => void fireWebhook(job));
 
 const app = express();
-app.use(express.json({ limit: "5mb" }));
+// Stash the RAW request bytes so the 1Shot webhook verifier can check the
+// Ed25519 signature against the relayer's literal serialization (its exact
+// whitespace/encoding) rather than a lossy re-serialization.
+app.use(
+  express.json({
+    limit: "5mb",
+    verify: (req, _res, buf) => {
+      (req as express.Request & { rawBody?: string }).rawBody = buf.toString("utf8");
+    },
+  })
+);
 
 // CORS — the Conduit console (a browser app on another origin) subscribes to
 // the SSE event stream and may call the facilitator directly.
