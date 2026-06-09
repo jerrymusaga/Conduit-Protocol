@@ -32,7 +32,19 @@ relayerWebhookRouter.post("/relayer-webhook", async (req: Request, res: Response
 
   const ok = await verifyWebhook(body, jwksUrl).catch(() => false);
   if (!ok) {
-    console.warn("[relayer-webhook] signature verification failed");
+    // Diagnostic: show where the signature lives + the payload shape, so we can
+    // match our verification to 1Shot's actual signing scheme. (TEMP — remove
+    // once the signature scheme is confirmed.)
+    const sigHeaders = Object.fromEntries(
+      Object.entries(req.headers).filter(([h]) => /sign|sig|key|hmac|digest/i.test(h))
+    );
+    console.warn(
+      "[relayer-webhook] signature verification failed · " +
+        `bodyKeys=${JSON.stringify(Object.keys(body))} · ` +
+        `hasBodySig=${typeof body.signature === "string"} · ` +
+        `keyId=${String(body.keyId ?? "—")} · ` +
+        `sigHeaders=${JSON.stringify(sigHeaders)}`
+    );
     return res.status(401).json({ error: "invalid signature" });
   }
 
