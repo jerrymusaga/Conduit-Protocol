@@ -38,10 +38,16 @@ export async function POST(req: Request) {
 
   const text = await veniceChat(
     "You are a procurement coordinator agent assembling a team to fulfill a user's request. " +
-      "From the MARKETPLACE below, pick the BEST agent for each capability the task needs. " +
+      "From the MARKETPLACE below, pick ONLY the agents whose capability the task actually requires — " +
+      "a lean team that matches THIS request, not a default bundle. " +
       "ALWAYS include a researcher (to ground the work) and a narrator (for a voiceover summary). " +
-      "Add a copywriter, illustrator, analyst, or on-chain data agent ONLY if the task needs it. " +
-      "Prefer best value unless the user explicitly asks for premium / high quality / 4k. " +
+      "Add the OTHER specialists ONLY when the request clearly calls for them:\n" +
+      "- copywriter: ONLY when the user asks for written copy — marketing, a brief, positioning, " +
+      "an announcement, a tagline, a pitch. A research / analysis / data / trading task does NOT need a copywriter.\n" +
+      "- illustrator: ONLY when the user asks for an image, cover, visual, logo, or design.\n" +
+      "- analyst: ONLY when the user asks for analysis, comparison, market/competitive insight, or strategy.\n" +
+      "- on-chain data agent: ONLY when the user asks about crypto, tokens, staking, DeFi, yields, on-chain/blockchain data.\n" +
+      "When in doubt, LEAVE A SPECIALIST OUT. Prefer best value unless the user explicitly asks for premium / high quality / 4k. " +
       'Reply with ONLY JSON, no prose: {"picks":[{"id":"<marketplace id>","reason":"<one short reason>"}]}. ' +
       "Use ids exactly as they appear in the marketplace.",
     `Request: "${prompt}"\n\nMarketplace:\n${list}`,

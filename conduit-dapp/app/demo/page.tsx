@@ -248,7 +248,7 @@ export default function DemoPage() {
   const [report, setReport] = useState<ReportSection[] | null>(null); // aggregated final report
   const reportRef = useRef<ReportSection[]>([]); // accumulates outputs during a run
   const [reportMarkdown, setReportMarkdown] = useState<string | null>(null); // Venice-aggregated prose
-  const [reportCover, setReportCover] = useState<string | null>(null); // Venice cover image (data URL)
+  const [reportTitle, setReportTitle] = useState<string | null>(null); // deliverable title (derived from prompt, upgraded by Venice H1)
   // Voice input: record the spoken prompt, transcribe via Venice STT.
   const [recording, setRecording] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
@@ -480,6 +480,7 @@ export default function DemoPage() {
       setSpent(0);
       setCards([]);
       setReport(null);
+      setReportTitle(null);
       setLog([]);
       rehydrated.current = false;
       clearSession();
@@ -661,33 +662,32 @@ export default function DemoPage() {
     }
   };
 
-  // Venice report enrichment: prose aggregation (/api/report) + cover image
-  // (/api/cover). Best-effort — failures leave the deterministic sections intact.
+  // Venice report enrichment: prose aggregation (/api/report). The cover is no
+  // longer generated separately — when the brief calls for visuals the hired
+  // Illustrator's paid image becomes the hero (derived in ReportPanel). Best-
+  // effort: failures leave the deterministic sections intact.
   const enrichReport = async (forPrompt: string, sections: ReportSection[]) => {
     append("Coordinator › Venice is writing up your results…");
     try {
-      const [rRes, cRes] = await Promise.allSettled([
-        fetch("/api/report", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ prompt: forPrompt, sections }),
-        }),
-        fetch("/api/cover", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ title: "ETH Staking Market Report" }),
-        }),
-      ]);
-      if (rRes.status === "fulfilled" && rRes.value.ok) {
-        const j = (await rRes.value.json()) as { markdown?: string | null };
+      const res = await fetch("/api/report", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt: forPrompt, sections }),
+      });
+      if (res.ok) {
+        const j = (await res.json()) as { markdown?: string | null };
         if (j.markdown) {
-          setReportMarkdown(j.markdown);
+          // Venice writes a tailored H1 — promote it to the panel title and drop
+          // it from the body so the heading isn't shown twice.
+          const m = j.markdown.match(/^\s*#\s+(.+?)\s*$/m);
+          if (m) {
+            setReportTitle(m[1].trim());
+            setReportMarkdown(j.markdown.replace(m[0], "").trimStart());
+          } else {
+            setReportMarkdown(j.markdown);
+          }
           append("Coordinator › polished by Venice ✓");
         }
-      }
-      if (cRes.status === "fulfilled" && cRes.value.ok) {
-        const j = (await cRes.value.json()) as { image?: string | null };
-        if (j.image) setReportCover(j.image);
       }
     } catch (e) {
       append(`Coordinator › couldn't polish the write-up · ${errMsg(e)}`);
@@ -707,7 +707,16 @@ export default function DemoPage() {
     }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const rec = new MediaRecorder(stream);
+      // Pick a container the recorder actually supports AND keep the filename
+      // extension matched to it. Chrome/Firefox → webm/opus, Safari → mp4/aac.
+      // A mismatched extension or an unsupported requested type can yield audio
+      // the transcriber decodes as silence → hallucinated, "always wrong" text.
+      const candidates = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg;codecs=opus"];
+      const picked =
+        typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported
+          ? candidates.find((t) => MediaRecorder.isTypeSupported(t))
+          : undefined;
+      const rec = picked ? new MediaRecorder(stream, { mimeType: picked }) : new MediaRecorder(stream);
       audioChunksRef.current = [];
       rec.ondataavailable = (e) => {
         if (e.data.size > 0) audioChunksRef.current.push(e.data);
@@ -715,13 +724,19 @@ export default function DemoPage() {
       rec.onstop = async () => {
         stream.getTracks().forEach((t) => t.stop());
         setRecording(false);
-        const blob = new Blob(audioChunksRef.current, { type: rec.mimeType || "audio/webm" });
-        if (blob.size === 0) return;
+        const mime = rec.mimeType || picked || "audio/webm";
+        const blob = new Blob(audioChunksRef.current, { type: mime });
+        // Tiny blobs are effectively silence — transcribers hallucinate on those.
+        if (blob.size < 1200) {
+          append("voice › nothing recorded — hold the button and speak, then release");
+          return;
+        }
         setTranscribing(true);
         append("voice › transcribing via Venice…");
         try {
+          const ext = /mp4|m4a|aac/.test(mime) ? "mp4" : /ogg/.test(mime) ? "ogg" : "webm";
           const form = new FormData();
-          form.append("audio", blob, "request.webm");
+          form.append("audio", blob, `request.${ext}`);
           const res = await fetch("/api/transcribe", { method: "POST", body: form });
           const json = (await res.json()) as { text?: string; error?: string };
           if (res.ok && json.text) {
@@ -756,7 +771,7 @@ export default function DemoPage() {
     setRevoked(false);
     setReport(null);
     setReportMarkdown(null);
-    setReportCover(null);
+    setReportTitle(null);
     reportRef.current = [];
     setBudgetForecast(null);
     setBudgetPause(null);
@@ -897,6 +912,7 @@ export default function DemoPage() {
       if (reportRef.current.length > 0) {
         const sections = [...reportRef.current];
         append("Coordinator › putting your results together…");
+        setReportTitle(deriveTitle(prompt));
         setReport(sections);
         append("Results ready ✓");
         // Enrich via Venice (best-effort): prose aggregation + a cover image.
@@ -1347,7 +1363,7 @@ export default function DemoPage() {
 
           {/* The payoff: the aggregated report assembled from purchased outputs */}
           {report && (
-            <ReportPanel sections={report} markdown={reportMarkdown} cover={reportCover} cards={cards} />
+            <ReportPanel sections={report} title={reportTitle} markdown={reportMarkdown} cards={cards} />
           )}
         </div>
 
@@ -1575,6 +1591,20 @@ function BudgetCapPanel({
   );
 }
 
+/** A concise, presentable deliverable title derived from the user's prompt.
+ *  Used as the report heading + cover theme before Venice's H1 upgrades it. */
+function deriveTitle(prompt: string): string {
+  let t = (prompt || "").trim();
+  // Take just the first clause — briefs often read "Create X — then do Y, Z".
+  t = t.split(/[\n.—–|]| - /)[0].trim();
+  // Drop the imperative lead-in so the title reads as a thing, not a command.
+  t = t.replace(/^(please\s+)?(create|generate|write|make|design|build|produce|prepare|put together|draft|compose)\s+(me\s+)?(an?\s+|the\s+)?/i, "");
+  if (!t) return "Your Deliverable";
+  // Cap length on a word boundary.
+  if (t.length > 64) t = t.slice(0, 64).replace(/\s+\S*$/, "") + "…";
+  return t.charAt(0).toUpperCase() + t.slice(1);
+}
+
 const REPORT_HEADINGS: Record<string, string> = {
   research: "Research",
   copy: "Brief",
@@ -1586,16 +1616,22 @@ const REPORT_HEADINGS: Record<string, string> = {
 
 function ReportPanel({
   sections,
+  title,
   markdown,
-  cover,
   cards,
 }: {
   sections: ReportSection[];
+  title?: string | null;
   markdown?: string | null;
-  cover?: string | null;
   cards: FeedCard[];
 }) {
   const total = sections.reduce((s, x) => s + (Number(x.priceUsdc) || 0), 0);
+  // The hero is the purchased Illustrator image (when the brief called for one) —
+  // not a separately generated cover. No image agent hired → no hero.
+  const imageSec = sections.find(
+    (s) => s.agent === "image" && typeof s.output?.content === "string" && s.output.content.startsWith("data:")
+  );
+  const cover = imageSec?.output?.content as string | undefined;
   // Live settlement state of the payments behind this report (Option 2): the
   // report is delivered on accept, then earns its "settled on-chain" badge as
   // each payment confirms via pollSettlement.
@@ -1613,7 +1649,7 @@ function ReportPanel({
     <section className="panel reveal mt-6 p-6">
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold tracking-tight text-white">
-          ETH Staking Market Report
+          {title || "Your Deliverable"}
         </h2>
         <span className={`mono rounded-md px-2 py-0.5 text-[11px] ${settleBadge.cls}`}>
           {settleBadge.text}
@@ -1624,13 +1660,14 @@ function ReportPanel({
         {sections.length === 1 ? "" : "s"} purchased through Conduit.
       </p>
 
-      {/* The product payoff: a Venice-generated cover image. */}
+      {/* The product payoff: the Illustrator agent's purchased image, promoted
+          to the hero. Only present when the brief actually hired an illustrator. */}
       {cover && (
         <div className="relative mt-4 overflow-hidden rounded-lg border border-conduit-border">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src={cover} alt="Report cover" className="h-44 w-full object-cover" />
           <span className="mono absolute bottom-2 right-2 rounded bg-black/60 px-1.5 py-0.5 text-[9px] text-conduit-cyan">
-            cover · Venice image
+            Illustrator · Venice image
           </span>
         </div>
       )}
@@ -1652,7 +1689,7 @@ function ReportPanel({
             </summary>
             <div className="mt-3 space-y-4">
               {sections.map((sec, i) => (
-                <ReportSectionRow key={i} sec={sec} card={cardFor(sec.correlationId)} />
+                <ReportSectionRow key={i} sec={sec} card={cardFor(sec.correlationId)} heroed={sec === imageSec} />
               ))}
             </div>
           </details>
@@ -1660,7 +1697,7 @@ function ReportPanel({
       ) : (
         <div className="mt-5 space-y-5">
           {sections.map((sec, i) => (
-            <ReportSectionRow key={i} sec={sec} card={cardFor(sec.correlationId)} />
+            <ReportSectionRow key={i} sec={sec} card={cardFor(sec.correlationId)} heroed={sec === imageSec} />
           ))}
         </div>
       )}
@@ -1675,7 +1712,7 @@ function ReportPanel({
   );
 }
 
-function ReportSectionRow({ sec, card }: { sec: ReportSection; card?: FeedCard }) {
+function ReportSectionRow({ sec, card, heroed }: { sec: ReportSection; card?: FeedCard; heroed?: boolean }) {
   const settled = card?.stage === "settled" && !!card.txHash;
   return (
     <div>
@@ -1701,7 +1738,11 @@ function ReportSectionRow({ sec, card }: { sec: ReportSection; card?: FeedCard }
         )}
       </h3>
       <div className="mt-1.5 text-[13px] leading-relaxed text-conduit-muted">
-        <ReportOutput output={sec.output} />
+        {heroed ? (
+          <p className="text-[12px] text-conduit-muted/70">↑ shown as the cover above</p>
+        ) : (
+          <ReportOutput output={sec.output} />
+        )}
       </div>
     </div>
   );

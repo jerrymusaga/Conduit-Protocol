@@ -93,7 +93,10 @@ export async function veniceTranscribe(audio: Blob, filename: string): Promise<s
   try {
     const form = new FormData();
     form.append("file", audio, filename);
-    form.append("model", "nvidia/parakeet-tdt-0.6b-v3");
+    // whisper-large-v3 robustly decodes browser webm/opus & mp4/aac and is
+    // multilingual + more accurate than parakeet-0.6b (English-only, finicky on
+    // browser containers) — the source of the "always wrong" transcripts.
+    form.append("model", "openai/whisper-large-v3");
     form.append("response_format", "json");
     const res = await fetch(`${VENICE_BASE}/audio/transcriptions`, {
       method: "POST",
