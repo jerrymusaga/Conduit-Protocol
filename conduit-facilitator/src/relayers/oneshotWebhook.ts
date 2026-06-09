@@ -169,6 +169,12 @@ export async function verifyWebhook(
   candidates.push(["json-compact", JSON.stringify(rest)]);
   candidates.push(["python-spaces", pythonJson(rest)]);
   candidates.push(["sorted", canonicalJson(rest)]);
+  // Charlie confirmed: body minus signature, SORTED. Our compact-sorted failed,
+  // so the relayer likely serializes sorted WITH Python json.dumps spacing
+  // (", " / ": "). Also try sorted-with-empty-signature.
+  candidates.push(["sorted-spaces", pythonJson(sortKeys(rest))]);
+  candidates.push(["sorted-empty-sig", canonicalJson({ ...rest, signature: "" })]);
+  candidates.push(["sorted-spaces-empty-sig", pythonJson(sortKeys({ ...rest, signature: "" }))]);
 
   for (const { src, key } of keyCandidates) {
     for (const [label, message] of candidates) {
