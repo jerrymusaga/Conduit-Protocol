@@ -12,19 +12,22 @@ import { veniceImage } from "@/lib/venice-server";
 export const runtime = "nodejs";
 
 export async function POST(req: Request) {
-  let title = "ETH Staking Market Report";
+  let title = "Creative Brief";
   try {
     const body = (await req.json()) as { title?: string };
-    if (body.title) title = body.title;
+    if (body.title && body.title.trim()) title = body.title.trim().slice(0, 200);
   } catch {
     /* default title */
   }
 
+  // Topic-driven: the cover should visually capture WHATEVER the deliverable is
+  // about (from its title), not a fixed theme.
   const prompt =
-    `Editorial cover illustration for a financial intelligence report titled "${title}". ` +
-    "Abstract Ethereum staking theme: flowing data, validator nodes, deep navy and black " +
-    "background with cyan, violet and magenta gradient accents. Clean, modern, high-end " +
-    "fintech aesthetic. No text, no words, no letters.";
+    `Editorial cover illustration that visually captures the theme of "${title}". ` +
+    "Modern, abstract and conceptual — evoke the subject through composition, shapes and " +
+    "imagery, not literally. High-end magazine / premium report aesthetic on a deep dark " +
+    "background, with tasteful cyan, violet and magenta gradient accents. Clean, striking, " +
+    "uncluttered. Absolutely no text, no words, no letters, no numbers.";
 
   const image = await veniceImage(prompt);
   return NextResponse.json({ image });

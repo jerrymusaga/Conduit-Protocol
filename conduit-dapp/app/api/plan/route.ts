@@ -45,7 +45,10 @@ export async function POST(req: Request) {
       'Reply with ONLY JSON, no prose: {"picks":[{"id":"<marketplace id>","reason":"<one short reason>"}]}. ' +
       "Use ids exactly as they appear in the marketplace.",
     `Request: "${prompt}"\n\nMarketplace:\n${list}`,
-    { maxTokens: 500 }
+    // Team selection is a fast routing decision, not a deep reasoning task — keep
+    // effort low so planning returns quickly instead of stalling on extended
+    // thinking (it was taking ~60s and timing out to the rules fallback).
+    { maxTokens: 400, reasoningEffort: "low" }
   );
   if (!text) return NextResponse.json({ picks: null });
 

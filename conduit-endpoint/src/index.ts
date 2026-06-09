@@ -103,8 +103,10 @@ type Output = Record<string, unknown>;
 /** Researcher: web-search-grounded research on the topic (Venice chat+search). */
 async function researchOutput(topic: string): Promise<Output> {
   const text = await veniceChat(
-    "You are a research analyst. Reply with a tight 3-4 sentence research summary — " +
-      "grounded, concrete, current. No preamble, no markdown.",
+    "You are a sharp research analyst. Using current web results, write 3-4 tight sentences " +
+      "of research on the topic: lead with the single most important concrete fact, name " +
+      "specific players, products or numbers where the sources support them, and close with " +
+      "the key signal or trend. Confident and concrete — no preamble, no markdown, no hedging.",
     `Research this topic for a brief: ${topic}`,
     { webSearch: "on", stripThinking: true, maxTokens: 350 }
   );
@@ -116,8 +118,9 @@ async function researchOutput(topic: string): Promise<Output> {
 /** Copywriter: a punchy positioning brief on the topic (Venice chat). */
 async function copyOutput(topic: string): Promise<Output> {
   const text = await veniceChat(
-    "You are a senior copywriter. Reply with a punchy 2-3 sentence positioning brief. " +
-      "No preamble, no markdown.",
+    "You are a senior brand copywriter. Write a sharp positioning brief in 2-3 sentences: a " +
+      "crisp value proposition plus the angle that makes it land. Confident, specific, fresh — " +
+      "no clichés, no preamble, no markdown.",
     `Write launch copy / a positioning brief for: ${topic}`,
     { stripThinking: true, maxTokens: 250 }
   );
@@ -129,8 +132,9 @@ async function copyOutput(topic: string): Promise<Output> {
 /** Analyst: market/landscape analysis + outlook (Venice reasoning model). */
 async function analysisOutput(topic: string): Promise<Output> {
   const text = await veniceChat(
-    "You are a market analyst. Reply with a 3-4 sentence analysis + a one-line " +
-      "outlook. No preamble, no markdown.",
+    "You are a market analyst. In 3-4 sentences cover the key dynamics — demand, competition, " +
+      "momentum — then add a one-line forward outlook. Specific and balanced, no fluff. " +
+      "No preamble, no markdown.",
     `Analyze the market/landscape for: ${topic}`,
     { reasoningEffort: "low", stripThinking: true, maxTokens: 400 }
   );
@@ -160,8 +164,9 @@ async function onchainOutput(): Promise<Output> {
 /** Illustrator: a cover image for the topic (Venice image) → data URL. */
 async function imageOutput(topic: string): Promise<Output> {
   const url = await veniceImage(
-    `Editorial cover illustration for "${topic}". Clean, modern, high-end, abstract. ` +
-      "No text, no words, no letters."
+    `A striking, premium editorial illustration that captures the theme of "${topic}". ` +
+      "Modern, abstract and conceptual; sophisticated composition; high-end magazine quality; " +
+      "tasteful color on a clean, uncluttered background. No text, no words, no letters, no numbers."
   );
   return url
     ? { type: "image", source: "venice:image", content: url }
@@ -172,11 +177,12 @@ async function imageOutput(topic: string): Promise<Output> {
 async function voiceOutput(topic: string): Promise<Output> {
   const script =
     (await veniceChat(
-      "Write ONE spoken sentence (max 30 words) summarizing a deliverable for a " +
-        "voiceover. No preamble, no markdown.",
-      `One spoken sentence summarizing a brief about: ${topic}`,
+      "Write ONE natural, engaging spoken sentence (max 28 words) to open a voiceover that " +
+        "summarizes the deliverable — conversational and confident, no jargon. " +
+        "No preamble, no markdown, no quotes.",
+      `One spoken opening line summarizing a brief about: ${topic}`,
       { stripThinking: true, maxTokens: 80 }
-    )) ?? `Here is your brief on ${topic}.`;
+    )) ?? `Here's your brief on ${topic}.`;
   const audio = await veniceSpeech(script);
   return audio
     ? { type: "audio", source: "venice:tts", content: audio, transcript: script }

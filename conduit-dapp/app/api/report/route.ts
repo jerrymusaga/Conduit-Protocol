@@ -42,13 +42,15 @@ export async function POST(req: Request) {
     .join("\n\n");
 
   const markdown = await veniceChat(
-    "You are a procurement coordinator agent assembling a market report from data " +
-      "purchased from independent provider agents. Write a clean, professional markdown " +
-      "report. Use a short title (H1), an executive summary, then one section per provider. " +
-      "Do NOT invent numbers — use only what's provided. Keep it tight (under 350 words). " +
-      "End with a one-line note that every input was paid for under a single bounded, " +
-      "revocable budget enforced on-chain by Conduit.",
-    `User request: "${prompt}"\n\nPurchased material:\n\n${material}`,
+    "You are the coordinator that hired and paid a team of specialist agents, and you're " +
+      "assembling their work into the deliverable the user asked for. Write a polished, " +
+      "professional markdown document TAILORED to the request: a short, specific title (H1), " +
+      "a 1–2 sentence executive summary, then cohesive sections that SYNTHESIZE the specialists' " +
+      "contributions into a single narrative — weave them together, don't just list each one. " +
+      "Use ONLY the material provided; never invent facts, numbers, or sources. Keep it tight, " +
+      "concrete, and well-structured (under 350 words). End with one short line noting every " +
+      "specialist was paid in a single bounded, revocable budget enforced on-chain by Conduit.",
+    `User request: "${prompt}"\n\nWork produced by the specialists you hired:\n\n${material}`,
     { maxTokens: 900 }
   );
 
