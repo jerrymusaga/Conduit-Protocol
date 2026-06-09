@@ -1,7 +1,7 @@
 import { encodeFunctionData, erc20Abi, type Address, type Hex } from "viem";
 import { config } from "../config.js";
 import { chainConfig } from "../chain.js";
-import { createJob, linkTask, updateJob } from "../jobs.js";
+import { createJob, getJob, linkTask, updateJob } from "../jobs.js";
 import {
   computeFeeAtoms,
   getCapabilities,
@@ -209,7 +209,14 @@ async function pollOneshot(jobId: string, taskId: Hex): Promise<void> {
     }
     if (s.status === 110 && s.hash) updateJob(jobId, { txHash: s.hash });
     if (s.status === 200) {
-      updateJob(jobId, { status: "confirmed", txHash: s.receipt?.transactionHash ?? s.hash });
+      // Don't overwrite the webhook's attribution if it confirmed first — the
+      // signed webhook is the bonus path we want to surface.
+      const alreadyVia = getJob(jobId)?.confirmedVia;
+      updateJob(jobId, {
+        status: "confirmed",
+        txHash: s.receipt?.transactionHash ?? s.hash,
+        ...(alreadyVia ? {} : { confirmedVia: "poll" }),
+      });
       return;
     }
     if (s.status === 400) {

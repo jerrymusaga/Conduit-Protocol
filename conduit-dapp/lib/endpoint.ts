@@ -115,6 +115,8 @@ export interface JobState {
   status: string;
   transaction?: string | null;
   error?: string | null;
+  /** How it confirmed: "webhook" (1Shot signed push) or "poll" (fallback). */
+  confirmedVia?: "webhook" | "poll" | null;
 }
 
 /**
@@ -127,9 +129,15 @@ export async function fetchJob(jobId: string): Promise<JobState | null> {
   try {
     const res = await fetch(`${config.facilitatorUrl}/jobs/${jobId}`);
     if (!res.ok) return null;
-    const b = (await res.json()) as { status?: string; transaction?: string | null; error?: string | null };
+    const b = (await res.json()) as {
+      status?: string; transaction?: string | null; error?: string | null;
+      confirmedVia?: "webhook" | "poll" | null;
+    };
     if (!b.status) return null;
-    return { jobId, status: b.status, transaction: b.transaction ?? null, error: b.error ?? null };
+    return {
+      jobId, status: b.status, transaction: b.transaction ?? null,
+      error: b.error ?? null, confirmedVia: b.confirmedVia ?? null,
+    };
   } catch {
     return null;
   }
@@ -186,7 +194,7 @@ export interface CommissionResult {
 export interface CommissionResponse {
   ok: boolean;
   status: number;
-  settlement?: { jobId?: string; status?: string; transaction?: string | null };
+  settlement?: { jobId?: string; status?: string; transaction?: string | null; confirmedVia?: "webhook" | "poll" | null };
   results?: CommissionResult[];
   error?: string;
 }
@@ -230,6 +238,7 @@ export async function commissionAtomic(
   // 2) Poll the facilitator job until the batch confirms on-chain (or fails).
   let tx = sBody.settlement?.transaction ?? null;
   let confirmed = sBody.settlement?.status === "confirmed";
+  let confirmedVia: "webhook" | "poll" | null = null;
   const deadline = Date.now() + 150_000; // ~2.5 min, matches the relayer window
   while (!confirmed && Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, 3000));
@@ -240,6 +249,7 @@ export async function commissionAtomic(
     }
     if (job.status === "confirmed") {
       tx = job.transaction ?? tx;
+      confirmedVia = job.confirmedVia ?? null;
       confirmed = true;
     }
   }
@@ -254,11 +264,11 @@ export async function commissionAtomic(
   const dBody = (await dRes.json().catch(() => ({}))) as {
     error?: string; detail?: string; settlement?: CommissionResponse["settlement"]; results?: CommissionResult[];
   };
-  if (dRes.status !== 200) return fail(dRes.status, dBody, { jobId, status: "confirmed", transaction: tx });
+  if (dRes.status !== 200) return fail(dRes.status, dBody, { jobId, status: "confirmed", transaction: tx, confirmedVia });
   return {
     ok: true,
     status: 200,
-    settlement: dBody.settlement ?? { jobId, status: "confirmed", transaction: tx },
+    settlement: { ...(dBody.settlement ?? {}), jobId, status: "confirmed", transaction: tx, confirmedVia },
     results: dBody.results,
   };
 }

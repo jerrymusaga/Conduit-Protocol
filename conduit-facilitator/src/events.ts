@@ -41,6 +41,9 @@ export interface ConduitEvent extends EventMeta {
   // settle / settled stages
   status?: string;
   txHash?: string | null;
+  /** For a "settled" confirmation: how we learned of it — 1Shot's signed
+   *  webhook (the bonus path) or our polling fallback. */
+  via?: "webhook" | "poll";
 }
 
 const bus = new EventEmitter();
