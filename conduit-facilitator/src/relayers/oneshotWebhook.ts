@@ -128,9 +128,15 @@ export async function verifyWebhook(
   //   4. Sorted canonical (the documented-but-wrong form).
   const candidates: Array<[string, string]> = [];
   if (rawBody) {
+    // Literal bytes, signature value emptied in place (common: sign with
+    // `"signature":""`, then fill the value) — highest fidelity.
+    const emptied = rawBody.replace(/("signature"\s*:\s*")[^"]*"/, '$1"');
+    if (emptied !== rawBody) candidates.push(["raw-empty-sig", emptied]);
+    // Literal bytes, signature field removed entirely.
     const stripped = stripSignatureField(rawBody);
     if (stripped) candidates.push(["raw-stripped", stripped]);
   }
+  candidates.push(["json-empty-sig", JSON.stringify({ ...rest, signature: "" })]);
   candidates.push(["json-compact", JSON.stringify(rest)]);
   candidates.push(["python-spaces", pythonJson(rest)]);
   candidates.push(["sorted", canonicalJson(rest)]);
