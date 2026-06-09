@@ -51,10 +51,11 @@ export async function POST(req: Request) {
       'Reply with ONLY JSON, no prose: {"picks":[{"id":"<marketplace id>","reason":"<one short reason>"}]}. ' +
       "Use ids exactly as they appear in the marketplace.",
     `Request: "${prompt}"\n\nMarketplace:\n${list}`,
-    // Team selection is a fast routing decision, not a deep reasoning task — keep
-    // effort low so planning returns quickly instead of stalling on extended
-    // thinking (it was taking ~60s and timing out to the rules fallback).
-    { maxTokens: 400, reasoningEffort: "low" }
+    // Team selection is a fast routing decision, not a deep reasoning task.
+    // gemini-3-5-flash returns a clean structured plan in ~3s and follows the
+    // strict allowlist well; glm-5-1 (even at low reasoning) took 10-15s on every
+    // run — the single biggest fixed latency on the path. No reasoning needed.
+    { maxTokens: 400, model: "gemini-3-5-flash" }
   );
   if (!text) return NextResponse.json({ picks: null });
 

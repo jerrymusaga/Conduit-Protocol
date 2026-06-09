@@ -32,12 +32,12 @@ function bearer(extra?: Record<string, string>): Record<string, string> {
 export async function veniceChat(
   system: string,
   user: string,
-  opts: { maxTokens?: number; reasoningEffort?: "low" | "medium" | "high" } = {}
+  opts: { maxTokens?: number; reasoningEffort?: "low" | "medium" | "high"; model?: string } = {}
 ): Promise<string | null> {
   if (!veniceEnabled()) return null;
   try {
     const body: Record<string, unknown> = {
-      model: CHAT_MODEL,
+      model: opts.model ?? CHAT_MODEL,
       messages: [
         { role: "system", content: system },
         { role: "user", content: user },
