@@ -417,14 +417,23 @@ app.post("/commission/deliver", async (req: Request, res: Response) => {
   }
 
   // Settled on-chain → every agent produces its Venice output about the topic.
-  const results = await Promise.all(
-    (services as Service[]).map(async (s) => ({
-      service: s.id,
-      label: s.label,
-      role: s.role,
-      data: await serviceResult(s, topic),
-    }))
-  );
+  // serviceResult is best-effort (falls back to canned on any Venice error), but
+  // wrap anyway so an unexpected throw returns a CLEAR reason, not a bare 500.
+  let results;
+  try {
+    results = await Promise.all(
+      (services as Service[]).map(async (s) => ({
+        service: s.id,
+        label: s.label,
+        role: s.role,
+        data: await serviceResult(s, topic),
+      }))
+    );
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    console.error("[commission/deliver] output generation failed:", detail);
+    return res.status(502).json({ error: "couldn't generate outputs", detail });
+  }
 
   res.json({
     commission: true,

@@ -462,12 +462,16 @@ export interface CommissionRunResult {
   error?: string;
 }
 
-/** De-jargon a relayer/chain error into one short, user-readable line. */
+/** De-jargon a relayer/chain error into one short, user-readable line for the
+ *  CARD. The raw error is still logged in full to the feed + console so the
+ *  actual cause is never hidden. */
 function friendlyError(raw?: string): string {
-  if (!raw) return "Payment couldn't be completed.";
+  if (!raw) return "Something went wrong — nothing was charged.";
   if (/cover the total|insufficient|balance/i.test(raw)) return "Not enough balance to cover the network fee.";
-  if (/timed out|timeout/i.test(raw)) return "The network took too long — please try again.";
-  return "Payment couldn't be completed.";
+  if (/timed out|timeout|\b504\b/i.test(raw)) return "Timed out before finishing — please try again.";
+  if (/\b404\b|not found|cannot post/i.test(raw)) return "Service unavailable — please try again shortly.";
+  if (/venice|generat|deliver/i.test(raw)) return "Couldn't generate the results — please try again.";
+  return "Couldn't complete — nothing was charged.";
 }
 
 /**
@@ -579,7 +583,14 @@ export async function runCommissionAtomic(params: {
         budgetCapped,
       })
     );
-    log(`Coordinator › no one was charged · ${budgetCapped ? "over budget" : friendlyError(resp.error)}`);
+    // Never hide the cause: feed + console get the RAW backend error (the
+    // endpoint's `error · detail`), the card gets the short friendly version.
+    if (typeof console !== "undefined") console.error("[commission] failed:", resp.error, resp);
+    log(
+      budgetCapped
+        ? "Coordinator › no one was charged · over budget"
+        : `Coordinator › couldn't complete · ${resp.error ?? "unknown error"} · nothing was charged`
+    );
     return {
       status: "failed",
       plan: runnable,

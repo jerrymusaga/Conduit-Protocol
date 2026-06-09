@@ -829,6 +829,7 @@ export default function DemoPage() {
         planTotal?: bigint;
         budget?: bigint;
         budgetCapped?: boolean;
+        error?: string;
         totalSpent: bigint;
         plan: PlanItem[];
         settlement?: { jobId?: string; status?: string; transaction?: string | null };
@@ -869,7 +870,9 @@ export default function DemoPage() {
         if (outcome.budgetCapped && outcome.planTotal && outcome.budget) {
           setBudgetPause({ planTotal: outcome.planTotal, budget: outcome.budget, atomic: true });
         } else {
-          append("Couldn't complete the hire — nothing was charged.");
+          // Surface the real reason — never just "couldn't complete".
+          console.error("[commission] failed:", outcome.error);
+          append(`Couldn't complete the hire — ${outcome.error ?? "unknown error"}. Nothing was charged.`);
         }
         return;
       }
@@ -900,6 +903,7 @@ export default function DemoPage() {
         void enrichReport(prompt, sections);
       }
     } catch (e) {
+      console.error("[run] threw:", e);
       append(`Run failed · ${errMsg(e)}`);
     } finally {
       setBusy(false);
