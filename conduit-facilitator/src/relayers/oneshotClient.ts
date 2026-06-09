@@ -138,6 +138,25 @@ export const send7710Transaction = (url: string, params: Send7710Params) =>
 export const send7710TransactionMultichain = (url: string, params: Send7710Params[]) =>
   relayerRpc<Hex[]>(url, "relayer_send7710TransactionMultichain", params);
 
+/** Result of relayer_estimate7710Transaction: 1Shot SIMULATES the full batch
+ *  and returns the EXACT fee (`requiredPaymentAmount`, payment-token atoms) plus
+ *  a signed `context` to submit with — batch-aware, unlike getFeeData's
+ *  minFee/rate which can't see how many executions are in the batch. */
+export interface Estimate7710Result {
+  success: boolean;
+  /** The exact fee the batch requires, in payment-token atoms. */
+  requiredPaymentAmount?: string;
+  /** Map of chainId → summed gas units. */
+  gasUsed?: Record<string, string | number>;
+  /** Signed price-lock quote — pass verbatim to send7710Transaction.context. */
+  context?: string;
+  error?: string;
+}
+
+/** Estimate a 7710 batch: same params shape as send, but OMIT `context`. */
+export const estimate7710Transaction = (url: string, params: Send7710Params) =>
+  relayerRpc<Estimate7710Result>(url, "relayer_estimate7710Transaction", params);
+
 export const getStatus = (url: string, id: Hex, logs = true) =>
   relayerRpc<StatusResult>(url, "relayer_getStatus", { id, logs });
 

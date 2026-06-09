@@ -4,6 +4,7 @@ import { chainConfig } from "../chain.js";
 import { createJob, getJob, linkTask, updateJob } from "../jobs.js";
 import {
   computeFeeAtoms,
+  estimate7710Transaction,
   getCapabilities,
   getFeeData,
   getStatus,
@@ -117,66 +118,82 @@ export const oneshotPermissionlessBackend: RelayBackend = {
     try {
       const chainCaps = await caps();
 
-      // 1) Live fee quote (signed price-lock context). Floor at minFee.
-      //    Gas sizing: ONE redeemDelegations carries every work transfer PLUS
-      //    the fee transfer — so the batch is N+1 executions, not N. The single-
-      //    payment baseline (ESTIMATED_GAS) already covers fee+1work, so leave it
-      //    untouched at N==1; for a real batch, size to all N+1 legs and add
-      //    headroom for the quote→settle gas swing (the buyer's fee cap is sized
-      //    generously to absorb it). Undercounting here is exactly what makes
-      //    1Shot reject with "payment does not cover the total price".
+      // Live fee quote — kept for the feeCollector + as the fallback fee/context.
       const fee = await getFeeData(relayerUrl, chainIdStr, o.paymentToken);
+      const feeCollector = (fee.feeCollector ?? chainCaps.feeCollector) as Address;
       const n = works.length;
-      const feeAtoms =
+
+      // Heuristic fallback (only if estimate is unavailable): size for the N+1
+      // executions (every work transfer + the fee transfer) with quote→settle
+      // headroom. Undercounting is what makes 1Shot reject with "payment does not
+      // cover the total price".
+      const heuristicFee =
         n === 1
           ? computeFeeAtoms(fee, ESTIMATED_GAS)
           : (computeFeeAtoms(fee, ESTIMATED_GAS * BigInt(n + 1)) * 3n) / 2n;
-      const feeCollector = (fee.feeCollector ?? chainCaps.feeCollector) as Address;
 
-      // 2) Build the fee execution from the live quote (always matches the
-      //    relayer's required amount; the buyer's fee delegation caps it).
-      const feeExecution = {
+      const feeExec = (amount: bigint) => ({
         target: o.paymentToken,
         value: "0",
         data: encodeFunctionData({
           abi: erc20Abi,
           functionName: "transfer",
-          args: [feeCollector, feeAtoms],
+          args: [feeCollector, amount],
         }) as Hex,
-      };
+      });
+      const workTxs = works.map((w) => ({ permissionContext: w.chain, executions: [w.execution] }));
+      // Point 1Shot at OUR inbound webhook so its Ed25519-signed status events
+      // drive the job (the bonus-scored path). Poll remains the fallback.
+      const authorizationList = params.authorization
+        ? [
+            {
+              address: params.authorization.address,
+              chainId: params.authorization.chainId,
+              nonce: params.authorization.nonce,
+              r: params.authorization.r,
+              s: params.authorization.s,
+              yParity: params.authorization.yParity,
+            },
+          ]
+        : undefined;
 
-      // 3) Submit: two delegations (fee + work), each its own transactions[]
-      //    entry; the relayer merges them into one redeemDelegations batch.
+      // Prefer the EXACT batch fee from relayer_estimate7710Transaction — it
+      // SIMULATES the whole batch and returns the precise required fee + a signed
+      // context, so the buyer pays the exact amount (no over-provisioning, no
+      // "payment does not cover the total price"). Falls back to the heuristic +
+      // getFeeData context if estimate is unavailable. The buyer's fee delegation
+      // caps the amount either way, so the exact value is always within the cap.
+      let feeAtoms = heuristicFee;
+      let context = fee.context;
+      try {
+        const est = await estimate7710Transaction(relayerUrl, {
+          chainId: chainIdStr,
+          transactions: [{ permissionContext: o.feeChain, executions: [feeExec(heuristicFee)] }, ...workTxs],
+          ...(authorizationList ? { authorizationList } : {}),
+        });
+        if (est.success && est.requiredPaymentAmount) {
+          feeAtoms = BigInt(est.requiredPaymentAmount);
+          if (est.context) context = est.context;
+          console.log(`[oneshot] exact fee via estimate7710Transaction: ${feeAtoms} atoms (${n} leg${n === 1 ? "" : "s"})`);
+        } else {
+          console.warn(`[oneshot] estimate returned no fee (${est.error ?? "unknown"}); using heuristic ${heuristicFee}`);
+        }
+      } catch (e) {
+        console.warn(
+          `[oneshot] estimate7710Transaction unavailable (${e instanceof Error ? e.message : e}); using heuristic ${heuristicFee}`
+        );
+      }
+
+      // ONE batch: the shared fee leg first (exact fee), then every intent-bound
+      // work leg. 1Shot merges these into a single redeemDelegations — so the
+      // budget enforcer accumulates across the legs and the whole batch is
+      // all-or-nothing (verified: test/AtomicBatchBudget.fork.t.sol).
       const submitParams: Send7710Params = {
         chainId: chainIdStr,
-        context: fee.context,
-        // Point 1Shot at OUR inbound webhook so its Ed25519-signed status events
-        // drive the job (the bonus-scored path). Poll remains the fallback.
-        ...(config.oneshot.webhookUrl
-          ? { destinationUrl: config.oneshot.webhookUrl }
-          : {}),
-        ...(params.authorization
-          ? {
-              authorizationList: [
-                {
-                  address: params.authorization.address,
-                  chainId: params.authorization.chainId,
-                  nonce: params.authorization.nonce,
-                  r: params.authorization.r,
-                  s: params.authorization.s,
-                  yParity: params.authorization.yParity,
-                },
-              ],
-            }
-          : {}),
-        // ONE batch: the shared fee leg first, then every intent-bound work leg.
-        // 1Shot merges these into a single redeemDelegations — so the budget
-        // enforcer accumulates across the legs and the whole batch is
-        // all-or-nothing (verified: test/AtomicBatchBudget.fork.t.sol).
-        transactions: [
-          { permissionContext: o.feeChain, executions: [feeExecution] },
-          ...works.map((w) => ({ permissionContext: w.chain, executions: [w.execution] })),
-        ],
+        ...(context ? { context } : {}),
+        ...(config.oneshot.webhookUrl ? { destinationUrl: config.oneshot.webhookUrl } : {}),
+        ...(authorizationList ? { authorizationList } : {}),
+        transactions: [{ permissionContext: o.feeChain, executions: [feeExec(feeAtoms)] }, ...workTxs],
       };
 
       const taskId = await send7710Transaction(relayerUrl, submitParams);
