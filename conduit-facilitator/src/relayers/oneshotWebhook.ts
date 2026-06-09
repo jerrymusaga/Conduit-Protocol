@@ -87,22 +87,42 @@ export async function verifyWebhook(
 ): Promise<boolean> {
   const sigB64 = typeof body.signature === "string" ? body.signature : undefined;
   const keyId = typeof body.keyId === "string" ? body.keyId : undefined;
-  if (!sigB64 || !keyId) return false;
+  if (!sigB64 || !keyId) {
+    console.warn(`[webhook-verify] missing ${!sigB64 ? "signature" : "keyId"} in body`);
+    return false;
+  }
 
-  let keys = await getKeys(jwksUrl);
+  let keys: Map<string, crypto.KeyObject>;
+  try {
+    keys = await getKeys(jwksUrl);
+  } catch (e) {
+    console.warn(`[webhook-verify] JWKS fetch failed (${jwksUrl}): ${e instanceof Error ? e.message : e}`);
+    return false;
+  }
   let pub = keys.get(keyId);
   if (!pub) {
-    keys = await getKeys(jwksUrl, true); // force-refresh on miss (key rotation)
+    try {
+      keys = await getKeys(jwksUrl, true); // force-refresh on miss (key rotation)
+    } catch { /* keep the stale set */ }
     pub = keys.get(keyId);
-    if (!pub) return false;
+    if (!pub) {
+      console.warn(`[webhook-verify] keyId "${keyId}" not in JWKS (${jwksUrl}); have [${[...keys.keys()].join(", ") || "none"}]`);
+      return false;
+    }
   }
 
   const { signature: _omit, ...rest } = body;
-  const message = Buffer.from(canonicalJson(rest), "utf8");
+  const canonical = canonicalJson(rest);
+  const message = Buffer.from(canonical, "utf8");
   const sig = Buffer.from(sigB64, "base64");
   try {
-    return crypto.verify(null, message, pub, sig);
-  } catch {
+    const valid = crypto.verify(null, message, pub, sig);
+    if (!valid) {
+      console.warn(`[webhook-verify] Ed25519 verify=false (canonicalization mismatch?) · canonical[0:300]=${canonical.slice(0, 300)}`);
+    }
+    return valid;
+  } catch (e) {
+    console.warn(`[webhook-verify] crypto.verify threw: ${e instanceof Error ? e.message : e}`);
     return false;
   }
 }
