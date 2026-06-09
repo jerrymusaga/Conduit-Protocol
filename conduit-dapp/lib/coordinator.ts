@@ -458,7 +458,7 @@ export interface CommissionRunResult {
    *  choice (add budget / smaller team) instead of a generic error. */
   budgetCapped?: boolean;
   totalSpent: bigint;
-  settlement?: { jobId?: string; status?: string; transaction?: string | null };
+  settlement?: { jobId?: string; status?: string; transaction?: string | null; confirmedVia?: "webhook" | "poll" | null };
   error?: string;
 }
 
@@ -620,9 +620,11 @@ export async function runCommissionAtomic(params: {
       output: byId.get(it.service.id)?.data,
     });
   });
+  const via = resp.settlement?.confirmedVia;
   log(
     `Coordinator › ✓ your team is hired · all ${runnable.length} paid in one payment` +
-      (tx ? ` · receipt ${tx.slice(0, 10)}…` : "")
+      (tx ? ` · receipt ${tx.slice(0, 10)}…` : "") +
+      (via === "webhook" ? " · confirmed via 1Shot signed webhook" : "")
   );
   return { status: "ok", plan: runnable, totalSpent: built.total, settlement: resp.settlement };
 }

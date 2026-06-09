@@ -243,7 +243,7 @@ export default function DemoPage() {
   const [budgetPause, setBudgetPause] = useState<{ planTotal: bigint; budget: bigint; atomic?: boolean } | null>(null);
   // Set when an atomic commission settles: the SINGLE tx that paid the whole team.
   const [atomicResult, setAtomicResult] = useState<
-    { tx: string | null; jobId?: string; count: number; total: bigint } | null
+    { tx: string | null; jobId?: string; count: number; total: bigint; confirmedVia?: "webhook" | "poll" | null } | null
   >(null);
   const [report, setReport] = useState<ReportSection[] | null>(null); // aggregated final report
   const reportRef = useRef<ReportSection[]>([]); // accumulates outputs during a run
@@ -832,7 +832,7 @@ export default function DemoPage() {
         error?: string;
         totalSpent: bigint;
         plan: PlanItem[];
-        settlement?: { jobId?: string; status?: string; transaction?: string | null };
+        settlement?: { jobId?: string; status?: string; transaction?: string | null; confirmedVia?: "webhook" | "poll" | null };
       } = opts?.atomic
         ? await runCommissionAtomic({
             prompt,
@@ -884,6 +884,7 @@ export default function DemoPage() {
           jobId,
           count: outcome.plan.length,
           total: outcome.totalSpent,
+          confirmedVia: outcome.settlement?.confirmedVia ?? null,
         });
         // 1Shot returns pending first; poll until the batch tx mines so the
         // panel shows the real Basescan link instead of "settling".
@@ -1389,7 +1390,7 @@ function AtomicCommissionPanel({
   result,
   explorerBase,
 }: {
-  result: { tx: string | null; jobId?: string; count: number; total: bigint };
+  result: { tx: string | null; jobId?: string; count: number; total: bigint; confirmedVia?: "webhook" | "poll" | null };
   explorerBase: string;
 }) {
   const usd = (a: bigint) => (Number(a) / 1e6).toFixed(2);
@@ -1421,6 +1422,11 @@ function AtomicCommissionPanel({
         <span className="rounded-full bg-white/5 px-2.5 py-1 text-conduit-muted">
           <span className="font-semibold text-white">1</span> shared fee
         </span>
+        {result.confirmedVia === "webhook" && (
+          <span className="rounded-full bg-conduit-violet/10 px-2.5 py-1 font-medium text-conduit-violet" title="Settlement confirmed by 1Shot's Ed25519-signed webhook, not polling.">
+            ✓ confirmed via 1Shot signed webhook
+          </span>
+        )}
         {result.tx ? (
           <a
             href={`${explorerBase}/tx/${result.tx}`}

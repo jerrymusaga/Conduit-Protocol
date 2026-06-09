@@ -98,6 +98,7 @@ export function settleRouter(backend: RelayBackend): Router {
       status: job.status,
       transaction: job.txHash ?? null,
       error: job.error ?? null,
+      confirmedVia: job.confirmedVia ?? null,
       createdAt: job.createdAt,
       updatedAt: job.updatedAt,
     });

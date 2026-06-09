@@ -54,8 +54,8 @@ relayerWebhookRouter.post("/relayer-webhook", async (req: Request, res: Response
       if (event.eventName === "TransactionExecutionSubmitted") {
         updateJob(job.id, { status: "pending", ...(txHash ? { txHash } : {}) });
       } else if (event.eventName === "TransactionExecutionSuccess") {
-        updateJob(job.id, { status: "confirmed", ...(txHash ? { txHash } : {}) });
-        emitEvent({ stage: "settled", jobId: job.id, status: "confirmed", txHash: txHash ?? null });
+        updateJob(job.id, { status: "confirmed", confirmedVia: "webhook", ...(txHash ? { txHash } : {}) });
+        emitEvent({ stage: "settled", jobId: job.id, status: "confirmed", txHash: txHash ?? null, via: "webhook" });
       } else if (event.eventName === "TransactionExecutionFailure") {
         const reason = (data.error as string) ?? (data.revertData as string) ?? "failed";
         updateJob(job.id, { status: "failed", error: reason });

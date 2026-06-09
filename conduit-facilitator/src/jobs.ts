@@ -16,6 +16,9 @@ export interface Job {
   status: RelayStatus;
   txHash?: Hex;
   error?: string;
+  /** How the job reached "confirmed": 1Shot's signed webhook (the bonus path)
+   *  or our getStatus polling fallback. Surfaced so the UI can show it. */
+  confirmedVia?: "webhook" | "poll";
   createdAt: number;
   updatedAt: number;
 }
@@ -74,7 +77,7 @@ export function onJobSettled(id: string, cb: (job: Job) => void): void {
 
 export function updateJob(
   id: string,
-  patch: Partial<Pick<Job, "status" | "txHash" | "error">>
+  patch: Partial<Pick<Job, "status" | "txHash" | "error" | "confirmedVia">>
 ): Job | undefined {
   const job = jobs.get(id);
   if (!job) return undefined;
