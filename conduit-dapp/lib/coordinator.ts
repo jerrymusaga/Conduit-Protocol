@@ -515,24 +515,40 @@ export async function runCommissionAtomic(params: {
   hooks.onPlan?.(plan);
   log(`Coordinator › hiring: ${plan.map((i) => i.service.label).join(", ")}`);
 
-  // --- Pre-flight budget gate (shared trust-ladder: pause or trim) -----------
+  // --- Quote everything up front (FREE 402s) so the gate can reserve for the
+  //     relayer fee. The fee leg redeems off the SAME budget root, so it counts
+  //     toward the cap — e.g. a 0.09 plan + ~0.02 fee overflows a 0.10 budget and
+  //     would REVERT on-chain. Reserve for it and pause/trim gracefully instead. -
+  const quotes = await Promise.all(plan.map((it) => fetch402(it.service.resource)));
+  const quoteByCid = new Map(plan.map((it, i) => [it.correlationId, quotes[i]] as const));
+  const feePerLeg = (() => {
+    const est = quotes.find((q) => q.feeEstimate)?.feeEstimate;
+    const v = est ? BigInt(est) : 0n;
+    return v > 0n ? v : 10_000n; // 0.01 USDC floor if the relayer advertised none
+  })();
+  // N work legs + 1 shared fee leg = N+1 executions the relayer fee covers.
+  const feeReserve = (n: number) => feePerLeg * BigInt(n + 1);
+
+  // --- Pre-flight budget gate (pause or trim) — counts work + relayer fee -----
   let runnable = plan;
   const planTotal = plan.reduce((s, i) => s + BigInt(i.service.priceBaseUnits), 0n);
-  if (planTotal > grant.periodAmount) {
-    hooks.onBudgetForecast?.({ planTotal, budget: grant.periodAmount });
+  const projected = planTotal + feeReserve(plan.length); // what actually hits the budget cap
+  if (projected > grant.periodAmount) {
+    hooks.onBudgetForecast?.({ planTotal: projected, budget: grant.periodAmount });
     if (!params.trimToFit) {
       log(
-        `Coordinator › this team would cost ${formatUnits(planTotal, 6)} USDC but your budget is ` +
-          `${formatUnits(grant.periodAmount, 6)} — stopping before any payment. Nothing was charged.`
+        `Coordinator › this team would cost ~${formatUnits(projected, 6)} USDC (incl. network fee) but your ` +
+          `budget is ${formatUnits(grant.periodAmount, 6)} — stopping before any payment. Nothing was charged.`
       );
-      return { status: "paused-budget", plan, planTotal, budget: grant.periodAmount, totalSpent: 0n };
+      return { status: "paused-budget", plan, planTotal: projected, budget: grant.periodAmount, totalSpent: 0n };
     }
     const affordable: PlannedItem[] = [];
     const dropped: PlannedItem[] = [];
     let running = 0n;
     for (const item of plan) {
       const price = BigInt(item.service.priceBaseUnits);
-      if (running + price <= grant.periodAmount) {
+      // Would this leg still fit once the (growing) relayer fee is reserved?
+      if (running + price + feeReserve(affordable.length + 1) <= grant.periodAmount) {
         running += price;
         affordable.push(item);
       } else dropped.push(item);
@@ -540,7 +556,7 @@ export async function runCommissionAtomic(params: {
     runnable = affordable;
     hooks.onPlan?.(affordable);
     log(
-      `Coordinator › trimmed to fit your ${formatUnits(grant.periodAmount, 6)} USDC budget · ` +
+      `Coordinator › trimmed to fit your ${formatUnits(grant.periodAmount, 6)} USDC budget (incl. network fee) · ` +
         `left out ${dropped.map((d) => d.service.label).join(", ") || "none"}`
     );
   }
@@ -548,7 +564,7 @@ export async function runCommissionAtomic(params: {
   // --- Build ONE atomic batch ------------------------------------------------
   log(`Coordinator › getting your team ready · ${runnable.length} specialists, one payment…`);
   runnable.forEach((it) => hooks.onPayStart?.(it.correlationId));
-  const reqs = await Promise.all(runnable.map((it) => fetch402(it.service.resource)));
+  const reqs = runnable.map((it) => quoteByCid.get(it.correlationId)!); // pre-fetched above
   const built = await buildAtomicCommission({
     grant,
     coordinator,
