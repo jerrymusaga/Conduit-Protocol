@@ -112,17 +112,26 @@ export async function verifyWebhook(
   }
 
   const { signature: _omit, ...rest } = body;
-  const canonical = canonicalJson(rest);
-  const message = Buffer.from(canonical, "utf8");
   const sig = Buffer.from(sigB64, "base64");
-  try {
-    const valid = crypto.verify(null, message, pub, sig);
-    if (!valid) {
-      console.warn(`[webhook-verify] Ed25519 verify=false (canonicalization mismatch?) · canonical[0:300]=${canonical.slice(0, 300)}`);
+
+  // The relayer signs the body (minus `signature`) — but NOT in sorted-key form
+  // (the skill docs' "safe-stable-stringify" advice is wrong; the wire key order
+  // is type,data,timestamp,keyId,apiVersion, not alphabetical). JSON.parse
+  // preserves insertion order, so JSON.stringify(rest) reproduces the original
+  // serialization. Try that first, then the sorted form as a fallback, so we're
+  // robust to whichever canonicalization the relayer actually uses.
+  const original = JSON.stringify(rest);
+  const candidates = [original, canonicalJson(rest)];
+  for (const message of candidates) {
+    try {
+      if (crypto.verify(null, Buffer.from(message, "utf8"), pub, sig)) return true;
+    } catch (e) {
+      console.warn(`[webhook-verify] crypto.verify threw: ${e instanceof Error ? e.message : e}`);
+      return false;
     }
-    return valid;
-  } catch (e) {
-    console.warn(`[webhook-verify] crypto.verify threw: ${e instanceof Error ? e.message : e}`);
-    return false;
   }
+  console.warn(
+    `[webhook-verify] Ed25519 verify=false for all canonicalizations · original[0:300]=${original.slice(0, 300)}`
+  );
+  return false;
 }
