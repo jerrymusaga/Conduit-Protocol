@@ -124,7 +124,9 @@ export async function veniceImage(prompt: string): Promise<string | null> {
       method: "POST",
       headers: authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({
-        model: "z-image-turbo",
+        // flux-2-pro: premium editorial quality that reliably honors "no text"
+        // (z-image-turbo rendered garbled letters and looked average).
+        model: "flux-2-pro",
         prompt,
         width: 1024,
         height: 1024,
@@ -148,9 +150,11 @@ export async function veniceSpeech(text: string): Promise<string | null> {
       method: "POST",
       headers: authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({
-        model: "tts-kokoro",
+        // ElevenLabs Turbo v2.5: broadcast-grade natural narration (kokoro
+        // sounded robotic). "Aria" is a warm, confident female voice.
+        model: "tts-elevenlabs-turbo-v2-5",
         input: text,
-        voice: "af_sky",
+        voice: "Aria",
         response_format: "mp3",
       }),
     });
