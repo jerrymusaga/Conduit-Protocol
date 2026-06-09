@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import stableStringify from "safe-stable-stringify";
 
 /**
  * Verifies inbound 1Shot relayer webhooks (Ed25519). The relayer signs the
@@ -156,6 +157,11 @@ export async function verifyWebhook(
   //   3. Python-style json.dumps spacing (", " / ": "), original order.
   //   4. Sorted canonical (the documented-but-wrong form).
   const candidates: Array<[string, string]> = [];
+  // THE canonical form, confirmed by 1Shot's own verifier code: the relayer
+  // signs safe-stable-stringify(body minus signature). Their wire JSON order can
+  // differ, so we must RE-serialize with this exact lib (our hand-rolled sorted
+  // form didn't match its output). Everything below is just defensive fallback.
+  candidates.push(["safe-stable", stableStringify(rest) ?? ""]);
   if (rawBody) {
     // Literal bytes, signature value emptied in place (common: sign with
     // `"signature":""`, then fill the value) — highest fidelity.
@@ -189,9 +195,8 @@ export async function verifyWebhook(
     }
   }
   console.warn(
-    `[webhook-verify] Ed25519 verify=false · tried ${keyCandidates.length} key(s) [${keyCandidates
-      .map((k) => k.src)
-      .join(", ")}] × ${candidates.length} forms · raw[0:200]=${(rawBody ?? "").slice(0, 200)}`
+    `[webhook-verify] Ed25519 verify=false · keys=[${keyCandidates.map((k) => k.src).join(", ")}] · ` +
+      `FULLRAW=${rawBody ?? JSON.stringify(body)}`
   );
   return false;
 }
