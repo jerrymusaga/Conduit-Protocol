@@ -221,7 +221,7 @@ export default function DemoPage() {
   const coordinatorRef = useRef<Coordinator | null>(null);
 
   // Console state.
-  const [prompt, setPrompt] = useState("Generate a complete ETH staking market report.");
+  const [prompt, setPrompt] = useState("Create a launch brief for a new AI productivity app — research the space, write the positioning, design a cover image, and record a voiceover.");
   // A2A coordination mode. Default = real agent-to-agent: one specialist
   // sub-agent (own on-chain key) per purchased service. `looped` (coordinator
   // pays directly, fewer hops) is a silent live-reliability fallback reachable
