@@ -19,6 +19,7 @@ import {
   fetchCatalog,
   fetch402,
   payAndClaim,
+  fetchJob,
   type CatalogService,
   type PaymentRequirements,
 } from "@/lib/endpoint";
@@ -59,6 +60,8 @@ interface ChargeCard {
   stage: ChargeStage;
   reason?: string | null;
   txHash?: string | null;
+  /** How the settlement confirmed: "webhook" (1Shot signed push) or "poll". */
+  confirmedVia?: "webhook" | "poll" | null;
 }
 
 const now = () => new Date().toLocaleTimeString("en-US", { hour12: false });
@@ -378,6 +381,10 @@ export default function SubscriptionPage() {
         patchCard(correlationId, { stage: "settled", txHash: r.settlement?.transaction ?? null });
         setAuthorization(null); // designation consumed by the first settled tx
         append(`Charged ✓ · ${service.priceUsdc} USDC settled on-chain`);
+        // 1Shot confirms out of band; poll the job for the final tx + HOW it
+        // confirmed — the signed-webhook path is the live receipts layer we want
+        // to surface (the "confirmed via 1Shot signed webhook" chip).
+        if (r.settlement?.jobId) void pollChargeConfirmation(correlationId, r.settlement.jobId);
       } else {
         patchCard(correlationId, { stage: "blocked", reason: r.error });
         append(`Blocked · ${r.error}`);
@@ -388,6 +395,29 @@ export default function SubscriptionPage() {
       append(`Charge failed · ${errMsg(e)}`);
     } finally {
       setBusy(false);
+    }
+  };
+
+  // Poll the facilitator job until it confirms, then stamp the card with the tx
+  // and HOW it confirmed. 1Shot's Ed25519-signed webhook is the preferred path
+  // (the receipts layer); the getStatus poll is the fallback.
+  const pollChargeConfirmation = async (correlationId: string, jobId: string) => {
+    const deadline = Date.now() + 150_000;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 3000));
+      const job = await fetchJob(jobId);
+      if (!job) continue;
+      if (job.transaction) patchCard(correlationId, { txHash: job.transaction });
+      if (job.status === "confirmed") {
+        patchCard(correlationId, {
+          stage: "settled",
+          txHash: job.transaction ?? null,
+          confirmedVia: job.confirmedVia ?? null,
+        });
+        if (job.confirmedVia === "webhook") append("Confirmed via 1Shot signed webhook ✓");
+        return;
+      }
+      if (job.status === "failed") return;
     }
   };
 
@@ -414,7 +444,7 @@ export default function SubscriptionPage() {
             <Image src="/images/conduit-logo.png" alt="Conduit" width={28} height={28} className="h-7 w-7" />
             <span className="font-semibold tracking-tight">Conduit</span>
             <span className="mono ml-2 rounded-md border border-conduit-border px-2 py-0.5 text-[11px] text-conduit-muted">
-              subscription enforcer
+              safe subscriptions
             </span>
           </Link>
           <div className="flex items-center gap-3">
@@ -450,13 +480,16 @@ export default function SubscriptionPage() {
         </div>
       </div>
 
+      {/* Safety hero — the differentiator as the headline, not a footnote. */}
+      <SubscriptionHero subscribed={subscribed} />
+
       <div className="mx-auto grid max-w-7xl gap-6 px-6 py-8 lg:grid-cols-12">
         {/* LEFT: the subscription permission + period state */}
         <div className="space-y-6 lg:col-span-4">
           <section className="panel p-6">
             <div className="flex items-center justify-between">
               <h2 className="text-sm font-semibold uppercase tracking-wide text-conduit-muted">
-                Subscription permission
+                Your subscription
               </h2>
               <span
                 className={`mono rounded-md px-2 py-0.5 text-[11px] ${subscribed ? "bg-conduit-cyan/15 text-conduit-cyan" : "border border-conduit-border text-conduit-muted"}`}
@@ -515,8 +548,8 @@ export default function SubscriptionPage() {
                   <div className="mono mt-3 space-y-1 text-[12px]">
                     <Row k="charge" v={`${service.priceUsdc} USDC (exact)`} />
                     <Row k="cadence" v={`once / ${periodLabel}`} />
-                    <Row k="merchant" v={shorten(req.payTo)} />
-                    <Row k="enforcer" v={shorten(req.subscription?.enforcer ?? null)} />
+                    <Row k="paid to" v={shorten(req.payTo)} />
+                    <Row k="on-chain rule" v={shorten(req.subscription?.enforcer ?? null)} />
                   </div>
                 </div>
 
@@ -640,23 +673,30 @@ export default function SubscriptionPage() {
               <h2 className="text-sm font-semibold uppercase tracking-wide text-conduit-muted">
                 This period
               </h2>
-              <div className="mt-4 flex items-center gap-3">
-                <span
-                  className="h-2.5 w-2.5 rounded-full"
-                  style={{
-                    background: canChargeNow ? "#00E5FF" : "#7C3AED",
-                    boxShadow: `0 0 10px ${canChargeNow ? "#00E5FF" : "#7C3AED"}`,
-                  }}
+              <div className="mt-4 flex items-center gap-4">
+                <CountdownRing
+                  secsLeft={secsUntilNext}
+                  periodSecs={req?.subscription?.periodSeconds ?? 1}
+                  ready={canChargeNow && !expired}
                 />
-                <span className="text-sm text-white">
-                  {expired
-                    ? "Subscription expired"
-                    : !subState?.active
-                      ? "Ready for the first charge"
+                <div>
+                  <p className="text-sm font-medium text-white">
+                    {expired
+                      ? "Subscription expired"
+                      : !subState?.active
+                        ? "Ready for the first charge"
+                        : canChargeNow
+                          ? "Ready to charge this period"
+                          : "Charged this period ✓"}
+                  </p>
+                  <p className="mt-0.5 text-[12px] text-conduit-muted">
+                    {expired
+                      ? "Every charge now reverts on-chain."
                       : canChargeNow
-                        ? "Ready to charge this period"
-                        : "Charged this period ✓"}
-                </span>
+                        ? "One charge will settle; a second is blocked."
+                        : "Locked by your signature until the next period."}
+                  </p>
+                </div>
               </div>
 
               <div className="mono mt-4 space-y-1.5 text-[12px]">
@@ -718,9 +758,9 @@ export default function SubscriptionPage() {
                     {connected ? (subscribed ? "Charge the subscription to begin." : "Approve the subscription to begin.") : "Sign in to begin."}
                   </p>
                   <p className="mx-auto mt-3 max-w-md text-[12px] leading-relaxed text-conduit-muted/70">
-                    Each charge flows 402 request → permission → settle → delivered. The
-                    subscription enforcer lets exactly one charge per period through; a second
-                    in the same period is rejected on-chain.
+                    Each charge flows request → check → settle → delivered. Your signed rule lets
+                    exactly one charge per period through; a second in the same period is
+                    rejected on-chain.
                   </p>
                 </div>
               ) : (
@@ -770,6 +810,98 @@ export default function SubscriptionPage() {
         </div>
       </div>
     </main>
+  );
+}
+
+// --- safety hero: traditional recurring billing vs a Conduit subscription ----
+
+/** The differentiator, made the headline (not a footnote): a card-on-file
+ *  subscription trusts the merchant; a Conduit subscription is bound by YOUR
+ *  signature on YOUR own root — exact amount, once per period, revocable. */
+function SubscriptionHero({ subscribed }: { subscribed: boolean }) {
+  const rows: { label: string; old: string; conduit: string }[] = [
+    { label: "Who holds the authority", old: "Merchant stores your card", conduit: "You sign a rule on your own account" },
+    { label: "Amount", old: "Whatever they charge", conduit: "Exact amount, fixed by your signature" },
+    { label: "Frequency", old: "Whenever they decide", conduit: "Once per period — a 2nd reverts" },
+    { label: "If the agent is hijacked", old: "It can redirect or overcharge", conduit: "Physically can't — the rule forbids it" },
+    { label: "Cancelling", old: "Email support, then wait", conduit: "Revoke on-chain yourself, instantly" },
+  ];
+  return (
+    <section className="panel reveal mx-auto mt-6 max-w-7xl overflow-hidden p-0">
+      <div className="grid gap-0 md:grid-cols-2">
+        {/* Traditional */}
+        <div className="border-b border-conduit-border/60 p-6 md:border-b-0 md:border-r">
+          <p className="mono text-[11px] uppercase tracking-wide text-conduit-muted/70">
+            Card on file
+          </p>
+          <h3 className="mt-1 text-base font-semibold text-conduit-muted">Traditional recurring billing</h3>
+          <ul className="mt-4 space-y-2.5">
+            {rows.map((r) => (
+              <li key={r.label} className="flex items-start gap-2 text-[12.5px]">
+                <span className="mt-0.5 shrink-0 text-conduit-magenta/70">✗</span>
+                <span className="text-conduit-muted">
+                  <span className="text-conduit-muted/60">{r.label}: </span>
+                  {r.old}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+        {/* Conduit */}
+        <div className="relative bg-conduit-cyan/[0.03] p-6">
+          <p className="mono text-[11px] uppercase tracking-wide text-conduit-cyan/80">
+            Your signature
+          </p>
+          <h3 className="mt-1 text-base font-semibold text-white">A Conduit subscription</h3>
+          <ul className="mt-4 space-y-2.5">
+            {rows.map((r) => (
+              <li key={r.label} className="flex items-start gap-2 text-[12.5px]">
+                <span className="mt-0.5 shrink-0 text-conduit-cyan">✓</span>
+                <span className="text-white">
+                  <span className="text-conduit-muted/60">{r.label}: </span>
+                  <span className="text-white">{r.conduit}</span>
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      </div>
+      <div className="border-t border-conduit-border/60 bg-conduit-panel/40 px-6 py-3 text-center">
+        <p className="text-[12px] text-conduit-muted">
+          {subscribed
+            ? "Your subscription is live below — try "
+            : "Recurring, without the trust fall. Approve one below, then try "}
+          <span className="text-white">“Force charge again”</span>
+          {" "}— the agent can’t over-charge, and Conduit proves it on-chain.
+        </p>
+      </div>
+    </section>
+  );
+}
+
+/** A circular countdown ring for "next charge in Xs" — the period mechanic,
+ *  visualized. Fills as the period elapses; full + cyan when a charge unlocks. */
+function CountdownRing({ secsLeft, periodSecs, ready }: { secsLeft: number; periodSecs: number; ready: boolean }) {
+  const r = 26;
+  const c = 2 * Math.PI * r;
+  const frac = periodSecs > 0 ? Math.min(1, Math.max(0, (periodSecs - secsLeft) / periodSecs)) : 1;
+  const color = ready ? "#00E5FF" : "#7C3AED";
+  return (
+    <div className="relative h-[64px] w-[64px] shrink-0">
+      <svg viewBox="0 0 64 64" className="h-full w-full -rotate-90">
+        <circle cx="32" cy="32" r={r} fill="none" stroke="currentColor" strokeWidth="4" className="text-conduit-border/50" />
+        <circle
+          cx="32" cy="32" r={r} fill="none" stroke={color} strokeWidth="4" strokeLinecap="round"
+          strokeDasharray={c} strokeDashoffset={ready ? 0 : c * (1 - frac)}
+          style={{ transition: "stroke-dashoffset 1s linear, stroke 0.3s" }}
+        />
+      </svg>
+      <div className="absolute inset-0 flex items-center justify-center">
+        <span className="mono text-[12px] font-semibold" style={{ color }}>
+          {ready ? "now" : `${secsLeft}s`}
+        </span>
+      </div>
+    </div>
   );
 }
 
@@ -833,6 +965,28 @@ function ChargeCardView({
         </p>
       )}
       {card.reason && <p className="mono mt-1.5 text-[11px] text-conduit-magenta/80">revert reason: {card.reason}</p>}
+
+      {done && card.txHash && (
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <a
+            href={`${config.explorerUrl}/tx/${card.txHash}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="mono text-[11px] text-conduit-cyan underline-offset-2 hover:underline"
+          >
+            receipt {card.txHash.slice(0, 10)}… ↗
+          </a>
+          {card.confirmedVia === "webhook" ? (
+            <span className="mono rounded bg-conduit-cyan/15 px-1.5 py-0.5 text-[10px] text-conduit-cyan">
+              ✓ confirmed via 1Shot signed webhook
+            </span>
+          ) : card.confirmedVia === "poll" ? (
+            <span className="mono rounded border border-conduit-border px-1.5 py-0.5 text-[10px] text-conduit-muted">
+              confirmed via 1Shot
+            </span>
+          ) : null}
+        </div>
+      )}
 
       {binding && (
         <>
