@@ -383,6 +383,21 @@ export function CoordinationCanvas({
 
 function bindingFor(c: CanvasCard): InspectorBinding {
   const violated = c.agent === "rogue";
+  // The Trader's leg is a bounded SWAP, not a payment.
+  if (c.service === "trade") {
+    return {
+      kind: "swap",
+      enforcerName: violated ? "SwapBoundsEnforcer (violated)" : "SwapBoundsEnforcer",
+      enforcerAddr: config.swapBoundsEnforcer,
+      violated,
+      terms: [
+        { label: "max in", value: `${c.priceUsdc} USDC` },
+        { label: "out", value: "WETH" },
+        { label: "slippage", value: "≤ 1%" },
+        { label: "to", value: "your account" },
+      ],
+    };
+  }
   return {
     kind: "receipt",
     enforcerName: violated ? "X402ReceiptEnforcer (violated)" : "X402ReceiptEnforcer",

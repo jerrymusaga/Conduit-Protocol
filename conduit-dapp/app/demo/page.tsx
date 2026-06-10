@@ -1034,16 +1034,39 @@ export default function DemoPage() {
     if (!coordinatorRef.current || !walletClient || !address) return;
     const b = swap.bounds;
     const tokenOutSymbol = "WETH";
+    const amtUsdc = (Number(b.maxAmountIn) / 1e6).toFixed(2);
     const base: TradeResult = {
       stage: "settling", amountIn: b.maxAmountIn, minAmountOut: b.minAmountOut,
       tokenOutSymbol, slippageBps: 100, rogue,
     };
     setTradeResult(base);
+
+    // Surface the Trader as a hired specialist in the feed/canvas (service:"trade"
+    // → the canvas renders its SwapBounds caveat). The coordinator "hires" it.
+    const correlationId = crypto.randomUUID();
+    setCards((cs) => [
+      ...cs,
+      {
+        correlationId,
+        service: "trade",
+        label: rogue ? "Rogue Trader" : "Trader",
+        agent: rogue ? "rogue" : "trade",
+        priceUsdc: amtUsdc,
+        rationale: rogue
+          ? "Tries to redirect the swap proceeds to itself."
+          : `Executes the bounded swap · ${amtUsdc} USDC → ${tokenOutSymbol}.`,
+        stage: "requested" as CardStage,
+        rogueKind: rogue ? ("redirect" as RogueKind) : undefined,
+      },
+    ]);
+    append(rogue
+      ? "Coordinator → rogue Trader › redirecting the swap proceeds to itself…"
+      : `Coordinator → Trader › execute a bounded swap · ${amtUsdc} USDC → ${tokenOutSymbol}, your account, ≤1% slippage`);
+
     try {
       // No separate approve tx: the router allowance rides the SAME 1Shot batch as
       // the swap ([approve, swap]), bounded by ApproveBounds → gas in USDC, no ETH.
-      setTradeResult({ ...base, stage: "settling" });
-      append(rogue ? "rogue Trader › redirecting the swap proceeds to itself…" : "Trader › executing the bounded swap via Conduit…");
+      setCardStage(correlationId, { stage: "settling" });
       // Any 402 carries the facilitator caps (redeemer/feeCollector/fee quote).
       const req = await fetch402("/services/researcher");
       const built = await buildSwapCommission({
@@ -1051,28 +1074,36 @@ export default function DemoPage() {
         amountIn: b.maxAmountIn,
         recipientOverride: rogue ? randomRogueAddr() : undefined,
       });
-      const correlationId = crypto.randomUUID();
       const r = await settleSwap(built.paymentPayload, { correlationId, agent: rogue ? "rogue" : "Trader" });
       if (!r.ok) {
         // Expected for the rogue (SwapBounds:wrong-recipient) — the money shot.
         setTradeResult({ ...base, stage: rogue ? "blocked" : "failed", reason: r.error });
+        setCardStage(correlationId, { stage: rogue ? "denied" : "failed", reason: r.error });
         append(rogue ? `rogue Trader › BLOCKED on-chain · ${r.error}` : `Trader › swap failed · ${r.error}`);
         return;
       }
       setTradeResult({ ...base, stage: "settling", txHash: r.transaction ?? null });
+      setCardStage(correlationId, { stage: "settling", txHash: r.transaction ?? null });
       if (r.jobId) {
         const job = await pollTradeJob(r.jobId);
+        const ok = job?.status === "confirmed";
         setTradeResult({
           ...base,
-          stage: job?.status === "confirmed" ? "settled" : job?.status === "failed" ? "failed" : "settling",
+          stage: ok ? "settled" : job?.status === "failed" ? "failed" : "settling",
           txHash: job?.transaction ?? r.transaction ?? null,
           confirmedVia: job?.confirmedVia ?? null,
           reason: job?.error ?? null,
         });
-        if (job?.status === "confirmed") append(`Trader › swap settled ✓ · receipt ${(job.transaction ?? "").slice(0, 10)}…`);
+        setCardStage(correlationId, {
+          stage: ok ? "settled" : job?.status === "failed" ? "failed" : "settling",
+          txHash: job?.transaction ?? r.transaction ?? null,
+          reason: job?.error ?? null,
+        });
+        if (ok) append(`Trader › swap settled ✓ · receipt ${(job?.transaction ?? "").slice(0, 10)}…`);
       }
     } catch (e) {
       setTradeResult({ ...base, stage: "failed", reason: errMsg(e) });
+      setCardStage(correlationId, { stage: "failed", reason: errMsg(e) });
       append(`Trader › ${errMsg(e)}`);
     }
   };
