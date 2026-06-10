@@ -32,10 +32,20 @@ import {
   type RogueAttack,
 } from "@/lib/coordinator";
 import type { Eip7702Authorization } from "@/lib/payment";
-import { keccak256 } from "viem";
+import { keccak256, parseAbi, parseUnits, formatUnits, type Hex } from "viem";
+import { Erc7710Inspector, type InspectorBinding } from "@/components/Erc7710Inspector";
 import { useFacilitatorEvents } from "@/lib/useFacilitatorEvents";
-import { fetchJob } from "@/lib/endpoint";
+import { fetchJob, fetch402 } from "@/lib/endpoint";
 import { registerGrant } from "@/lib/grants";
+import {
+  grantSwap,
+  buildSwapCommission,
+  settleSwap,
+  resolveSwapBounds,
+  isTradeIntent,
+  parseTradeIntent,
+  type SwapGrant,
+} from "@/lib/trade";
 import { config } from "@/lib/config";
 import { publicClient } from "@/lib/chain";
 import { readBudgetState, readUsdcBalance, type BudgetState } from "@/lib/onchain";
@@ -52,6 +62,33 @@ import { type DiscoveredAgent } from "@/lib/discovery";
    =========================================================================== */
 
 type CardStage = "queued" | "requested" | "allowed" | "denied" | "settling" | "settled" | "failed";
+
+const ERC20_ALLOWANCE_ABI = parseAbi([
+  "function allowance(address owner, address spender) view returns (uint256)",
+  "function approve(address spender, uint256 amount) returns (bool)",
+]);
+
+/** A throwaway address for the rogue-swap beat (redirect target). */
+function randomRogueAddr(): Hex {
+  const b = crypto.getRandomValues(new Uint8Array(20));
+  return (`0x${Array.from(b).map((x) => x.toString(16).padStart(2, "0")).join("")}`) as Hex;
+}
+
+type TradeStage = "approving" | "settling" | "settled" | "failed" | "blocked";
+
+interface TradeResult {
+  stage: TradeStage;
+  /** USDC spent (base units) + the bounds the swap was authorised under. */
+  amountIn: bigint;
+  minAmountOut: bigint;
+  tokenOutSymbol: string;
+  slippageBps: number;
+  txHash?: string | null;
+  confirmedVia?: "webhook" | "poll" | null;
+  reason?: string | null;
+  /** A deliberate rogue swap (redirect proceeds) — expected to be blocked. */
+  rogue?: boolean;
+}
 
 interface FeedCard {
   correlationId: string;
@@ -251,6 +288,11 @@ export default function DemoPage() {
   const reportRef = useRef<ReportSection[]>([]); // accumulates outputs during a run
   const [reportMarkdown, setReportMarkdown] = useState<string | null>(null); // Venice-aggregated prose
   const [reportTitle, setReportTitle] = useState<string | null>(null); // deliverable title (derived from prompt, upgraded by Venice H1)
+  // Trading (isolated, trade-intent prompts only): the SwapBounds grant + the
+  // executed-trade result. Never touches the research/payment path above.
+  const swapGrantRef = useRef<SwapGrant | null>(null);
+  const [swapAuthorized, setSwapAuthorized] = useState(false); // a swap grant was signed (trade intent)
+  const [tradeResult, setTradeResult] = useState<TradeResult | null>(null);
   // Voice input: record the spoken prompt, transcribe via Venice STT.
   const [recording, setRecording] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
@@ -617,6 +659,37 @@ export default function DemoPage() {
         enforcer: config.erc20PeriodTransferEnforcer,
         context: result.context,
       });
+
+      // TRADE intent → also sign a SwapBounds authorization (separate from the
+      // spend budget, which only allows transfers). Isolated: only trade prompts.
+      swapGrantRef.current = null;
+      setSwapAuthorized(false);
+      if (isTradeIntent(prompt) && walletClient && address) {
+        try {
+          const { amountInUsdc, slippageBps } = parseTradeIntent(prompt);
+          const amountIn = parseUnits(String(amountInUsdc), 6);
+          append(`Coordinator › authorizing a bounded swap · ≤ ${amountInUsdc} USDC → WETH · max ${(slippageBps / 100).toFixed(2)}% slippage…`);
+          const bounds = await resolveSwapBounds({ recipient: address, amountIn, slippageBps });
+          const swap = await grantSwap({ walletClient, userAddress: address, coordinator, bounds, expiry: expirySeconds ? Math.floor(Date.now() / 1000) + expirySeconds : undefined });
+          swapGrantRef.current = swap;
+          setSwapAuthorized(true);
+          append("Coordinator › swap authorization signed · pair + cap + slippage floor + recipient bound on-chain");
+          void registerGrant({
+            id: swap.delegationHash,
+            user: address,
+            kind: "budget", // shown in /portfolio; the swap bounds live in the caveat
+            label: `Bounded swap · ${amountInUsdc} USDC → WETH`,
+            coordinator: coordinator.address,
+            token: config.usdc,
+            amount: amountIn.toString(),
+            expiry: swap.expiry,
+            enforcer: config.swapBoundsEnforcer,
+            context: swap.context,
+          });
+        } catch (e) {
+          append(`Coordinator › couldn't authorize the swap · ${errMsg(e)}`);
+        }
+      }
     } catch (e) {
       console.error("[conduit] grant failed →", e);
       append(`Grant failed · ${errMsg(e)}`);
@@ -789,6 +862,9 @@ export default function DemoPage() {
     setReport(null);
     setReportMarkdown(null);
     setReportTitle(null);
+    setTradeResult(null);
+    setSwapAuthorized(false);
+    swapGrantRef.current = null;
     reportRef.current = [];
     setBudgetForecast(null);
     setBudgetPause(null);
@@ -936,6 +1012,13 @@ export default function DemoPage() {
         // Both fall back gracefully — the deterministic sections always render.
         void enrichReport(prompt, sections);
       }
+
+      // TRADE branch (isolated): if the prompt asked for a move and the swap was
+      // authorised, execute the bounded swap now — its own step, never folded
+      // into the research payment batch.
+      if (isTradeIntent(prompt) && swapGrantRef.current) {
+        await runTrade(swapGrantRef.current);
+      }
     } catch (e) {
       console.error("[run] threw:", e);
       append(`Run failed · ${errMsg(e)}`);
@@ -943,6 +1026,93 @@ export default function DemoPage() {
       setBusy(false);
       void refreshBudget(); // reconcile the meter to on-chain truth post-run
       void refreshBalance(); // the team got paid — reflect the new wallet balance
+    }
+  };
+
+  // Execute the bounded swap the coordinator hired the Trader for. Isolated from
+  // the payment path: approve the router once (direct tx, like cancel/revoke),
+  // then settle the SwapBounds-bound exactInputSingle through 1Shot. `rogue`
+  // crafts a redirect (proceeds → an attacker) → SwapBoundsEnforcer rejects it.
+  const runTrade = async (swap: SwapGrant, rogue = false) => {
+    if (!coordinatorRef.current || !walletClient || !address) return;
+    const b = swap.bounds;
+    const tokenOutSymbol = "WETH";
+    const base: TradeResult = {
+      stage: "approving", amountIn: b.maxAmountIn, minAmountOut: b.minAmountOut,
+      tokenOutSymbol, slippageBps: 100, rogue,
+    };
+    setTradeResult(base);
+    try {
+      // Ensure the router can pull tokenIn (one-time approval; needs a little ETH).
+      const allowance = await publicClient.readContract({
+        address: config.usdc, abi: ERC20_ALLOWANCE_ABI, functionName: "allowance",
+        args: [address as Hex, b.router],
+      });
+      if ((allowance as bigint) < b.maxAmountIn) {
+        append("Trader › approving the swap venue (one-time, small ETH gas)…");
+        const tx = await walletClient.writeContract({
+          address: config.usdc, abi: ERC20_ALLOWANCE_ABI, functionName: "approve",
+          args: [b.router, b.maxAmountIn], // exact — no standing over-approval
+        });
+        await publicClient.waitForTransactionReceipt({ hash: tx });
+        append("Trader › venue approved ✓");
+      }
+
+      setTradeResult({ ...base, stage: "settling" });
+      append(rogue ? "rogue Trader › redirecting the swap proceeds to itself…" : "Trader › executing the bounded swap via Conduit…");
+      // Any 402 carries the facilitator caps (redeemer/feeCollector/fee quote).
+      const req = await fetch402("/services/researcher");
+      const built = await buildSwapCommission({
+        grant: swap, coordinator: coordinatorRef.current, req,
+        amountIn: b.maxAmountIn,
+        recipientOverride: rogue ? randomRogueAddr() : undefined,
+      });
+      const correlationId = crypto.randomUUID();
+      const r = await settleSwap(built.paymentPayload, { correlationId, agent: rogue ? "rogue" : "Trader" });
+      if (!r.ok) {
+        // Expected for the rogue (SwapBounds:wrong-recipient) — the money shot.
+        setTradeResult({ ...base, stage: rogue ? "blocked" : "failed", reason: r.error });
+        append(rogue ? `rogue Trader › BLOCKED on-chain · ${r.error}` : `Trader › swap failed · ${r.error}`);
+        return;
+      }
+      setTradeResult({ ...base, stage: "settling", txHash: r.transaction ?? null });
+      if (r.jobId) {
+        const job = await pollTradeJob(r.jobId);
+        setTradeResult({
+          ...base,
+          stage: job?.status === "confirmed" ? "settled" : job?.status === "failed" ? "failed" : "settling",
+          txHash: job?.transaction ?? r.transaction ?? null,
+          confirmedVia: job?.confirmedVia ?? null,
+          reason: job?.error ?? null,
+        });
+        if (job?.status === "confirmed") append(`Trader › swap settled ✓ · receipt ${(job.transaction ?? "").slice(0, 10)}…`);
+      }
+    } catch (e) {
+      setTradeResult({ ...base, stage: "failed", reason: errMsg(e) });
+      append(`Trader › ${errMsg(e)}`);
+    }
+  };
+
+  const pollTradeJob = async (jobId: string) => {
+    const deadline = Date.now() + 150_000;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 3000));
+      const job = await fetchJob(jobId);
+      if (!job) continue;
+      if (job.status === "confirmed" || job.status === "failed") return job;
+    }
+    return await fetchJob(jobId);
+  };
+
+  // The rogue Trader — a click away, like the other rogues. Reuses the signed
+  // swap grant but crafts a swap that pays an attacker → blocked on-chain.
+  const tryRogueTrade = async () => {
+    if (busy || !swapGrantRef.current) return;
+    setBusy(true);
+    try {
+      await runTrade(swapGrantRef.current, true);
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -1319,6 +1489,16 @@ export default function DemoPage() {
                     {k === "redirect" ? "Redirect funds" : k === "overspend" ? "Overspend" : "Replay"}
                   </button>
                 ))}
+                {/* Trade-specific rogue — only when a swap was authorised. */}
+                {swapAuthorized && (
+                  <button
+                    onClick={() => void tryRogueTrade()}
+                    disabled={busy}
+                    className="rounded-lg border border-conduit-magenta/40 px-2.5 py-1.5 text-xs font-medium text-conduit-magenta transition-colors hover:bg-conduit-magenta/10 disabled:opacity-40"
+                  >
+                    Redirect swap
+                  </button>
+                )}
               </div>
             </div>
           </div>
@@ -1386,8 +1566,21 @@ export default function DemoPage() {
 
           {/* The payoff: the aggregated report assembled from purchased outputs */}
           {report && (
-            <ReportPanel sections={report} title={reportTitle} markdown={reportMarkdown} cards={cards} />
+            <ReportPanel
+              sections={report}
+              title={reportTitle}
+              markdown={reportMarkdown}
+              cards={cards}
+              tradeNote={
+                tradeResult && !tradeResult.rogue
+                  ? `moved ${(Number(tradeResult.amountIn) / 1e6).toFixed(2)} USDC → ${tradeResult.tokenOutSymbol}${tradeResult.stage === "settled" ? " ✓" : "…"}`
+                  : null
+              }
+            />
           )}
+
+          {/* The trade payoff: the executed bounded swap (isolated trade branch). */}
+          {tradeResult && <TradeReceipt result={tradeResult} />}
         </div>
 
         {/* RIGHT: activity log */}
@@ -1637,16 +1830,94 @@ const REPORT_HEADINGS: Record<string, string> = {
   voice: "Voiceover",
 };
 
+/** The executed (or blocked) bounded swap — the trade payoff + its SwapBounds caveat. */
+function TradeReceipt({ result: r }: { result: TradeResult }) {
+  const [open, setOpen] = useState(false);
+  const amountInUsdc = (Number(r.amountIn) / 1e6).toFixed(2);
+  const minOut = formatUnits(r.minAmountOut, 18); // WETH (18dp)
+  const blocked = r.stage === "blocked";
+  const settled = r.stage === "settled";
+  const failed = r.stage === "failed";
+  const badge = blocked
+    ? { cls: "bg-conduit-magenta/15 text-conduit-magenta", text: "✗ blocked on-chain" }
+    : settled
+      ? { cls: "bg-conduit-cyan/15 text-conduit-cyan", text: "✓ executed" }
+      : failed
+        ? { cls: "bg-conduit-magenta/15 text-conduit-magenta", text: "⚠ failed" }
+        : { cls: "bg-conduit-violet/15 text-conduit-violet animate-pulse", text: r.stage === "approving" ? "approving venue…" : "settling…" };
+  const binding: InspectorBinding = {
+    kind: "swap",
+    enforcerName: blocked ? "SwapBoundsEnforcer (violated)" : "SwapBoundsEnforcer",
+    enforcerAddr: config.swapBoundsEnforcer,
+    violated: blocked,
+    terms: [
+      { label: "max in", value: `${amountInUsdc} USDC` },
+      { label: "min out", value: `≥ ${minOut} ${r.tokenOutSymbol}` },
+      { label: "slippage", value: `≤ ${(r.slippageBps / 100).toFixed(2)}%` },
+      { label: "to", value: "your account" },
+    ],
+  };
+  return (
+    <section className="panel reveal mt-6 p-6">
+      <div className="flex items-center justify-between">
+        <h2 className="text-lg font-semibold tracking-tight text-white">
+          {r.rogue ? "Rogue trade attempt" : "Trade executed"}
+        </h2>
+        <span className={`mono rounded-md px-2 py-0.5 text-[11px] ${badge.cls}`}>{badge.text}</span>
+      </div>
+      <p className="mt-1 text-[12px] leading-relaxed text-conduit-muted">
+        {blocked
+          ? "A hijacked Trader tried to redirect the swap proceeds to itself — SwapBounds rejected it on-chain before any funds moved."
+          : `Moved ${amountInUsdc} USDC → ${r.tokenOutSymbol} on Uniswap, proceeds to your account, slippage floor enforced by your signature.`}
+      </p>
+      <div className="mono mt-4 flex flex-wrap gap-x-6 gap-y-1 text-[12px]">
+        <span className="text-conduit-muted">in <span className="text-white">{amountInUsdc} USDC</span></span>
+        <span className="text-conduit-muted">→ out <span className="text-white">≥ {minOut} {r.tokenOutSymbol}</span></span>
+        <span className="text-conduit-muted">slippage <span className="text-white">≤ {(r.slippageBps / 100).toFixed(2)}%</span></span>
+        <span className="text-conduit-muted">to <span className="text-white">you</span></span>
+      </div>
+      {settled && r.txHash && (
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <a
+            href={`${config.explorerUrl}/tx/${r.txHash}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="mono text-[11px] text-conduit-cyan underline-offset-2 hover:underline"
+          >
+            receipt {r.txHash.slice(0, 10)}… ↗
+          </a>
+          {r.confirmedVia === "webhook" && (
+            <span className="mono rounded bg-conduit-cyan/15 px-1.5 py-0.5 text-[10px] text-conduit-cyan">
+              ✓ confirmed via 1Shot signed webhook
+            </span>
+          )}
+        </div>
+      )}
+      {blocked && r.reason && <p className="mono mt-2 text-[11px] text-conduit-magenta/80">revert: {r.reason}</p>}
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="mono mt-3 text-[11px] text-conduit-muted underline-offset-4 hover:text-conduit-cyan"
+      >
+        {open ? "▾ hide caveat" : "▸ inspect caveat"}
+      </button>
+      {open && <Erc7710Inspector binding={binding} />}
+    </section>
+  );
+}
+
 function ReportPanel({
   sections,
   title,
   markdown,
   cards,
+  tradeNote,
 }: {
   sections: ReportSection[];
   title?: string | null;
   markdown?: string | null;
   cards: FeedCard[];
+  /** "Action taken" line when the run also executed a trade (see receipt below). */
+  tradeNote?: string | null;
 }) {
   const total = sections.reduce((s, x) => s + (Number(x.priceUsdc) || 0), 0);
   // The hero is the purchased Illustrator image (when the brief called for one) —
@@ -1722,6 +1993,12 @@ function ReportPanel({
           {sections.map((sec, i) => (
             <ReportSectionRow key={i} sec={sec} card={cardFor(sec.correlationId)} heroed={sec === imageSec} />
           ))}
+        </div>
+      )}
+
+      {tradeNote && (
+        <div className="mt-5 rounded-lg border border-conduit-cyan/30 bg-conduit-cyan/[0.04] px-3 py-2 text-[12px] text-conduit-muted">
+          <span className="mono text-conduit-cyan">↪ Action taken</span> · {tradeNote} <span className="text-conduit-muted/60">(see the trade receipt below)</span>
         </div>
       )}
 

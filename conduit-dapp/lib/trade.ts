@@ -151,10 +151,18 @@ export async function resolveSwapBounds(params: {
   const tokenOut = params.tokenOut ?? config.weth;
   const fee = params.fee ?? 500;
   const expected = await quoteExpectedOut({ tokenIn, tokenOut, fee }, params.amountIn);
-  const minAmountOut =
-    expected && expected > 0n
-      ? (expected * BigInt(10_000 - params.slippageBps)) / 10_000n
-      : 1n;
+  let minAmountOut: bigint;
+  if (expected && expected > 0n) {
+    minAmountOut = (expected * BigInt(10_000 - params.slippageBps)) / 10_000n;
+  } else if (config.chainId === 8453) {
+    // PRODUCTION (mainnet): never trade without a real slippage floor — a
+    // nominal floor would let the swap accept any fill. Refuse instead.
+    throw new Error("Couldn't price this swap (no Uniswap quote) — refusing to trade without a slippage floor.");
+  } else {
+    // Testnet only: no liquidity to quote against, so a nominal floor lets the
+    // rogue/blocked beat demo anyway. The happy-path swap runs on mainnet.
+    minAmountOut = 1n;
+  }
   return {
     router: config.uniswapRouter,
     tokenIn,
