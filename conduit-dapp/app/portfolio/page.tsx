@@ -18,6 +18,7 @@ import { listGrants, markGrantRevoked, type GrantRecord } from "@/lib/grants";
 import { revokeRootDelegation } from "@/lib/grant";
 import { readBudgetState, type BudgetState } from "@/lib/onchain";
 import { readSubscriptionState, type SubscriptionGrant, type SubscriptionState } from "@/lib/subscription";
+import { Erc7710Inspector, type InspectorBinding } from "@/components/Erc7710Inspector";
 
 /* ===========================================================================
    Conduit — the PORTFOLIO. One place a wallet sees and manages every agent
@@ -281,11 +282,23 @@ function GrantCard({
   busy: boolean;
   onRevoke: () => void;
 }) {
+  const [showCaveat, setShowCaveat] = useState(false);
   const s = STATUS_STYLE[status];
   const isSub = g.kind === "subscription";
   const amountUsdc = g.amount ? formatUnits(BigInt(g.amount), 6) : "—";
   const expiryText = !g.expiry || g.expiry === 0 ? "no expiry" : nowSec >= g.expiry ? "expired" : `in ${fmtDur(g.expiry - nowSec)}`;
   const canRevoke = status === "active" && !!g.context;
+
+  // The exact on-chain caveat this permission carries — what it actually permits.
+  const binding: InspectorBinding | null = g.enforcer
+    ? {
+        enforcerName: isSub ? "X402SubscriptionEnforcer" : "ERC20PeriodTransferEnforcer",
+        enforcerAddr: g.enforcer,
+        boundSummary: isSub
+          ? `${amountUsdc} USDC → ${shorten(g.merchant)} · 1×/${fmtDur(g.periodSeconds ?? 0)}`
+          : `≤ ${amountUsdc} USDC / ${fmtDur(g.periodSeconds ?? 0)} · agent ${shorten(g.coordinator)}`,
+      }
+    : null;
 
   return (
     <section className="panel p-5">
@@ -315,6 +328,19 @@ function GrantCard({
         {g.coordinator && <Fact k="agent" v={shorten(g.coordinator)} />}
         <Fact k="granted" v={new Date(g.createdAt).toLocaleDateString()} />
       </div>
+
+      {/* what this permission actually permits — the on-chain caveat */}
+      {binding && (
+        <>
+          <button
+            onClick={() => setShowCaveat((o) => !o)}
+            className="mono mt-3 text-[11px] text-conduit-muted underline-offset-4 hover:text-conduit-cyan"
+          >
+            {showCaveat ? "▾ hide caveat" : "▸ inspect caveat"}
+          </button>
+          {showCaveat && <Erc7710Inspector binding={binding} />}
+        </>
+      )}
 
       {/* actions */}
       <div className="mt-4 flex items-center gap-3">
