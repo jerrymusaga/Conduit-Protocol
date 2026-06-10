@@ -732,12 +732,14 @@ export default function DemoPage() {
       append("Permission granted · the coordinator holds the root policy");
       // Register in the per-wallet grants index so /portfolio can enumerate it
       // (ERC-7715 grants have no on-chain "created" event). Best-effort.
+      // A budget is a GENERIC allowance any run draws from — not tied to one
+      // prompt. Label it as the allowance it is (no misleading per-prompt text);
+      // only prompt-specific permissions (swaps) carry a prompt.
       void registerGrant({
         id: keccak256(result.context),
         user: address,
         kind: "budget",
-        label: deriveTitle(prompt) || "Agent budget",
-        prompt,
+        label: `Agent budget · ${result.periodAmountUsdc} USDC`,
         coordinator: coordinator.address,
         token: config.usdc,
         amount: result.periodAmount.toString(),
@@ -1024,44 +1026,38 @@ export default function DemoPage() {
             hooks,
           });
 
-      // Budget gate tripped: the plan costs more than the grant, so the
-      // coordinator stopped BEFORE any payment — nothing was spent. Surface the
-      // choice (raise the cap, run within it, or cancel) and bail out early.
-      if (outcome.status === "paused-budget") {
-        setBudgetPause({ planTotal: outcome.planTotal!, budget: outcome.budget!, atomic: !!opts?.atomic });
-        append("Coordinator › stopped — nothing was charged. Add budget or hire a smaller team.");
-        return;
-      }
-      // Clear the auth after the first run consumed it for designation.
-      setAuthorization(null);
+      // Did the RESEARCH commission settle? (Drives the report + auth handling.)
+      // NB: we no longer return early on pause/failure — a trade-intent prompt
+      // still runs its (independently-authorised) swap below.
+      const commissionOk = outcome.status === "ok";
 
-      // Atomic commission couldn't go through → all-or-nothing, nothing charged.
-      // A budget rejection shows the same friendly "add budget / smaller team"
-      // choice as the pre-flight pause; anything else is a brief notice.
-      if (opts?.atomic && outcome.status === "failed") {
+      if (outcome.status === "paused-budget") {
+        // Budget gate tripped: the RESEARCH plan costs more than the grant, so the
+        // coordinator stopped before any payment — nothing was spent.
+        setBudgetPause({ planTotal: outcome.planTotal!, budget: outcome.budget!, atomic: !!opts?.atomic });
+        append("Coordinator › research stopped — nothing was charged. Add budget or hire a smaller team.");
+      } else if (opts?.atomic && outcome.status === "failed") {
         if (outcome.budgetCapped && outcome.planTotal && outcome.budget) {
           setBudgetPause({ planTotal: outcome.planTotal, budget: outcome.budget, atomic: true });
         } else {
-          // Surface the real reason — never just "couldn't complete".
           console.error("[commission] failed:", outcome.error);
           append(`Couldn't complete the hire — ${outcome.error ?? "unknown error"}. Nothing was charged.`);
         }
-        return;
       }
-      // Atomic success → record the single-tx settlement for the one-tx panel.
-      if (opts?.atomic && outcome.status === "ok") {
-        const jobId = outcome.settlement?.jobId;
-        setAtomicResult({
-          tx: outcome.settlement?.transaction ?? null,
-          jobId,
-          count: outcome.plan.length,
-          total: outcome.totalSpent,
-          confirmedVia: outcome.settlement?.confirmedVia ?? null,
-        });
-        // 1Shot returns pending first; poll until the batch tx mines so the
-        // panel shows the real Basescan link instead of "settling".
-        if (!outcome.settlement?.transaction && jobId) {
-          void pollAtomicSettlement(jobId);
+
+      if (commissionOk) {
+        // Clear the auth after the first run consumed it for designation.
+        setAuthorization(null);
+        if (opts?.atomic) {
+          const jobId = outcome.settlement?.jobId;
+          setAtomicResult({
+            tx: outcome.settlement?.transaction ?? null,
+            jobId,
+            count: outcome.plan.length,
+            total: outcome.totalSpent,
+            confirmedVia: outcome.settlement?.confirmedVia ?? null,
+          });
+          if (!outcome.settlement?.transaction && jobId) void pollAtomicSettlement(jobId);
         }
       }
 
@@ -1072,21 +1068,20 @@ export default function DemoPage() {
         setReportTitle(deriveTitle(prompt));
         setReport(sections);
         append("Results ready ✓");
-        // Enrich via Venice (best-effort): prose aggregation + a cover image.
-        // Both fall back gracefully — the deterministic sections always render.
         void enrichReport(prompt, sections);
       }
 
-      // TRADE branch (isolated): if the prompt asked for a move, execute the
-      // bounded swap as its own step. Sign the swap authorization on the fly if
-      // it wasn't already (so a trade prompt works without pre-granting on it).
+      // TRADE — independent of the research outcome (its own authorization). So a
+      // trade prompt runs even if research paused/failed. Sign the swap on the fly
+      // if needed; bundle the 7702 auth into the trade when research DIDN'T run
+      // (so the account still gets designated on the trade's first redemption).
       if (isTradeIntent(prompt) && coordinatorRef.current) {
         let swap: SwapAllowlistGrant | null = swapGrantRef.current;
         if (!swap) {
           append("Coordinator › this is a trade — authorizing the bounded swap now (approve in your wallet)…");
           swap = await authorizeSwap(coordinatorRef.current, activeGrant?.expiry);
         }
-        if (swap) await runTrade(swap);
+        if (swap) await runTrade(swap, undefined, commissionOk ? undefined : (authorization ?? undefined));
       }
     } catch (e) {
       console.error("[run] threw:", e);
@@ -1102,7 +1097,11 @@ export default function DemoPage() {
   // the payment path: approve the router once (direct tx, like cancel/revoke),
   // then settle the SwapBounds-bound exactInputSingle through 1Shot. `rogue`
   // crafts a redirect (proceeds → an attacker) → SwapBoundsEnforcer rejects it.
-  const runTrade = async (swap: SwapAllowlistGrant, rogueKind?: "redirect" | "offlist") => {
+  const runTrade = async (
+    swap: SwapAllowlistGrant,
+    rogueKind?: "redirect" | "offlist",
+    authorization?: Eip7702Authorization,
+  ) => {
     if (!coordinatorRef.current || !walletClient || !address) return;
     const rogue = !!rogueKind;
     const offlist = rogueKind === "offlist";
@@ -1172,6 +1171,7 @@ export default function DemoPage() {
         grant: swap, coordinator: coordinatorRef.current, req,
         tokenOut,
         amountIn: swap.maxAmountIn,
+        authorization,
         recipientOverride: rogueKind === "redirect" ? randomRogueAddr() : undefined,
         allowOffList: offlist,
       });
