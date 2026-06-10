@@ -232,6 +232,7 @@ export default function PortfolioPage() {
             <span><span className="text-conduit-cyan">{active}</span> active</span>
             <span><span className="text-white">{grants.filter((g) => g.kind === "budget").length}</span> budgets</span>
             <span><span className="text-white">{grants.filter((g) => g.kind === "subscription").length}</span> subscriptions</span>
+            <span><span className="text-white">{grants.filter((g) => g.kind === "swap").length}</span> swaps</span>
           </div>
         )}
 
@@ -285,15 +286,22 @@ function GrantCard({
   const [showCaveat, setShowCaveat] = useState(false);
   const s = STATUS_STYLE[status];
   const isSub = g.kind === "subscription";
+  const isSwap = g.kind === "swap";
   const amountUsdc = g.amount ? formatUnits(BigInt(g.amount), 6) : "—";
   const expiryText = !g.expiry || g.expiry === 0 ? "no expiry" : nowSec >= g.expiry ? "expired" : `in ${fmtDur(g.expiry - nowSec)}`;
   const canRevoke = status === "active" && !!g.context;
 
+  const kindChip = isSub
+    ? { cls: "bg-conduit-violet/15 text-conduit-violet", text: "subscription" }
+    : isSwap
+      ? { cls: "bg-conduit-magenta/15 text-conduit-magenta", text: "swap" }
+      : { cls: "bg-conduit-cyan/10 text-conduit-cyan", text: "budget" };
+
   // The exact on-chain caveat this permission carries — what it actually permits.
   const binding: InspectorBinding | null = g.enforcer
     ? {
-        kind: isSub ? "subscription" : "budget",
-        enforcerName: isSub ? "X402SubscriptionEnforcer" : "ERC20PeriodTransferEnforcer",
+        kind: g.kind,
+        enforcerName: isSub ? "X402SubscriptionEnforcer" : isSwap ? "SwapBoundsEnforcer" : "ERC20PeriodTransferEnforcer",
         enforcerAddr: g.enforcer,
         terms: isSub
           ? [
@@ -301,11 +309,18 @@ function GrantCard({
               { label: "merchant", value: shorten(g.merchant) },
               { label: "cadence", value: `1×/${fmtDur(g.periodSeconds ?? 0)}` },
             ]
-          : [
-              { label: "cap", value: `≤ ${amountUsdc} USDC / ${fmtDur(g.periodSeconds ?? 0)}` },
-              { label: "agent", value: shorten(g.coordinator) },
-              { label: "expires", value: expiryText },
-            ],
+          : isSwap
+            ? [
+                { label: "max in", value: `${amountUsdc} USDC` },
+                { label: "out", value: "WETH" },
+                { label: "slippage", value: "≤ 1%" },
+                { label: "to", value: "your account" },
+              ]
+            : [
+                { label: "cap", value: `≤ ${amountUsdc} USDC / ${fmtDur(g.periodSeconds ?? 0)}` },
+                { label: "agent", value: shorten(g.coordinator) },
+                { label: "expires", value: expiryText },
+              ],
       }
     : null;
 
@@ -313,25 +328,37 @@ function GrantCard({
     <section className="panel p-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="flex items-center gap-2.5">
-          <span className={`mono rounded px-1.5 py-0.5 text-[10px] ${isSub ? "bg-conduit-violet/15 text-conduit-violet" : "bg-conduit-cyan/10 text-conduit-cyan"}`}>
-            {isSub ? "subscription" : "budget"}
-          </span>
-          <h3 className="text-sm font-semibold text-white">{g.label || (isSub ? "Subscription" : "Agent budget")}</h3>
+          <span className={`mono rounded px-1.5 py-0.5 text-[10px] ${kindChip.cls}`}>{kindChip.text}</span>
+          <h3 className="text-sm font-semibold text-white">{g.label || (isSub ? "Subscription" : isSwap ? "Bounded swap" : "Agent budget")}</h3>
         </div>
         <span className={`mono rounded-md px-2 py-0.5 text-[11px] ${s.cls}`}>{s.label}</span>
       </div>
 
+      {/* the prompt this permission was authorised for */}
+      {g.prompt && (
+        <p className="mt-1.5 text-[12px] leading-relaxed text-conduit-muted">
+          <span className="text-conduit-muted/60">for:</span> &ldquo;{g.prompt}&rdquo;
+        </p>
+      )}
+
       {/* live state */}
       {isSub ? (
         <SubMeter g={g} sub={live?.sub} amountUsdc={amountUsdc} nowSec={nowSec} status={status} />
+      ) : isSwap ? (
+        <p className="mt-3 text-[12px] text-conduit-muted">
+          {status === "active"
+            ? `Authorises one bounded swap · ≤ ${amountUsdc} USDC → WETH, slippage floor + recipient pinned in your signature.`
+            : "This swap authorisation can no longer be used."}
+        </p>
       ) : (
         <BudgetMeter budget={live?.budget} amountUsdc={amountUsdc} status={status} />
       )}
 
       {/* facts */}
       <div className="mono mt-4 grid grid-cols-2 gap-x-6 gap-y-1 text-[12px] sm:grid-cols-3">
-        <Fact k={isSub ? "per charge" : "budget"} v={`${amountUsdc} USDC`} />
+        <Fact k={isSub ? "per charge" : isSwap ? "max in" : "budget"} v={`${amountUsdc} USDC`} />
         {isSub && <Fact k="cadence" v={`every ${fmtDur(g.periodSeconds ?? 0)}`} />}
+        {isSwap && <Fact k="buys" v="WETH" />}
         <Fact k="expires" v={expiryText} />
         {isSub && g.merchant && <Fact k="paid to" v={shorten(g.merchant)} />}
         {g.coordinator && <Fact k="agent" v={shorten(g.coordinator)} />}

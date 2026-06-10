@@ -13,13 +13,15 @@
 import type { Hex } from "viem";
 import { config } from "./config";
 
-export type GrantKind = "budget" | "subscription";
+export type GrantKind = "budget" | "subscription" | "swap";
 
 export interface GrantRecord {
   id: string;
   user: string;
   kind: GrantKind;
   label: string;
+  /** The originating prompt the user authorised this for. */
+  prompt?: string;
   coordinator?: string;
   token?: string;
   /** Base units: budget = period cap; subscription = amount per period. */

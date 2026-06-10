@@ -648,6 +648,7 @@ export default function DemoPage() {
         user: address,
         kind: "budget",
         label: deriveTitle(prompt) || "Agent budget",
+        prompt,
         coordinator: coordinator.address,
         token: config.usdc,
         amount: result.periodAmount.toString(),
@@ -674,8 +675,9 @@ export default function DemoPage() {
           void registerGrant({
             id: swap.delegationHash,
             user: address,
-            kind: "budget", // shown in /portfolio; the swap bounds live in the caveat
+            kind: "swap",
             label: `Bounded swap · ${amountInUsdc} USDC → WETH`,
+            prompt,
             coordinator: coordinator.address,
             token: config.usdc,
             amount: amountIn.toString(),

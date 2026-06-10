@@ -19,7 +19,7 @@ import { config } from "./config.js";
  * deploy would back this with a real DB.
  */
 
-export type GrantKind = "budget" | "subscription";
+export type GrantKind = "budget" | "subscription" | "swap";
 
 export interface GrantRecord {
   /** Stable id — the delegationHash if the client has it, else a uuid. */
@@ -29,6 +29,8 @@ export interface GrantRecord {
   kind: GrantKind;
   /** Human label, e.g. the prompt summary or the subscription name. */
   label: string;
+  /** The originating prompt the user authorised this for (verbatim). */
+  prompt?: string;
   /** The coordinator/session account the grant delegates to (budget grants). */
   coordinator?: string;
   /** ERC-20 token address the budget/charge is denominated in. */
