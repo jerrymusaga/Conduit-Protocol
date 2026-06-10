@@ -32,7 +32,7 @@ import {
   type RogueAttack,
 } from "@/lib/coordinator";
 import type { Eip7702Authorization } from "@/lib/payment";
-import { keccak256, parseAbi, parseUnits, formatUnits, type Hex } from "viem";
+import { keccak256, parseUnits, formatUnits, type Hex } from "viem";
 import { Erc7710Inspector, type InspectorBinding } from "@/components/Erc7710Inspector";
 import { useFacilitatorEvents } from "@/lib/useFacilitatorEvents";
 import { fetchJob, fetch402 } from "@/lib/endpoint";
@@ -62,11 +62,6 @@ import { type DiscoveredAgent } from "@/lib/discovery";
    =========================================================================== */
 
 type CardStage = "queued" | "requested" | "allowed" | "denied" | "settling" | "settled" | "failed";
-
-const ERC20_ALLOWANCE_ABI = parseAbi([
-  "function allowance(address owner, address spender) view returns (uint256)",
-  "function approve(address spender, uint256 amount) returns (bool)",
-]);
 
 /** A throwaway address for the rogue-swap beat (redirect target). */
 function randomRogueAddr(): Hex {
@@ -1038,26 +1033,13 @@ export default function DemoPage() {
     const b = swap.bounds;
     const tokenOutSymbol = "WETH";
     const base: TradeResult = {
-      stage: "approving", amountIn: b.maxAmountIn, minAmountOut: b.minAmountOut,
+      stage: "settling", amountIn: b.maxAmountIn, minAmountOut: b.minAmountOut,
       tokenOutSymbol, slippageBps: 100, rogue,
     };
     setTradeResult(base);
     try {
-      // Ensure the router can pull tokenIn (one-time approval; needs a little ETH).
-      const allowance = await publicClient.readContract({
-        address: config.usdc, abi: ERC20_ALLOWANCE_ABI, functionName: "allowance",
-        args: [address as Hex, b.router],
-      });
-      if ((allowance as bigint) < b.maxAmountIn) {
-        append("Trader › approving the swap venue (one-time, small ETH gas)…");
-        const tx = await walletClient.writeContract({
-          address: config.usdc, abi: ERC20_ALLOWANCE_ABI, functionName: "approve",
-          args: [b.router, b.maxAmountIn], // exact — no standing over-approval
-        });
-        await publicClient.waitForTransactionReceipt({ hash: tx });
-        append("Trader › venue approved ✓");
-      }
-
+      // No separate approve tx: the router allowance rides the SAME 1Shot batch as
+      // the swap ([approve, swap]), bounded by ApproveBounds → gas in USDC, no ETH.
       setTradeResult({ ...base, stage: "settling" });
       append(rogue ? "rogue Trader › redirecting the swap proceeds to itself…" : "Trader › executing the bounded swap via Conduit…");
       // Any 402 carries the facilitator caps (redeemer/feeCollector/fee quote).

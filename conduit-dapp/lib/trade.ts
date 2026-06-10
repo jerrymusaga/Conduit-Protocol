@@ -56,7 +56,6 @@ const SWAP_ROUTER_ABI = parseAbi([
 const QUOTER_ABI = parseAbi([
   "function quoteExactInputSingle((address tokenIn, address tokenOut, uint256 amountIn, uint24 fee, uint160 sqrtPriceLimitX96)) returns (uint256 amountOut, uint160 sqrtPriceX96After, uint32 initializedTicksCrossed, uint256 gasEstimate)",
 ]);
-const erc20ApproveAbi = parseAbi(["function approve(address spender, uint256 amount) returns (bool)"]);
 
 /** Uniswap QuoterV2 per chain (best-effort slippage-floor pricing). */
 const QUOTER: Record<number, Hex> = {
@@ -80,12 +79,29 @@ export interface SwapBounds {
 
 export interface SwapGrant {
   context: Hex;
+  /** The ApproveBounds root (user → coordinator) authorising the router
+   *  allowance — so the approve rides the same 1Shot batch (no ETH needed). */
+  approveContext: Hex;
   delegationManager: Hex;
   delegationHash: Hex;
   bounds: SwapBounds;
   /** The bounded gas-fee budget root (funds 1Shot's USDC gas recoup). */
   feeGrant: GrantResult;
   expiry: number;
+}
+
+/** Pack the 56-byte ApproveBoundsEnforcer terms: token · spender · maxAmount. */
+export function encodeApproveTerms(token: Hex, spender: Hex, maxAmount: bigint): Hex {
+  return encodePacked(["address", "address", "uint128"], [token, spender, maxAmount]);
+}
+
+/** USDC.approve(router, amount) calldata. */
+export function encodeApproveCalldata(spender: Hex, amount: bigint): Hex {
+  return encodeFunctionData({
+    abi: parseAbi(["function approve(address spender, uint256 amount) returns (bool)"]),
+    functionName: "approve",
+    args: [spender, amount],
+  });
 }
 
 /** Pack the 112-byte SwapBoundsEnforcer terms (matches the contract layout). */
@@ -213,6 +229,39 @@ export async function grantSwap(params: {
   });
   const signedRoot = { ...unsignedRoot, signature };
 
+  // ApproveBounds root — authorises the exact router allowance the swap needs, so
+  // the approve can ride the same 1Shot batch (gas in USDC; no ETH). Bounded to
+  // token + the SwapBounds router + the same cap, with the same expiry.
+  const approveCaveats: { enforcer: Hex; terms: Hex; args: Hex }[] = [
+    {
+      enforcer: config.approveBoundsEnforcer,
+      terms: encodeApproveTerms(bounds.tokenIn, bounds.router, bounds.maxAmountIn),
+      args: "0x" as Hex,
+    },
+  ];
+  if (expiry > 0) {
+    approveCaveats.push({
+      enforcer: config.timestampEnforcer,
+      terms: encodePacked(["uint128", "uint128"], [0n, BigInt(expiry)]),
+      args: "0x" as Hex,
+    });
+  }
+  const unsignedApprove = {
+    delegate: coordinator.address,
+    delegator: userAddress,
+    authority: ROOT_AUTHORITY,
+    caveats: approveCaveats,
+    salt: toHex(crypto.getRandomValues(new Uint8Array(32))),
+  };
+  const approveSig = await signDelegation(walletClient, {
+    delegation: unsignedApprove,
+    delegationManager: config.delegationManager,
+    chainId: config.chainId,
+    name: "DelegationManager",
+    version: "1",
+  });
+  const signedApprove = { ...unsignedApprove, signature: approveSig };
+
   const feeGrant = await grantBudget({
     walletClient,
     userAddress,
@@ -223,17 +272,13 @@ export async function grantSwap(params: {
 
   return {
     context: encodeDelegations([signedRoot]),
+    approveContext: encodeDelegations([signedApprove]),
     delegationManager: config.delegationManager,
     delegationHash: hashDelegation(signedRoot as Delegation),
     bounds,
     feeGrant,
     expiry,
   };
-}
-
-/** The USDC.approve(router, amount) the user sends once so Uniswap can pull. */
-export function approveRouterCalldata(router: Hex, amount: bigint): Hex {
-  return encodeFunctionData({ abi: erc20ApproveAbi, functionName: "approve", args: [router, amount] });
 }
 
 export interface BuiltSwap {
@@ -260,38 +305,57 @@ export async function buildSwapCommission(params: {
   if (!req.redeemer) throw new Error("facilitator advertised no redeemer (targetAddress)");
   if (!req.feeCollector) throw new Error("facilitator advertised no feeCollector (oneshot-pl)");
 
+  const redeemer = req.redeemer;
+  const rootDelegator = decodeDelegations(grant.context).slice(-1)[0].delegator;
+
+  // An open leaf (coordinator → relayer) under a user-signed root. The binding
+  // lives on the root's caveat (ApproveBounds / SwapBounds), so the leaf is open.
+  const openLeafChain = async (rootContext: Hex): Promise<Delegation[]> => {
+    const rootChain = decodeDelegations(rootContext);
+    const root = rootChain[0];
+    const unsignedLeaf: Omit<Delegation, "signature"> = {
+      delegate: redeemer,
+      delegator: coordinator.address,
+      authority: hashDelegation(root),
+      caveats: [],
+      salt: toHex(crypto.getRandomValues(new Uint8Array(32))),
+    };
+    const sig = await signDelegationWithKey({
+      privateKey: coordinator.privateKey,
+      delegation: unsignedLeaf,
+      delegationManager: grant.delegationManager,
+      chainId: config.chainId,
+      name: "DelegationManager",
+      version: "1",
+      allowInsecureUnrestrictedDelegation: true,
+    });
+    return [{ ...unsignedLeaf, signature: sig }, ...rootChain];
+  };
+
   const swapCalldata = encodeSwapCalldata(grant.bounds, amountIn, params.recipientOverride);
 
-  const rootChain = decodeDelegations(grant.context);
-  const swapRoot = rootChain[0];
-  const rootDelegator = rootChain[rootChain.length - 1].delegator;
-  const leafSalt = toHex(crypto.getRandomValues(new Uint8Array(32)));
-
-  const unsignedLeaf: Omit<Delegation, "signature"> = {
-    delegate: req.redeemer,
-    delegator: coordinator.address,
-    authority: hashDelegation(swapRoot),
-    caveats: [], // open: the binding lives on the user's SwapBounds root
-    salt: leafSalt,
-  };
-  const leafSig = await signDelegationWithKey({
-    privateKey: coordinator.privateKey,
-    delegation: unsignedLeaf,
-    delegationManager: grant.delegationManager,
-    chainId: config.chainId,
-    name: "DelegationManager",
-    version: "1",
-    allowInsecureUnrestrictedDelegation: true,
-  });
-  const workChain: Delegation[] = [{ ...unsignedLeaf, signature: leafSig }, ...rootChain];
-
-  const workExecution = { target: grant.bounds.router, value: "0", data: swapCalldata };
+  // The atomic batch: [approve, swap]. The approve grants exactly the router
+  // allowance the swap consumes — settled together via 1Shot (gas in USDC, no ETH).
+  const [approveChain, swapChain] = await Promise.all([
+    openLeafChain(grant.approveContext),
+    openLeafChain(grant.context),
+  ]);
+  const works = [
+    {
+      chain: approveChain,
+      execution: { target: config.usdc, value: "0", data: encodeApproveCalldata(grant.bounds.router, amountIn) },
+    },
+    {
+      chain: swapChain,
+      execution: { target: grant.bounds.router, value: "0", data: swapCalldata },
+    },
+  ];
 
   const feeIntent = keccak256(toHex(crypto.getRandomValues(new Uint8Array(32))));
   const feeChain = await buildBoundChain({
     grant: grant.feeGrant,
     coordinator,
-    redeemer: req.redeemer,
+    redeemer,
     token: config.usdc,
     recipient: req.feeCollector,
     maxAmount: feeCapAtoms(req.feeEstimate),
@@ -304,13 +368,14 @@ export async function buildSwapCommission(params: {
     network: req.network,
     payload: {
       delegationManager: grant.delegationManager,
-      permissionContext: encodeDelegations(workChain),
+      // Schema-compat top level (the oneshot backend uses `works` below).
+      permissionContext: encodeDelegations(swapChain),
       delegator: rootDelegator,
       executionCallData: encodeExecutionCalldata([
         createExecution({ target: grant.bounds.router, value: 0n, callData: swapCalldata }),
       ]),
       ...(params.authorization ? { authorization: params.authorization } : {}),
-      oneshot: { paymentToken: config.usdc, workChain, workExecution, feeChain },
+      oneshot: { paymentToken: config.usdc, works, feeChain },
     },
   };
 
