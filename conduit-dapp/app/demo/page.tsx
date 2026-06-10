@@ -42,6 +42,7 @@ import {
   buildAllowlistSwapCommission,
   settleSwap,
   scoutToken,
+  tradeAllowlist,
   isTradeIntent,
   parseTradeIntent,
   type SwapAllowlistGrant,
@@ -292,6 +293,11 @@ export default function DemoPage() {
   // executed-trade result. Never touches the research/payment path above.
   const swapGrantRef = useRef<SwapAllowlistGrant | null>(null);
   const [swapAuthorized, setSwapAuthorized] = useState(false); // a swap grant was signed (trade intent)
+  // Pre-sign confirmation: the exact swap terms the user is about to authorise.
+  const [swapConfirm, setSwapConfirm] = useState<
+    { amountUsdc: string; tokens: string; slippagePct: string; expiryText: string } | null
+  >(null);
+  const swapConfirmResolve = useRef<((ok: boolean) => void) | null>(null);
   const [tradeResult, setTradeResult] = useState<TradeResult | null>(null);
   // Voice input: record the spoken prompt, transcribe via Venice STT.
   const [recording, setRecording] = useState(false);
@@ -561,6 +567,18 @@ export default function DemoPage() {
     }
   };
 
+  // Show the pre-sign panel and resolve when the user approves/declines.
+  const confirmSwap = (info: { amountUsdc: string; tokens: string; slippagePct: string; expiryText: string }) =>
+    new Promise<boolean>((resolve) => {
+      swapConfirmResolve.current = resolve;
+      setSwapConfirm(info);
+    });
+  const resolveSwapConfirm = (ok: boolean) => {
+    setSwapConfirm(null);
+    swapConfirmResolve.current?.(ok);
+    swapConfirmResolve.current = null;
+  };
+
   // Sign a swap authorization for the current trade prompt (a curated token
   // allowlist + per-token floors + ApproveBounds + fee). Called from grant() AND
   // lazily from run() — so a trade prompt "just works" without pre-granting on it.
@@ -593,6 +611,19 @@ export default function DemoPage() {
         return null;
       }
       const finalUsdc = (Number(amountIn) / 1e6).toFixed(2);
+
+      // Pre-sign confirmation — the user sees the EXACT cap they're authorizing
+      // before the (opaque) wallet signature, not just a log line after.
+      const ok = await confirmSwap({
+        amountUsdc: finalUsdc,
+        tokens: tradeAllowlist().map((t) => t.symbol).join(", "),
+        slippagePct: (slippageBps / 100).toFixed(2),
+        expiryText: expiryUnix ? `in ${fmtCountdown(expiryUnix - Math.floor(Date.now() / 1000))}` : "no expiry",
+      });
+      if (!ok) {
+        append("Coordinator › swap authorization declined — no trade.");
+        return null;
+      }
 
       append(`Coordinator › authorizing a bounded swap · ≤ ${finalUsdc} USDC, max ${(slippageBps / 100).toFixed(2)}% slippage, into one of your approved tokens…`);
       const swap = await grantSwapAllowlist({
@@ -1276,6 +1307,40 @@ export default function DemoPage() {
 
   return (
     <main className="min-h-screen">
+      {/* Pre-sign swap confirmation — the exact cap the user is authorizing, in
+          plain language, before the (opaque) wallet signature. */}
+      {swapConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" role="dialog" aria-modal>
+          <div className="panel w-full max-w-md p-6">
+            <h3 className="text-base font-semibold text-white">Authorize this swap?</h3>
+            <p className="mt-1 text-[12px] leading-relaxed text-conduit-muted">
+              Your signature binds these on-chain — the agent can do <span className="text-white">exactly this and nothing else</span>.
+            </p>
+            <div className="mono mt-4 space-y-1.5 rounded-lg border border-conduit-border/60 bg-black/30 p-3 text-[12px]">
+              <div className="flex justify-between gap-3"><span className="text-conduit-muted">swap up to</span><span className="text-white">{swapConfirm.amountUsdc} USDC</span></div>
+              <div className="flex justify-between gap-3"><span className="text-conduit-muted">into one of</span><span className="text-white">{swapConfirm.tokens}</span></div>
+              <div className="flex justify-between gap-3"><span className="text-conduit-muted">max slippage</span><span className="text-white">{swapConfirm.slippagePct}%</span></div>
+              <div className="flex justify-between gap-3"><span className="text-conduit-muted">proceeds to</span><span className="text-white">your account</span></div>
+              <div className="flex justify-between gap-3"><span className="text-conduit-muted">expires</span><span className="text-white">{swapConfirm.expiryText}</span></div>
+            </div>
+            <p className="mono mt-2 text-[11px] leading-relaxed text-conduit-muted/70">
+              A hijacked agent can&apos;t swap a different token, overspend this cap, accept a worse fill, or redirect the proceeds — SwapAllowlistEnforcer rejects it on-chain.
+            </p>
+            <div className="mt-4 flex gap-2">
+              <button onClick={() => resolveSwapConfirm(true)} className="btn-primary flex-1 justify-center text-sm">
+                Approve &amp; sign
+              </button>
+              <button
+                onClick={() => resolveSwapConfirm(false)}
+                className="rounded-lg border border-conduit-border px-3 py-2 text-sm text-conduit-muted transition-colors hover:text-white"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* top bar */}
       <div className="border-b border-conduit-border/60">
         <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
