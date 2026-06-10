@@ -41,6 +41,28 @@ async function safe<T>(label: string, fn: () => Promise<T>): Promise<T | null> {
   }
 }
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * fetch() that retries on transient rate-limit/overload (429, 503, 529) with
+ * jittered backoff. A run fires several Venice calls at once; the burst can trip
+ * the per-key concurrency limit and a single 429 would otherwise fall back to a
+ * canned response. Retrying lets the heavy chat calls just wait and succeed.
+ */
+async function fetchRetry(url: string, init: RequestInit, tries = 3): Promise<Response> {
+  let last: Response | null = null;
+  for (let i = 0; i < tries; i++) {
+    const res = await fetch(url, init);
+    if (res.status !== 429 && res.status !== 503 && res.status !== 529) return res;
+    last = res;
+    // Honor Retry-After when present, else backoff 0.6s, 1.5s (+ jitter).
+    const ra = Number(res.headers.get("retry-after"));
+    const wait = ra > 0 ? ra * 1000 : (i === 0 ? 600 : 1500) + Math.floor(Math.random() * 400);
+    if (i < tries - 1) await sleep(wait);
+  }
+  return last as Response;
+}
+
 export interface ChatOptions {
   model?: string;
   /** Venice server-side web search ("on" | "auto"). */
@@ -78,7 +100,7 @@ export async function veniceChat(
     if (opts.reasoningEffort) body.reasoning = { effort: opts.reasoningEffort };
     if (Object.keys(venice_parameters).length) body.venice_parameters = venice_parameters;
 
-    const res = await fetch(`${VENICE_BASE}/chat/completions`, {
+    const res = await fetchRetry(`${VENICE_BASE}/chat/completions`, {
       method: "POST",
       headers: authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify(body),
@@ -120,7 +142,7 @@ export async function veniceRpc(
 /** POST /image/generate → a data: URL (png), or null on any failure. */
 export async function veniceImage(prompt: string): Promise<string | null> {
   return safe("image", async () => {
-    const res = await fetch(`${VENICE_BASE}/image/generate`, {
+    const res = await fetchRetry(`${VENICE_BASE}/image/generate`, {
       method: "POST",
       headers: authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({
@@ -146,7 +168,7 @@ export async function veniceImage(prompt: string): Promise<string | null> {
 /** POST /audio/speech → a data: URL (mp3) for a playable voiceover, or null. */
 export async function veniceSpeech(text: string): Promise<string | null> {
   return safe("speech", async () => {
-    const res = await fetch(`${VENICE_BASE}/audio/speech`, {
+    const res = await fetchRetry(`${VENICE_BASE}/audio/speech`, {
       method: "POST",
       headers: authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({
@@ -181,7 +203,7 @@ export async function veniceSearch(
   limit = 5
 ): Promise<SearchResult[] | null> {
   return safe("search", async () => {
-    const res = await fetch(`${VENICE_BASE}/augment/search`, {
+    const res = await fetchRetry(`${VENICE_BASE}/augment/search`, {
       method: "POST",
       headers: authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({ query, limit, search_provider: "brave" }),
