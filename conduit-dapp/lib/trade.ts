@@ -410,6 +410,241 @@ export async function settleSwap(
   }
 }
 
+// --- token allowlist (dynamic-token swaps) ----------------------------------
+
+export interface TradeToken {
+  symbol: string;
+  address: Hex;
+  /** A short hint the scout reasons over to match the prompt. */
+  note: string;
+}
+
+// The CURATED set a user authorises for swaps — never arbitrary tokens (resolving
+// a name→address blindly is a rug vector). Same set on both chains; on testnet
+// the swap won't have liquidity, but the authorisation + scout pick are real.
+const CBETH: Hex = "0x2Ae3F1Ec7F1F5012CFEab0185bfc7aa3cf0DEc22"; // Base cbETH
+const TRADE_TOKENS: Record<number, TradeToken[]> = {
+  8453: [
+    { symbol: "WETH", address: "0x4200000000000000000000000000000000000006", note: "wrapped ETH — the base liquid asset" },
+    { symbol: "cbETH", address: CBETH, note: "Coinbase staked ETH — earns staking yield" },
+  ],
+  84532: [
+    { symbol: "WETH", address: "0x4200000000000000000000000000000000000006", note: "wrapped ETH — the base liquid asset" },
+    { symbol: "cbETH", address: CBETH, note: "Coinbase staked ETH — earns staking yield" },
+  ],
+};
+
+/** The curated token set the user can authorise for this chain. */
+export function tradeAllowlist(): TradeToken[] {
+  return TRADE_TOKENS[config.chainId] ?? TRADE_TOKENS[84532];
+}
+
+export interface AllowlistEntry {
+  token: Hex;
+  symbol: string;
+  minAmountOut: bigint;
+  note: string;
+}
+
+export interface SwapAllowlistGrant {
+  context: Hex; // SwapAllowlist root
+  approveContext: Hex;
+  delegationManager: Hex;
+  delegationHash: Hex;
+  router: Hex;
+  tokenIn: Hex;
+  maxAmountIn: bigint;
+  recipient: Hex;
+  fee: number;
+  allowlist: AllowlistEntry[];
+  feeGrant: GrantResult;
+  expiry: number;
+}
+
+/** Pack the SwapAllowlistEnforcer terms:
+ *  router · tokenIn · maxIn · recipient · N · [tokenOut · minOut]×N. */
+function encodeAllowlistTerms(g: {
+  router: Hex; tokenIn: Hex; maxAmountIn: bigint; recipient: Hex; allowlist: AllowlistEntry[];
+}): Hex {
+  const types: string[] = ["address", "address", "uint128", "address", "uint8"];
+  const values: unknown[] = [g.router, g.tokenIn, g.maxAmountIn, g.recipient, g.allowlist.length];
+  for (const e of g.allowlist) {
+    types.push("address", "uint128");
+    values.push(e.token, e.minAmountOut);
+  }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return encodePacked(types as any, values as any);
+}
+
+/**
+ * Grant a SWAP authorisation over a SET of output tokens. The user signs a
+ * SwapAllowlist root (the curated set, each with its own slippage floor) + an
+ * ApproveBounds root + a fee budget. A scout later picks one token from the set;
+ * the Trader swaps into it without the user re-signing.
+ */
+export async function grantSwapAllowlist(params: {
+  walletClient: WalletClient;
+  userAddress: Hex;
+  coordinator: Coordinator;
+  amountIn: bigint;
+  slippageBps: number;
+  tokens?: TradeToken[];
+  fee?: number;
+  feeBudgetUsdc?: string;
+  expiry?: number;
+}): Promise<SwapAllowlistGrant> {
+  const { walletClient, userAddress, coordinator, amountIn } = params;
+  const tokenIn = config.usdc;
+  const router = config.uniswapRouter;
+  const fee = params.fee ?? 500;
+  const expiry = params.expiry ?? 0;
+  const tokens = params.tokens ?? tradeAllowlist();
+
+  // Per-token slippage floor from a live quote (best-effort). On mainnet a token
+  // with no quote is dropped (never authorise a token we can't floor); on testnet
+  // a nominal floor keeps the authorisation + scout pick demoable.
+  const entries: AllowlistEntry[] = [];
+  for (const t of tokens) {
+    const expected = await quoteExpectedOut({ tokenIn, tokenOut: t.address, fee }, amountIn);
+    let floor: bigint;
+    if (expected && expected > 0n) floor = (expected * BigInt(10_000 - params.slippageBps)) / 10_000n;
+    else if (config.chainId === 8453) continue; // mainnet: skip un-quotable tokens
+    else floor = 1n; // testnet nominal
+    entries.push({ token: t.address, symbol: t.symbol, minAmountOut: floor, note: t.note });
+  }
+  if (entries.length === 0) throw new Error("Couldn't price any allowlisted token — refusing to authorise a blind swap.");
+
+  const head = { router, tokenIn, maxAmountIn: amountIn, recipient: userAddress, allowlist: entries };
+
+  const caveats: { enforcer: Hex; terms: Hex; args: Hex }[] = [
+    { enforcer: config.swapAllowlistEnforcer, terms: encodeAllowlistTerms(head), args: "0x" as Hex },
+  ];
+  const approveCaveats: { enforcer: Hex; terms: Hex; args: Hex }[] = [
+    { enforcer: config.approveBoundsEnforcer, terms: encodeApproveTerms(tokenIn, router, amountIn), args: "0x" as Hex },
+  ];
+  if (expiry > 0) {
+    const ts = { enforcer: config.timestampEnforcer, terms: encodePacked(["uint128", "uint128"], [0n, BigInt(expiry)]), args: "0x" as Hex };
+    caveats.push(ts);
+    approveCaveats.push(ts);
+  }
+
+  const signRoot = async (cvs: { enforcer: Hex; terms: Hex; args: Hex }[]) => {
+    const unsigned = {
+      delegate: coordinator.address, delegator: userAddress, authority: ROOT_AUTHORITY,
+      caveats: cvs, salt: toHex(crypto.getRandomValues(new Uint8Array(32))),
+    };
+    const signature = await signDelegation(walletClient, {
+      delegation: unsigned, delegationManager: config.delegationManager,
+      chainId: config.chainId, name: "DelegationManager", version: "1",
+    });
+    return { ...unsigned, signature };
+  };
+
+  const swapRoot = await signRoot(caveats);
+  const approveRoot = await signRoot(approveCaveats);
+  const feeGrant = await grantBudget({
+    walletClient, userAddress, coordinator, amountUsdc: params.feeBudgetUsdc ?? "0.30", periodDuration: 3600,
+  });
+
+  return {
+    context: encodeDelegations([swapRoot]),
+    approveContext: encodeDelegations([approveRoot]),
+    delegationManager: config.delegationManager,
+    delegationHash: hashDelegation(swapRoot as Delegation),
+    router, tokenIn, maxAmountIn: amountIn, recipient: userAddress, fee,
+    allowlist: entries, feeGrant, expiry,
+  };
+}
+
+/** Build the [approve, swap] 1Shot batch for a chosen allowlist token. */
+export async function buildAllowlistSwapCommission(params: {
+  grant: SwapAllowlistGrant;
+  coordinator: Coordinator;
+  req: PaymentRequirements;
+  tokenOut: Hex;
+  amountIn: bigint;
+  authorization?: Eip7702Authorization;
+  recipientOverride?: Hex;
+}): Promise<BuiltSwap> {
+  const { grant, coordinator, req, tokenOut, amountIn } = params;
+  if (!req.redeemer) throw new Error("facilitator advertised no redeemer (targetAddress)");
+  if (!req.feeCollector) throw new Error("facilitator advertised no feeCollector (oneshot-pl)");
+  const entry = grant.allowlist.find((e) => e.token.toLowerCase() === tokenOut.toLowerCase());
+  if (!entry) throw new Error("chosen token is not in the signed allowlist");
+
+  const redeemer = req.redeemer;
+  const rootDelegator = decodeDelegations(grant.context).slice(-1)[0].delegator;
+
+  const openLeafChain = async (rootContext: Hex): Promise<Delegation[]> => {
+    const rootChain = decodeDelegations(rootContext);
+    const root = rootChain[0];
+    const unsignedLeaf: Omit<Delegation, "signature"> = {
+      delegate: redeemer, delegator: coordinator.address, authority: hashDelegation(root),
+      caveats: [], salt: toHex(crypto.getRandomValues(new Uint8Array(32))),
+    };
+    const sig = await signDelegationWithKey({
+      privateKey: coordinator.privateKey, delegation: unsignedLeaf,
+      delegationManager: grant.delegationManager, chainId: config.chainId,
+      name: "DelegationManager", version: "1", allowInsecureUnrestrictedDelegation: true,
+    });
+    return [{ ...unsignedLeaf, signature: sig }, ...rootChain];
+  };
+
+  // Reuse the swap-calldata encoder via a SwapBounds-shaped view of the chosen leg.
+  const bounds: SwapBounds = {
+    router: grant.router, tokenIn: grant.tokenIn, tokenOut,
+    maxAmountIn: grant.maxAmountIn, minAmountOut: entry.minAmountOut,
+    recipient: grant.recipient, fee: grant.fee,
+  };
+  const swapCalldata = encodeSwapCalldata(bounds, amountIn, params.recipientOverride);
+
+  const [approveChain, swapChain] = await Promise.all([
+    openLeafChain(grant.approveContext),
+    openLeafChain(grant.context),
+  ]);
+  const works = [
+    { chain: approveChain, execution: { target: config.usdc, value: "0", data: encodeApproveCalldata(grant.router, amountIn) } },
+    { chain: swapChain, execution: { target: grant.router, value: "0", data: swapCalldata } },
+  ];
+
+  const feeIntent = keccak256(toHex(crypto.getRandomValues(new Uint8Array(32))));
+  const feeChain = await buildBoundChain({
+    grant: grant.feeGrant, coordinator, redeemer, token: config.usdc,
+    recipient: req.feeCollector, maxAmount: feeCapAtoms(req.feeEstimate), intentHash: feeIntent,
+  });
+
+  const paymentPayload = {
+    x402Version: 2, scheme: req.scheme, network: req.network,
+    payload: {
+      delegationManager: grant.delegationManager,
+      permissionContext: encodeDelegations(swapChain),
+      delegator: rootDelegator,
+      executionCallData: encodeExecutionCalldata([
+        createExecution({ target: grant.router, value: 0n, callData: swapCalldata }),
+      ]),
+      ...(params.authorization ? { authorization: params.authorization } : {}),
+      oneshot: { paymentToken: config.usdc, works, feeChain },
+    },
+  };
+  return { paymentPayload, amountIn };
+}
+
+/** The Scout: pick the best token from the SIGNED allowlist for the prompt. A
+ *  deterministic match (keyword → token note) with a rationale; Venice can refine
+ *  it later, but the choice is always constrained to the set the user signed. */
+export function scoutToken(prompt: string, allowlist: AllowlistEntry[]): { entry: AllowlistEntry; rationale: string } {
+  const p = prompt.toLowerCase();
+  const wantsYield = /(yield|stak|apr|apy|earn|interest)/.test(p);
+  // Prefer a yield-bearing token when the prompt is about yield; else the base asset.
+  const pick =
+    (wantsYield && allowlist.find((e) => /stak|yield|cbeth|steth|reth/i.test(e.symbol + e.note))) ||
+    allowlist[0];
+  const rationale = wantsYield && /stak|yield/i.test(pick.note)
+    ? `Prompt asks for yield → ${pick.symbol} (${pick.note}) from your authorised set.`
+    : `${pick.symbol} (${pick.note}) — best match in your authorised set.`;
+  return { entry: pick, rationale };
+}
+
 // --- prompt understanding ---------------------------------------------------
 
 /** Does the prompt ask the agent to make a trade / move funds into a position? */

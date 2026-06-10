@@ -383,17 +383,18 @@ export function CoordinationCanvas({
 
 function bindingFor(c: CanvasCard): InspectorBinding {
   const violated = c.agent === "rogue";
-  // The Trader's leg is a bounded SWAP, not a payment.
-  if (c.service === "trade") {
+  // The Trader's leg is a bounded SWAP into a token from the signed set; the Scout
+  // picks within that same set — both inspect the SwapAllowlist caveat.
+  if (c.service === "trade" || c.service === "scout") {
     return {
       kind: "swap",
-      enforcerName: violated ? "SwapBoundsEnforcer (violated)" : "SwapBoundsEnforcer",
-      enforcerAddr: config.swapBoundsEnforcer,
+      enforcerName: violated ? "SwapAllowlistEnforcer (violated)" : "SwapAllowlistEnforcer",
+      enforcerAddr: config.swapAllowlistEnforcer,
       violated,
       terms: [
-        { label: "max in", value: `${c.priceUsdc} USDC` },
-        { label: "out", value: "WETH" },
-        { label: "slippage", value: "≤ 1%" },
+        { label: "max in", value: c.service === "trade" ? `${c.priceUsdc} USDC` : "—" },
+        { label: "out", value: "an approved token (your signed set)" },
+        { label: "slippage", value: "≤ 1% (per-token floor)" },
         { label: "to", value: "your account" },
       ],
     };

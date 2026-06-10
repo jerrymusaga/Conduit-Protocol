@@ -38,13 +38,13 @@ import { useFacilitatorEvents } from "@/lib/useFacilitatorEvents";
 import { fetchJob, fetch402 } from "@/lib/endpoint";
 import { registerGrant } from "@/lib/grants";
 import {
-  grantSwap,
-  buildSwapCommission,
+  grantSwapAllowlist,
+  buildAllowlistSwapCommission,
   settleSwap,
-  resolveSwapBounds,
+  scoutToken,
   isTradeIntent,
   parseTradeIntent,
-  type SwapGrant,
+  type SwapAllowlistGrant,
 } from "@/lib/trade";
 import { config } from "@/lib/config";
 import { publicClient } from "@/lib/chain";
@@ -286,7 +286,7 @@ export default function DemoPage() {
   const [reportTitle, setReportTitle] = useState<string | null>(null); // deliverable title (derived from prompt, upgraded by Venice H1)
   // Trading (isolated, trade-intent prompts only): the SwapBounds grant + the
   // executed-trade result. Never touches the research/payment path above.
-  const swapGrantRef = useRef<SwapGrant | null>(null);
+  const swapGrantRef = useRef<SwapAllowlistGrant | null>(null);
   const [swapAuthorized, setSwapAuthorized] = useState(false); // a swap grant was signed (trade intent)
   const [tradeResult, setTradeResult] = useState<TradeResult | null>(null);
   // Voice input: record the spoken prompt, transcribe via Venice STT.
@@ -666,23 +666,25 @@ export default function DemoPage() {
         try {
           const { amountInUsdc, slippageBps } = parseTradeIntent(prompt);
           const amountIn = parseUnits(String(amountInUsdc), 6);
-          append(`Coordinator › authorizing a bounded swap · ≤ ${amountInUsdc} USDC → WETH · max ${(slippageBps / 100).toFixed(2)}% slippage…`);
-          const bounds = await resolveSwapBounds({ recipient: address, amountIn, slippageBps });
-          const swap = await grantSwap({ walletClient, userAddress: address, coordinator, bounds, expiry: expirySeconds ? Math.floor(Date.now() / 1000) + expirySeconds : undefined });
+          append(`Coordinator › authorizing a bounded swap · ≤ ${amountInUsdc} USDC, max ${(slippageBps / 100).toFixed(2)}% slippage, into one of your approved tokens…`);
+          const swap = await grantSwapAllowlist({
+            walletClient, userAddress: address, coordinator, amountIn, slippageBps,
+            expiry: expirySeconds ? Math.floor(Date.now() / 1000) + expirySeconds : undefined,
+          });
           swapGrantRef.current = swap;
           setSwapAuthorized(true);
-          append("Coordinator › swap authorization signed · pair + cap + slippage floor + recipient bound on-chain");
+          append(`Coordinator › swap authorization signed · cap + slippage floor + recipient + a set of ${swap.allowlist.length} approved tokens (${swap.allowlist.map((e) => e.symbol).join(", ")}) bound on-chain`);
           void registerGrant({
             id: swap.delegationHash,
             user: address,
             kind: "swap",
-            label: `Bounded swap · ${amountInUsdc} USDC → WETH`,
+            label: `Bounded swap · ${amountInUsdc} USDC → {${swap.allowlist.map((e) => e.symbol).join(", ")}}`,
             prompt,
             coordinator: coordinator.address,
             token: config.usdc,
             amount: amountIn.toString(),
             expiry: swap.expiry,
-            enforcer: config.swapBoundsEnforcer,
+            enforcer: config.swapAllowlistEnforcer,
             context: swap.context,
           });
         } catch (e) {
@@ -1032,19 +1034,34 @@ export default function DemoPage() {
   // the payment path: approve the router once (direct tx, like cancel/revoke),
   // then settle the SwapBounds-bound exactInputSingle through 1Shot. `rogue`
   // crafts a redirect (proceeds → an attacker) → SwapBoundsEnforcer rejects it.
-  const runTrade = async (swap: SwapGrant, rogue = false) => {
+  const runTrade = async (swap: SwapAllowlistGrant, rogue = false) => {
     if (!coordinatorRef.current || !walletClient || !address) return;
-    const b = swap.bounds;
-    const tokenOutSymbol = "WETH";
-    const amtUsdc = (Number(b.maxAmountIn) / 1e6).toFixed(2);
+    const amtUsdc = (Number(swap.maxAmountIn) / 1e6).toFixed(2);
+
+    // 1) SCOUT — a sequential A2A handoff: the scout picks the best token from the
+    //    SIGNED allowlist for this prompt, then hands it to the Trader.
+    const { entry, rationale } = scoutToken(prompt, swap.allowlist);
+    const scoutCid = crypto.randomUUID();
+    setCards((cs) => [
+      ...cs,
+      {
+        correlationId: scoutCid, service: "scout", label: "Token Scout", agent: "scout",
+        priceUsdc: "—", rationale, stage: "settled" as CardStage,
+        source: `picked ${entry.symbol} from {${swap.allowlist.map((e) => e.symbol).join(", ")}}`,
+      },
+    ]);
+    append(`Coordinator → Scout › ${rationale}`);
+    append(`Scout → Trader › swap into ${entry.symbol}`);
+
+    const tokenOutSymbol = entry.symbol;
     const base: TradeResult = {
-      stage: "settling", amountIn: b.maxAmountIn, minAmountOut: b.minAmountOut,
+      stage: "settling", amountIn: swap.maxAmountIn, minAmountOut: entry.minAmountOut,
       tokenOutSymbol, slippageBps: 100, rogue,
     };
     setTradeResult(base);
 
-    // Surface the Trader as a hired specialist in the feed/canvas (service:"trade"
-    // → the canvas renders its SwapBounds caveat). The coordinator "hires" it.
+    // 2) TRADER — surface it as a hired specialist (service:"trade" → the canvas
+    //    renders its SwapAllowlist caveat). Executes the bounded swap.
     const correlationId = crypto.randomUUID();
     setCards((cs) => [
       ...cs,
@@ -1056,7 +1073,7 @@ export default function DemoPage() {
         priceUsdc: amtUsdc,
         rationale: rogue
           ? "Tries to redirect the swap proceeds to itself."
-          : `Executes the bounded swap · ${amtUsdc} USDC → ${tokenOutSymbol}.`,
+          : `Executes the bounded swap · ${amtUsdc} USDC → ${tokenOutSymbol} (Scout's pick).`,
         stage: "requested" as CardStage,
         rogueKind: rogue ? ("redirect" as RogueKind) : undefined,
       },
@@ -1071,9 +1088,10 @@ export default function DemoPage() {
       setCardStage(correlationId, { stage: "settling" });
       // Any 402 carries the facilitator caps (redeemer/feeCollector/fee quote).
       const req = await fetch402("/services/researcher");
-      const built = await buildSwapCommission({
+      const built = await buildAllowlistSwapCommission({
         grant: swap, coordinator: coordinatorRef.current, req,
-        amountIn: b.maxAmountIn,
+        tokenOut: entry.token,
+        amountIn: swap.maxAmountIn,
         recipientOverride: rogue ? randomRogueAddr() : undefined,
       });
       const r = await settleSwap(built.paymentPayload, { correlationId, agent: rogue ? "rogue" : "Trader" });
@@ -1882,11 +1900,12 @@ function TradeReceipt({ result: r }: { result: TradeResult }) {
         : { cls: "bg-conduit-violet/15 text-conduit-violet animate-pulse", text: r.stage === "approving" ? "approving venue…" : "settling…" };
   const binding: InspectorBinding = {
     kind: "swap",
-    enforcerName: blocked ? "SwapBoundsEnforcer (violated)" : "SwapBoundsEnforcer",
-    enforcerAddr: config.swapBoundsEnforcer,
+    enforcerName: blocked ? "SwapAllowlistEnforcer (violated)" : "SwapAllowlistEnforcer",
+    enforcerAddr: config.swapAllowlistEnforcer,
     violated: blocked,
     terms: [
       { label: "max in", value: `${amountInUsdc} USDC` },
+      { label: "bought", value: `${r.tokenOutSymbol} (Scout's pick, from your set)` },
       { label: "min out", value: `≥ ${minOut} ${r.tokenOutSymbol}` },
       { label: "slippage", value: `≤ ${(r.slippageBps / 100).toFixed(2)}%` },
       { label: "to", value: "your account" },
