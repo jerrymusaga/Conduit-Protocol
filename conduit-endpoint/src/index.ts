@@ -85,10 +85,6 @@ const DEFAULT_TOPIC = "an AI product launch";
 const ETH2_DEPOSIT = "0x00000000219ab540356cBB839Cbe05303d7705Fa"; // beacon deposit contract
 const LIDO_STETH = "0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84"; // stETH
 const SELECTOR_TOTAL_SUPPLY = "0x18160ddd"; // totalSupply()
-const CANNED_ONCHAIN = {
-  stakingTVL: "$160B", stakedETH: "34.2M", percentSupplyStaked: "28.4%",
-  activeValidators: 1_068_000, apr: "3.1%",
-} as Record<string, unknown>;
 
 /** wei (bigint) → "34.21M ETH" style human string. */
 function fmtEth(wei: bigint): string {
@@ -108,11 +104,11 @@ async function researchOutput(topic: string): Promise<Output> {
       "specific players, products or numbers where the sources support them, and close with " +
       "the key signal or trend. Confident and concrete — no preamble, no markdown, no hedging.",
     `Research this topic for a brief: ${topic}`,
-    { webSearch: "on", stripThinking: true, maxTokens: 350 }
+    { webSearch: "on", stripThinking: true, maxTokens: 500 }
   );
   return text
     ? { type: "text", source: "venice:chat · web-search", content: text }
-    : { type: "text", source: "cached", content: `Research summary on ${topic}: an active, fast-moving space — note the key players, recent moves, and adoption signals.` };
+    : { type: "text", source: "venice unavailable", content: "Research couldn't be generated right now — please try again." };
 }
 
 /** Copywriter: a punchy positioning brief on the topic (Venice chat). */
@@ -122,11 +118,11 @@ async function copyOutput(topic: string): Promise<Output> {
       "crisp value proposition plus the angle that makes it land. Confident, specific, fresh — " +
       "no clichés, no preamble, no markdown.",
     `Write launch copy / a positioning brief for: ${topic}`,
-    { stripThinking: true, maxTokens: 250 }
+    { stripThinking: true, maxTokens: 300 }
   );
   return text
     ? { type: "text", source: "venice:chat", content: text }
-    : { type: "text", source: "cached", content: `${topic} — built for the moment. Clear value, sharp positioning, ready to ship.` };
+    : { type: "text", source: "venice unavailable", content: "Copy couldn't be generated right now — please try again." };
 }
 
 /** Analyst: market/landscape analysis + outlook (Venice reasoning model). */
@@ -136,11 +132,11 @@ async function analysisOutput(topic: string): Promise<Output> {
       "momentum — then add a one-line forward outlook. Specific and balanced, no fluff. " +
       "No preamble, no markdown.",
     `Analyze the market/landscape for: ${topic}`,
-    { reasoningEffort: "low", stripThinking: true, maxTokens: 400 }
+    { stripThinking: true, maxTokens: 500 }
   );
   return text
-    ? { type: "text", source: "venice:chat · reasoning", content: text }
-    : { type: "text", source: "cached", content: `Analysis of ${topic}: balanced fundamentals, real competition, a clear adoption path. Outlook: cautiously positive.` };
+    ? { type: "text", source: "venice:chat", content: text }
+    : { type: "text", source: "venice unavailable", content: "Analysis couldn't be generated right now — please try again." };
 }
 
 /** Onchain Scout: real on-chain crypto metrics via Venice crypto-rpc. */
@@ -152,9 +148,10 @@ async function onchainOutput(): Promise<Output> {
     veniceRpc(net, "eth_call", [{ to: LIDO_STETH, data: SELECTOR_TOTAL_SUPPLY }, "latest"]),
   ]);
   if (!blockHex && !depositBalHex && !lidoSupplyHex) {
-    return { type: "data", source: "cached", content: CANNED_ONCHAIN };
+    return { type: "data", source: "venice unavailable", content: { note: "On-chain data couldn't be read right now — please try again." } };
   }
-  const content: Record<string, unknown> = { ...CANNED_ONCHAIN };
+  // ONLY real RPC-derived values — no canned constants padding the result.
+  const content: Record<string, unknown> = {};
   if (depositBalHex) content.totalDepositedETH = fmtEth(hexToBigInt(depositBalHex as `0x${string}`));
   if (lidoSupplyHex) content.lidoStakedETH = fmtEth(hexToBigInt(lidoSupplyHex as `0x${string}`));
   if (blockHex) content.atBlock = Number(hexToBigInt(blockHex as `0x${string}`));
@@ -170,23 +167,26 @@ async function imageOutput(topic: string): Promise<Output> {
   );
   return url
     ? { type: "image", source: "venice:image", content: url }
-    : { type: "image", source: "cached", content: null, note: "image unavailable (no Venice key/credits)" };
+    : { type: "image", source: "venice unavailable", content: null, note: "Image couldn't be generated right now — please try again." };
 }
 
 /** Narrator: a spoken summary of the deliverable (Venice TTS) → playable audio. */
 async function voiceOutput(topic: string): Promise<Output> {
-  const script =
-    (await veniceChat(
-      "Write ONE natural, engaging spoken sentence (max 28 words) to open a voiceover that " +
-        "summarizes the deliverable — conversational and confident, no jargon. " +
-        "No preamble, no markdown, no quotes.",
-      `One spoken opening line summarizing a brief about: ${topic}`,
-      { stripThinking: true, maxTokens: 80 }
-    )) ?? `Here's your brief on ${topic}.`;
+  const script = await veniceChat(
+    "Write ONE natural, engaging spoken sentence (max 28 words) to open a voiceover that " +
+      "summarizes the deliverable — conversational and confident, no jargon. " +
+      "No preamble, no markdown, no quotes.",
+    `One spoken opening line summarizing a brief about: ${topic}`,
+    { stripThinking: true, maxTokens: 120 }
+  );
+  // No canned script: if Venice can't write one, don't synthesize a fake voiceover.
+  if (!script) {
+    return { type: "audio", source: "venice unavailable", content: null, note: "Voiceover couldn't be generated right now — please try again." };
+  }
   const audio = await veniceSpeech(script);
   return audio
     ? { type: "audio", source: "venice:tts", content: audio, transcript: script }
-    : { type: "audio", source: "cached", content: null, transcript: script, note: "voiceover unavailable (no Venice key/credits)" };
+    : { type: "audio", source: "venice unavailable", content: null, transcript: script, note: "Voiceover couldn't be generated right now — please try again." };
 }
 
 /** Subscription feed: a recurring sample (the period mechanic is the demo beat). */

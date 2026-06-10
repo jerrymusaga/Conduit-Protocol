@@ -13,7 +13,7 @@
  */
 
 const VENICE_BASE = "https://api.venice.ai/api/v1";
-const CHAT_MODEL = "zai-org-glm-5-1";
+const CHAT_MODEL = "llama-3.3-70b"; // direct output (no empty-reasoning trap)
 const IMAGE_MODEL = "z-image-turbo";
 
 export function veniceKey(): string | undefined {

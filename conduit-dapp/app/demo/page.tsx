@@ -63,6 +63,10 @@ import { type DiscoveredAgent } from "@/lib/discovery";
 
 type CardStage = "queued" | "requested" | "allowed" | "denied" | "settling" | "settled" | "failed";
 
+/** Max a single swap may move, regardless of the prompt — a per-trade ceiling
+ *  (defense-in-depth; the on-chain SwapAllowlist cap is whatever you sign ≤ this). */
+const MAX_TRADE_USDC = process.env.NEXT_PUBLIC_MAX_TRADE_USDC ?? "1000";
+
 /** A throwaway address for the rogue-swap beat (redirect target). */
 function randomRogueAddr(): Hex {
   const b = crypto.getRandomValues(new Uint8Array(20));
@@ -557,6 +561,60 @@ export default function DemoPage() {
     }
   };
 
+  // Sign a swap authorization for the current trade prompt (a curated token
+  // allowlist + per-token floors + ApproveBounds + fee). Called from grant() AND
+  // lazily from run() — so a trade prompt "just works" without pre-granting on it.
+  const authorizeSwap = async (
+    coordinator: Coordinator,
+    expiryUnix?: number
+  ): Promise<SwapAllowlistGrant | null> => {
+    if (!walletClient || !address) {
+      append("voice › connect a wallet to authorize the swap");
+      return null;
+    }
+    try {
+      const { amountInUsdc, slippageBps } = parseTradeIntent(prompt);
+      let amountIn = parseUnits(String(amountInUsdc), 6);
+
+      // Flag + clamp BEFORE signing — never authorize a swap larger than your
+      // max-trade ceiling or your actual balance (would only fail at execution).
+      const ceiling = parseUnits(MAX_TRADE_USDC, 6);
+      if (amountIn > ceiling) {
+        append(`Coordinator › prompt asked to move ${amountInUsdc} USDC — capping at your ${MAX_TRADE_USDC} USDC max-trade ceiling.`);
+        amountIn = ceiling;
+      }
+      const bal = usdcBalance ?? 0n;
+      if (bal > 0n && amountIn > bal) {
+        append(`Coordinator › you hold ${(Number(bal) / 1e6).toFixed(2)} USDC — sizing the swap to your balance.`);
+        amountIn = bal;
+      }
+      if (amountIn === 0n) {
+        append("Coordinator › fund the account with USDC before trading — nothing to swap.");
+        return null;
+      }
+      const finalUsdc = (Number(amountIn) / 1e6).toFixed(2);
+
+      append(`Coordinator › authorizing a bounded swap · ≤ ${finalUsdc} USDC, max ${(slippageBps / 100).toFixed(2)}% slippage, into one of your approved tokens…`);
+      const swap = await grantSwapAllowlist({
+        walletClient, userAddress: address, coordinator, amountIn, slippageBps, expiry: expiryUnix,
+      });
+      swapGrantRef.current = swap;
+      setSwapAuthorized(true);
+      append(`Coordinator › swap authorization signed · cap + slippage floor + recipient + ${swap.allowlist.length} approved tokens (${swap.allowlist.map((e) => e.symbol).join(", ")}) bound on-chain`);
+      void registerGrant({
+        id: swap.delegationHash, user: address, kind: "swap",
+        label: `Bounded swap · ${finalUsdc} USDC → {${swap.allowlist.map((e) => e.symbol).join(", ")}}`,
+        prompt, coordinator: coordinator.address, token: config.usdc,
+        amount: amountIn.toString(), expiry: swap.expiry,
+        enforcer: config.swapAllowlistEnforcer, context: swap.context,
+      });
+      return swap;
+    } catch (e) {
+      append(`Coordinator › couldn't authorize the swap · ${errMsg(e)}`);
+      return null;
+    }
+  };
+
   // Grant: coordinator EOA + 7702 auth (embedded wallet) + root delegation.
   const grant = async (): Promise<GrantResult | null> => {
     if (busy) return null;
@@ -658,38 +716,12 @@ export default function DemoPage() {
         context: result.context,
       });
 
-      // TRADE intent → also sign a SwapBounds authorization (separate from the
-      // spend budget, which only allows transfers). Isolated: only trade prompts.
+      // TRADE intent → also sign a swap authorization (separate from the spend
+      // budget, which only allows transfers). Isolated: only trade prompts.
       swapGrantRef.current = null;
       setSwapAuthorized(false);
-      if (isTradeIntent(prompt) && walletClient && address) {
-        try {
-          const { amountInUsdc, slippageBps } = parseTradeIntent(prompt);
-          const amountIn = parseUnits(String(amountInUsdc), 6);
-          append(`Coordinator › authorizing a bounded swap · ≤ ${amountInUsdc} USDC, max ${(slippageBps / 100).toFixed(2)}% slippage, into one of your approved tokens…`);
-          const swap = await grantSwapAllowlist({
-            walletClient, userAddress: address, coordinator, amountIn, slippageBps,
-            expiry: expirySeconds ? Math.floor(Date.now() / 1000) + expirySeconds : undefined,
-          });
-          swapGrantRef.current = swap;
-          setSwapAuthorized(true);
-          append(`Coordinator › swap authorization signed · cap + slippage floor + recipient + a set of ${swap.allowlist.length} approved tokens (${swap.allowlist.map((e) => e.symbol).join(", ")}) bound on-chain`);
-          void registerGrant({
-            id: swap.delegationHash,
-            user: address,
-            kind: "swap",
-            label: `Bounded swap · ${amountInUsdc} USDC → {${swap.allowlist.map((e) => e.symbol).join(", ")}}`,
-            prompt,
-            coordinator: coordinator.address,
-            token: config.usdc,
-            amount: amountIn.toString(),
-            expiry: swap.expiry,
-            enforcer: config.swapAllowlistEnforcer,
-            context: swap.context,
-          });
-        } catch (e) {
-          append(`Coordinator › couldn't authorize the swap · ${errMsg(e)}`);
-        }
+      if (isTradeIntent(prompt)) {
+        await authorizeSwap(coordinator, expirySeconds ? Math.floor(Date.now() / 1000) + expirySeconds : undefined);
       }
     } catch (e) {
       console.error("[conduit] grant failed →", e);
@@ -1014,11 +1046,16 @@ export default function DemoPage() {
         void enrichReport(prompt, sections);
       }
 
-      // TRADE branch (isolated): if the prompt asked for a move and the swap was
-      // authorised, execute the bounded swap now — its own step, never folded
-      // into the research payment batch.
-      if (isTradeIntent(prompt) && swapGrantRef.current) {
-        await runTrade(swapGrantRef.current);
+      // TRADE branch (isolated): if the prompt asked for a move, execute the
+      // bounded swap as its own step. Sign the swap authorization on the fly if
+      // it wasn't already (so a trade prompt works without pre-granting on it).
+      if (isTradeIntent(prompt) && coordinatorRef.current) {
+        let swap: SwapAllowlistGrant | null = swapGrantRef.current;
+        if (!swap) {
+          append("Coordinator › this is a trade — authorizing the bounded swap now (approve in your wallet)…");
+          swap = await authorizeSwap(coordinatorRef.current, activeGrant?.expiry);
+        }
+        if (swap) await runTrade(swap);
       }
     } catch (e) {
       console.error("[run] threw:", e);

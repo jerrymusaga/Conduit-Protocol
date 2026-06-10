@@ -16,8 +16,10 @@ import { config } from "./config.js";
 
 const VENICE_BASE = "https://api.venice.ai/api/v1";
 
-/** Default text model — a capable reasoning model. Overridable per call. */
-const DEFAULT_CHAT_MODEL = "zai-org-glm-5-1";
+/** Default text model. llama-3.3-70b emits DIRECT output (no hidden reasoning
+ *  phase) so it doesn't burn the token budget and return empty — which is what
+ *  made glm-5-1 fall back to canned. Fast (~2-6s) and solid with web search. */
+const DEFAULT_CHAT_MODEL = "llama-3.3-70b";
 
 export function veniceEnabled(): boolean {
   return !!config.veniceApiKey;
