@@ -447,9 +447,14 @@ export default function SubscriptionPage() {
   const inspectorBinding: InspectorBinding | null =
     req?.subscription && service
       ? {
+          kind: "subscription",
           enforcerName: "X402SubscriptionEnforcer",
           enforcerAddr: req.subscription.enforcer,
-          boundSummary: `${service.priceUsdc} USDC → ${shorten(req.payTo)} · 1×/${req.subscription.periodSeconds}s`,
+          terms: [
+            { label: "amount", value: `${service.priceUsdc} USDC (exact)` },
+            { label: "merchant", value: shorten(req.payTo) },
+            { label: "cadence", value: `1×/${req.subscription.periodSeconds}s` },
+          ],
         }
       : null;
 

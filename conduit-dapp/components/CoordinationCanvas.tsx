@@ -382,13 +382,20 @@ export function CoordinationCanvas({
 }
 
 function bindingFor(c: CanvasCard): InspectorBinding {
+  const violated = c.agent === "rogue";
   return {
-    enforcerName: c.agent === "rogue" ? "X402ReceiptEnforcer (violated)" : "X402ReceiptEnforcer",
+    kind: "receipt",
+    enforcerName: violated ? "X402ReceiptEnforcer (violated)" : "X402ReceiptEnforcer",
     enforcerAddr: config.receiptEnforcer,
-    boundSummary:
+    violated,
+    terms:
       c.priceUsdc === "—"
-        ? "one exact request · recipient + amount + intent"
-        : `${c.priceUsdc} USDC → bound recipient · one-shot (intent-locked)`,
+        ? [{ label: "binds", value: "one exact request · recipient + amount + intent" }]
+        : [
+            { label: "max amount", value: `${c.priceUsdc} USDC` },
+            { label: "recipient", value: "the bound seller" },
+            { label: "replay", value: "one-shot (intent-locked)" },
+          ],
   };
 }
 

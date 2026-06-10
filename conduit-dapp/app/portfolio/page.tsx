@@ -292,11 +292,20 @@ function GrantCard({
   // The exact on-chain caveat this permission carries — what it actually permits.
   const binding: InspectorBinding | null = g.enforcer
     ? {
+        kind: isSub ? "subscription" : "budget",
         enforcerName: isSub ? "X402SubscriptionEnforcer" : "ERC20PeriodTransferEnforcer",
         enforcerAddr: g.enforcer,
-        boundSummary: isSub
-          ? `${amountUsdc} USDC → ${shorten(g.merchant)} · 1×/${fmtDur(g.periodSeconds ?? 0)}`
-          : `≤ ${amountUsdc} USDC / ${fmtDur(g.periodSeconds ?? 0)} · agent ${shorten(g.coordinator)}`,
+        terms: isSub
+          ? [
+              { label: "amount", value: `${amountUsdc} USDC (exact)` },
+              { label: "merchant", value: shorten(g.merchant) },
+              { label: "cadence", value: `1×/${fmtDur(g.periodSeconds ?? 0)}` },
+            ]
+          : [
+              { label: "cap", value: `≤ ${amountUsdc} USDC / ${fmtDur(g.periodSeconds ?? 0)}` },
+              { label: "agent", value: shorten(g.coordinator) },
+              { label: "expires", value: expiryText },
+            ],
       }
     : null;
 
