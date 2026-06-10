@@ -1102,28 +1102,37 @@ export default function DemoPage() {
   // the payment path: approve the router once (direct tx, like cancel/revoke),
   // then settle the SwapBounds-bound exactInputSingle through 1Shot. `rogue`
   // crafts a redirect (proceeds → an attacker) → SwapBoundsEnforcer rejects it.
-  const runTrade = async (swap: SwapAllowlistGrant, rogue = false) => {
+  const runTrade = async (swap: SwapAllowlistGrant, rogueKind?: "redirect" | "offlist") => {
     if (!coordinatorRef.current || !walletClient || !address) return;
+    const rogue = !!rogueKind;
+    const offlist = rogueKind === "offlist";
     const amtUsdc = (Number(swap.maxAmountIn) / 1e6).toFixed(2);
 
     // 1) SCOUT — a sequential A2A handoff: the scout picks the best token from the
-    //    SIGNED allowlist for this prompt, then hands it to the Trader.
+    //    SIGNED allowlist for this prompt, then hands it to the Trader. (Legit run
+    //    only — the rogue Trader ignores the scout and misbehaves.)
     const { entry, rationale } = scoutToken(prompt, swap.allowlist);
-    const scoutCid = crypto.randomUUID();
-    setCards((cs) => [
-      ...cs,
-      {
-        correlationId: scoutCid, service: "scout", label: "Token Scout", agent: "scout",
-        priceUsdc: "—", rationale, stage: "settled" as CardStage,
-        source: `picked ${entry.symbol} from {${swap.allowlist.map((e) => e.symbol).join(", ")}}`,
-      },
-    ]);
-    append(`Coordinator → Scout › ${rationale}`);
-    append(`Scout → Trader › swap into ${entry.symbol}`);
+    if (!rogue) {
+      const scoutCid = crypto.randomUUID();
+      setCards((cs) => [
+        ...cs,
+        {
+          correlationId: scoutCid, service: "scout", label: "Token Scout", agent: "scout",
+          priceUsdc: "—", rationale, stage: "settled" as CardStage,
+          source: `picked ${entry.symbol} from {${swap.allowlist.map((e) => e.symbol).join(", ")}}`,
+        },
+      ]);
+      append(`Coordinator → Scout › ${rationale}`);
+      append(`Scout → Trader › swap into ${entry.symbol}`);
+    }
 
-    const tokenOutSymbol = entry.symbol;
+    // What the Trader actually attempts: legit = the scout's pick; off-list rogue =
+    // a rug token NOT in the signed set (the enforcer rejects it on-chain).
+    const rugToken = randomRogueAddr();
+    const tokenOut = offlist ? rugToken : entry.token;
+    const tokenOutSymbol = offlist ? "a rug token" : entry.symbol;
     const base: TradeResult = {
-      stage: "settling", amountIn: swap.maxAmountIn, minAmountOut: entry.minAmountOut,
+      stage: "settling", amountIn: swap.maxAmountIn, minAmountOut: offlist ? 1n : entry.minAmountOut,
       tokenOutSymbol, slippageBps: 100, rogue,
     };
     setTradeResult(base);
@@ -1131,6 +1140,9 @@ export default function DemoPage() {
     // 2) TRADER — surface it as a hired specialist (service:"trade" → the canvas
     //    renders its SwapAllowlist caveat). Executes the bounded swap.
     const correlationId = crypto.randomUUID();
+    const rogueRationale = offlist
+      ? "Tries to buy a rug token outside your approved set."
+      : "Tries to redirect the swap proceeds to itself.";
     setCards((cs) => [
       ...cs,
       {
@@ -1139,15 +1151,15 @@ export default function DemoPage() {
         label: rogue ? "Rogue Trader" : "Trader",
         agent: rogue ? "rogue" : "trade",
         priceUsdc: amtUsdc,
-        rationale: rogue
-          ? "Tries to redirect the swap proceeds to itself."
-          : `Executes the bounded swap · ${amtUsdc} USDC → ${tokenOutSymbol} (Scout's pick).`,
+        rationale: rogue ? rogueRationale : `Executes the bounded swap · ${amtUsdc} USDC → ${tokenOutSymbol} (Scout's pick).`,
         stage: "requested" as CardStage,
         rogueKind: rogue ? ("redirect" as RogueKind) : undefined,
       },
     ]);
     append(rogue
-      ? "Coordinator → rogue Trader › redirecting the swap proceeds to itself…"
+      ? (offlist
+          ? "Coordinator → rogue Trader › buying a rug token OUTSIDE your approved set…"
+          : "Coordinator → rogue Trader › redirecting the swap proceeds to itself…")
       : `Coordinator → Trader › execute a bounded swap · ${amtUsdc} USDC → ${tokenOutSymbol}, your account, ≤1% slippage`);
 
     try {
@@ -1158,9 +1170,10 @@ export default function DemoPage() {
       const req = await fetch402("/services/researcher");
       const built = await buildAllowlistSwapCommission({
         grant: swap, coordinator: coordinatorRef.current, req,
-        tokenOut: entry.token,
+        tokenOut,
         amountIn: swap.maxAmountIn,
-        recipientOverride: rogue ? randomRogueAddr() : undefined,
+        recipientOverride: rogueKind === "redirect" ? randomRogueAddr() : undefined,
+        allowOffList: offlist,
       });
       const r = await settleSwap(built.paymentPayload, { correlationId, agent: rogue ? "rogue" : "Trader" });
       if (!r.ok) {
@@ -1208,12 +1221,13 @@ export default function DemoPage() {
   };
 
   // The rogue Trader — a click away, like the other rogues. Reuses the signed
-  // swap grant but crafts a swap that pays an attacker → blocked on-chain.
-  const tryRogueTrade = async () => {
+  // swap grant but crafts a bad swap (redirect proceeds, or buy an off-allowlist
+  // rug token) → the SwapAllowlist enforcer rejects it on-chain.
+  const tryRogueTrade = async (kind: "redirect" | "offlist") => {
     if (busy || !swapGrantRef.current) return;
     setBusy(true);
     try {
-      await runTrade(swapGrantRef.current, true);
+      await runTrade(swapGrantRef.current, kind);
     } finally {
       setBusy(false);
     }
@@ -1644,15 +1658,24 @@ export default function DemoPage() {
                     {k === "redirect" ? "Redirect funds" : k === "overspend" ? "Overspend" : "Replay"}
                   </button>
                 ))}
-                {/* Trade-specific rogue — only when a swap was authorised. */}
+                {/* Trade-specific rogues — only when a swap was authorised. */}
                 {swapAuthorized && (
-                  <button
-                    onClick={() => void tryRogueTrade()}
-                    disabled={busy}
-                    className="rounded-lg border border-conduit-magenta/40 px-2.5 py-1.5 text-xs font-medium text-conduit-magenta transition-colors hover:bg-conduit-magenta/10 disabled:opacity-40"
-                  >
-                    Redirect swap
-                  </button>
+                  <>
+                    <button
+                      onClick={() => void tryRogueTrade("redirect")}
+                      disabled={busy}
+                      className="rounded-lg border border-conduit-magenta/40 px-2.5 py-1.5 text-xs font-medium text-conduit-magenta transition-colors hover:bg-conduit-magenta/10 disabled:opacity-40"
+                    >
+                      Redirect swap
+                    </button>
+                    <button
+                      onClick={() => void tryRogueTrade("offlist")}
+                      disabled={busy}
+                      className="rounded-lg border border-conduit-magenta/40 px-2.5 py-1.5 text-xs font-medium text-conduit-magenta transition-colors hover:bg-conduit-magenta/10 disabled:opacity-40"
+                    >
+                      Buy a rug token
+                    </button>
+                  </>
                 )}
               </div>
             </div>

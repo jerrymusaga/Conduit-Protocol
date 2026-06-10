@@ -73,11 +73,12 @@ export default function Docs() {
             </p>
             <p>
               Point any x402-protected resource at a Conduit facilitator and your
-              callers get: settlement via on-chain delegation redemption, on-chain caveats
-              that bind every payment — <Mono>X402ReceiptEnforcer</Mono> for one exact
-              request, <Mono>X402SubscriptionEnforcer</Mono> for fixed recurring charges —
-              gas paid in USDC with no relayer to run, and clean settlement webhooks.
-              Conduit is the payment rail; your agent is the caller.
+              callers get: settlement via on-chain delegation redemption, a family of
+              on-chain caveats that bind every action — <Mono>X402ReceiptEnforcer</Mono>{" "}
+              for one exact request, <Mono>X402SubscriptionEnforcer</Mono> for fixed
+              recurring charges, and <Mono>SwapBounds</Mono>/<Mono>SwapAllowlist</Mono> for
+              bounded agent trades — gas paid in USDC with no relayer to run, and clean
+              settlement webhooks. Conduit is the rail; your agent is the caller.
             </p>
             <Callout>
               The safety property: a payment is fused to one recipient, one amount, one
@@ -250,13 +251,37 @@ const caveats = [
               at most once per period. An agent can renew each period without a new
               grant — but can’t change the recipient/amount/token or double-charge.
             </Endpoint>
+
+            <p className="pt-2">
+              <b className="text-white">Beyond payments — trading.</b> The same pattern
+              binds DEX swaps, so an agent can trade within bounds it cannot exceed. The
+              facilitator relays these unchanged (its oneshot path is execution-agnostic).
+            </p>
+            <Endpoint method="ENFORCER" path="SwapBoundsEnforcer">
+              One bounded Uniswap v3 swap: binds router + tokenIn/tokenOut +{" "}
+              <Mono>maxAmountIn</Mono> + <Mono>minAmountOut</Mono> (slippage floor) +
+              recipient. A hijacked agent can’t swap a different token, overspend, accept
+              a worse fill, or redirect the proceeds. Emits <Mono>SwapBounded</Mono>.
+            </Endpoint>
+            <Endpoint method="ENFORCER" path="SwapAllowlistEnforcer">
+              The dynamic-token version: the user signs a <i>set</i> of output tokens,
+              each with its own floor (<Mono>router · tokenIn · maxIn · recipient · N ·
+              [tokenOut·floor]×N</Mono>). A scout agent picks the best token{" "}
+              <i>from the signed set</i> — choosing a token never gives reach beyond it.
+            </Endpoint>
+            <Endpoint method="ENFORCER" path="ApproveBoundsEnforcer">
+              Bounds the ERC-20 <Mono>approve</Mono> a swap needs (token + spender +
+              cap), so the router allowance can ride the <i>same</i> 1Shot batch as the
+              swap — gas paid in USDC, the user never needs ETH, no standing approval.
+            </Endpoint>
             <Callout>
-              <b className="text-white">Roadmap — beyond payments:</b> the same pattern
-              extends to other actions. A <Mono>SwapEnforcer</Mono> (bind router +
-              tokenIn/out + min-out + recipient) would let agents trade within bounds;
-              the facilitator already relays it unchanged. Conduit ships the
-              payment-safety enforcers today; swaps and other action-bound enforcers are
-              on the roadmap — same architecture, different caveat.
+              All five <Mono>are CaveatEnforcer</Mono> — Conduit-custom caveats on the{" "}
+              <b className="text-white">MetaMask Delegation Framework</b>’s extension point
+              (override <Mono>beforeHook</Mono>), enforced by the unmodified
+              DelegationManager on every hop. <b className="text-white">Roadmap:</b> a
+              <Mono>YieldGuardEnforcer</Mono> (allowed protocols/methods +{" "}
+              <Mono>withdraw ≤ balance − baseline</Mono>) — harvest the yield, never the
+              principal. Same architecture, different caveat.
             </Callout>
           </Section>
 
@@ -317,6 +342,9 @@ const caveats = [
             <div className="space-y-2">
               <Addr label="X402ReceiptEnforcer" addr={config.receiptEnforcer} />
               <Addr label="X402SubscriptionEnforcer" addr={config.subscriptionEnforcer} />
+              <Addr label="SwapBoundsEnforcer" addr={config.swapBoundsEnforcer} />
+              <Addr label="SwapAllowlistEnforcer" addr={config.swapAllowlistEnforcer} />
+              <Addr label="ApproveBoundsEnforcer" addr={config.approveBoundsEnforcer} />
               <Addr label="DelegationManager" addr={config.delegationManager} />
               <Addr label="IdEnforcer" addr={config.idEnforcer} />
               <Addr label="ERC20PeriodTransferEnforcer" addr={config.erc20PeriodTransferEnforcer} />

@@ -420,9 +420,12 @@ export interface TradeToken {
 }
 
 // The CURATED set a user authorises for swaps — never arbitrary tokens (resolving
-// a name→address blindly is a rug vector). Same set on both chains; on testnet
-// the swap won't have liquidity, but the authorisation + scout pick are real.
-const CBETH: Hex = "0x2Ae3F1Ec7F1F5012CFEab0185bfc7aa3cf0DEc22"; // Base cbETH
+// a name→address blindly is a rug vector). Every token must have a USDC Uniswap
+// pool for the swap to actually settle (so: mainnet). WETH (0x42…06) is real on
+// Base mainnet AND Sepolia; cbETH is real on Base MAINNET only — on Sepolia this
+// address is a placeholder (no real cbETH there), so a cbETH swap settles on
+// mainnet, not testnet. Extend this set (wstETH, rETH, USDbC…) as a vetted list.
+const CBETH: Hex = "0x2Ae3F1Ec7F1F5012CFEab0185bfc7aa3cf0DEc22"; // Base mainnet cbETH
 const TRADE_TOKENS: Record<number, TradeToken[]> = {
   8453: [
     { symbol: "WETH", address: "0x4200000000000000000000000000000000000006", note: "wrapped ETH — the base liquid asset" },
@@ -565,12 +568,15 @@ export async function buildAllowlistSwapCommission(params: {
   amountIn: bigint;
   authorization?: Eip7702Authorization;
   recipientOverride?: Hex;
+  /** Rogue beat: build a swap into an OFF-allowlist token so the enforcer (not
+   *  the client) rejects it on-chain (SwapAllow:token-not-allowed). */
+  allowOffList?: boolean;
 }): Promise<BuiltSwap> {
   const { grant, coordinator, req, tokenOut, amountIn } = params;
   if (!req.redeemer) throw new Error("facilitator advertised no redeemer (targetAddress)");
   if (!req.feeCollector) throw new Error("facilitator advertised no feeCollector (oneshot-pl)");
   const entry = grant.allowlist.find((e) => e.token.toLowerCase() === tokenOut.toLowerCase());
-  if (!entry) throw new Error("chosen token is not in the signed allowlist");
+  if (!entry && !params.allowOffList) throw new Error("chosen token is not in the signed allowlist");
 
   const redeemer = req.redeemer;
   const rootDelegator = decodeDelegations(grant.context).slice(-1)[0].delegator;
@@ -593,7 +599,7 @@ export async function buildAllowlistSwapCommission(params: {
   // Reuse the swap-calldata encoder via a SwapBounds-shaped view of the chosen leg.
   const bounds: SwapBounds = {
     router: grant.router, tokenIn: grant.tokenIn, tokenOut,
-    maxAmountIn: grant.maxAmountIn, minAmountOut: entry.minAmountOut,
+    maxAmountIn: grant.maxAmountIn, minAmountOut: entry?.minAmountOut ?? 1n,
     recipient: grant.recipient, fee: grant.fee,
   };
   const swapCalldata = encodeSwapCalldata(bounds, amountIn, params.recipientOverride);
