@@ -413,29 +413,31 @@ export async function settleSwap(
 // --- token allowlist (dynamic-token swaps) ----------------------------------
 
 export interface TradeToken {
+  /** Friendly name for normal users, e.g. "ETH", "Bitcoin", "Staked ETH". */
+  name: string;
+  /** On-chain token symbol (used for matching + the swap). */
   symbol: string;
   address: Hex;
   /** A short hint the scout reasons over to match the prompt. */
   note: string;
 }
 
-// The CURATED set a user authorises for swaps — never arbitrary tokens (resolving
-// a name→address blindly is a rug vector). Every token must have a USDC Uniswap
-// pool for the swap to actually settle (so: mainnet). WETH (0x42…06) is real on
-// Base mainnet AND Sepolia; cbETH is real on Base MAINNET only — on Sepolia this
-// address is a placeholder (no real cbETH there), so a cbETH swap settles on
-// mainnet, not testnet. Extend this set (wstETH, rETH, USDbC…) as a vetted list.
-const CBETH: Hex = "0x2Ae3F1Ec7F1F5012CFEab0185bfc7aa3cf0DEc22"; // Base mainnet cbETH
-const TRADE_TOKENS: Record<number, TradeToken[]> = {
-  8453: [
-    { symbol: "WETH", address: "0x4200000000000000000000000000000000000006", note: "wrapped ETH — the base liquid asset" },
-    { symbol: "cbETH", address: CBETH, note: "Coinbase staked ETH — earns staking yield" },
-  ],
-  84532: [
-    { symbol: "WETH", address: "0x4200000000000000000000000000000000000006", note: "wrapped ETH — the base liquid asset" },
-    { symbol: "cbETH", address: CBETH, note: "Coinbase staked ETH — earns staking yield" },
-  ],
-};
+// The CURATED set a user can authorise for swaps — a vetted menu of liquid Base
+// blue-chips (never arbitrary tokens: resolving a name→address blindly is a rug
+// vector). The agent can only ever buy from this set, so it's a real choice.
+//
+// IMPORTANT: these are Base MAINNET addresses (where they have USDC Uniswap
+// liquidity). VERIFY each before the mainnet run. On Base Sepolia they're
+// placeholders (no liquidity), so testnet swaps don't settle — the authorisation
+// + scout pick are real; the live swap is a mainnet thing. At grant time each is
+// quoted; on mainnet an un-quotable token is dropped from the signed set.
+// Recognisable to a normal user: ETH, Bitcoin, staked-ETH (the yield pick).
+const BASE_TOKENS: TradeToken[] = [
+  { name: "ETH",        symbol: "WETH",  address: "0x4200000000000000000000000000000000000006", note: "Ether — the base asset" },
+  { name: "Bitcoin",    symbol: "cbBTC", address: "0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf", note: "Coinbase wrapped BTC — Bitcoin exposure" },
+  { name: "Staked ETH", symbol: "cbETH", address: "0x2Ae3F1Ec7F1F5012CFEab0185bfc7aa3cf0DEc22", note: "Coinbase staked ETH — earns staking yield" },
+];
+const TRADE_TOKENS: Record<number, TradeToken[]> = { 8453: BASE_TOKENS, 84532: BASE_TOKENS };
 
 /** The curated token set the user can authorise for this chain. */
 export function tradeAllowlist(): TradeToken[] {
@@ -445,6 +447,7 @@ export function tradeAllowlist(): TradeToken[] {
 export interface AllowlistEntry {
   token: Hex;
   symbol: string;
+  name: string;
   minAmountOut: bigint;
   note: string;
 }
@@ -503,18 +506,20 @@ export async function grantSwapAllowlist(params: {
   const expiry = params.expiry ?? 0;
   const tokens = params.tokens ?? tradeAllowlist();
 
-  // Per-token slippage floor from a live quote (best-effort). On mainnet a token
-  // with no quote is dropped (never authorise a token we can't floor); on testnet
-  // a nominal floor keeps the authorisation + scout pick demoable.
-  const entries: AllowlistEntry[] = [];
-  for (const t of tokens) {
-    const expected = await quoteExpectedOut({ tokenIn, tokenOut: t.address, fee }, amountIn);
-    let floor: bigint;
-    if (expected && expected > 0n) floor = (expected * BigInt(10_000 - params.slippageBps)) / 10_000n;
-    else if (config.chainId === 8453) continue; // mainnet: skip un-quotable tokens
-    else floor = 1n; // testnet nominal
-    entries.push({ token: t.address, symbol: t.symbol, minAmountOut: floor, note: t.note });
-  }
+  // Per-token slippage floor from a live quote (best-effort, in PARALLEL). On
+  // mainnet a token with no quote is dropped (never authorise a token we can't
+  // floor); on testnet a nominal floor keeps the authorisation + scout pick demoable.
+  const quoted = await Promise.all(
+    tokens.map(async (t) => {
+      const expected = await quoteExpectedOut({ tokenIn, tokenOut: t.address, fee }, amountIn);
+      if (expected && expected > 0n) {
+        return { token: t.address, symbol: t.symbol, name: t.name, note: t.note, minAmountOut: (expected * BigInt(10_000 - params.slippageBps)) / 10_000n };
+      }
+      if (config.chainId === 8453) return null; // mainnet: drop un-quotable tokens
+      return { token: t.address, symbol: t.symbol, name: t.name, note: t.note, minAmountOut: 1n }; // testnet nominal
+    })
+  );
+  const entries: AllowlistEntry[] = quoted.filter((e): e is AllowlistEntry => e !== null);
   if (entries.length === 0) throw new Error("Couldn't price any allowlisted token — refusing to authorise a blind swap.");
 
   const head = { router, tokenIn, maxAmountIn: amountIn, recipient: userAddress, allowlist: entries };
@@ -658,12 +663,25 @@ export function isTradeIntent(prompt: string): boolean {
   return /\b(trade|swap|buy|yield|rebalance|deploy|invest|stake|allocate|position|move\s+[\d.]+)\b/i.test(prompt);
 }
 
-/** Parse a trade prompt → swap amount (USDC) + slippage. Defaults: 20 USDC, 1%. */
-export function parseTradeIntent(prompt: string): { amountInUsdc: number; slippageBps: number } {
+/** Parse a trade prompt → swap amount (USDC) + slippage + an optional named
+ *  target token. Defaults: 20 USDC, 1%. `namedToken` is the raw symbol the user
+ *  asked for (UPPERCASED) if any — the caller checks it against the signed set. */
+export function parseTradeIntent(prompt: string): {
+  amountInUsdc: number;
+  slippageBps: number;
+  namedToken?: string;
+} {
   const p = prompt.toLowerCase();
   const amt = p.match(/\$?\s*(\d+(?:\.\d+)?)\s*(?:usdc|dollars?|\$)/) ?? p.match(/\$\s*(\d+(?:\.\d+)?)/);
   const amountInUsdc = amt ? Math.max(0, Number(amt[1])) : 20;
   const slip = p.match(/(\d+(?:\.\d+)?)\s*%/);
   const slippageBps = slip ? Math.round(Number(slip[1]) * 100) : 100;
-  return { amountInUsdc: amountInUsdc || 20, slippageBps: slippageBps || 100 };
+  // A token named after into/to/buy/for — skip filler words so "into the best ETH
+  // staking yield" stays scout-decided, but "into WETH"/"buy cbETH" is captured.
+  const tok = p.match(/\b(?:into|buy|acquire|get)\s+(?:the\s+|some\s+)?([a-z][a-z0-9]{1,9})\b/);
+  const STOP = new Set(["the", "best", "my", "a", "an", "it", "one", "staking", "yield",
+    "eth", "ethereum", "solana", "usdc", "good", "top", "highest", "position", "token"]);
+  const raw = tok?.[1];
+  const namedToken = raw && !STOP.has(raw) ? raw.toUpperCase() : undefined;
+  return { amountInUsdc: amountInUsdc || 20, slippageBps: slippageBps || 100, namedToken };
 }

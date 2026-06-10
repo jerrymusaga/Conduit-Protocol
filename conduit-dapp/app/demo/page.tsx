@@ -292,12 +292,15 @@ export default function DemoPage() {
   // Trading (isolated, trade-intent prompts only): the SwapBounds grant + the
   // executed-trade result. Never touches the research/payment path above.
   const swapGrantRef = useRef<SwapAllowlistGrant | null>(null);
+  const swapTokenChoiceRef = useRef<string>("scout"); // "scout" | tokenOut address — the user's pick
   const [swapAuthorized, setSwapAuthorized] = useState(false); // a swap grant was signed (trade intent)
-  // Pre-sign confirmation: the exact swap terms the user is about to authorise.
+  // Pre-sign confirmation: the EDITABLE swap terms the user is about to authorise.
   const [swapConfirm, setSwapConfirm] = useState<
-    { amountUsdc: string; tokens: string; slippagePct: string; expiryText: string } | null
+    { maxUsdc: number; allowlist: { name: string; symbol: string; address: string }[]; offListNote?: string; slippagePct: string; expiryText: string } | null
   >(null);
-  const swapConfirmResolve = useRef<((ok: boolean) => void) | null>(null);
+  const [confirmAmount, setConfirmAmount] = useState(""); // editable swap amount (USDC)
+  const [confirmToken, setConfirmToken] = useState("scout"); // "scout" | address
+  const swapConfirmResolve = useRef<((r: { ok: boolean; amount: string; token: string }) => void) | null>(null);
   const [tradeResult, setTradeResult] = useState<TradeResult | null>(null);
   // Voice input: record the spoken prompt, transcribe via Venice STT.
   const [recording, setRecording] = useState(false);
@@ -567,15 +570,28 @@ export default function DemoPage() {
     }
   };
 
-  // Show the pre-sign panel and resolve when the user approves/declines.
-  const confirmSwap = (info: { amountUsdc: string; tokens: string; slippagePct: string; expiryText: string }) =>
-    new Promise<boolean>((resolve) => {
+  // Show the pre-sign panel (editable amount + token), resolve on approve/decline.
+  const confirmSwap = (info: {
+    defaultAmount: string;
+    maxUsdc: number;
+    allowlist: { name: string; symbol: string; address: string }[];
+    defaultToken: string;
+    offListNote?: string;
+    slippagePct: string;
+    expiryText: string;
+  }) =>
+    new Promise<{ ok: boolean; amount: string; token: string }>((resolve) => {
+      setConfirmAmount(info.defaultAmount);
+      setConfirmToken(info.defaultToken);
       swapConfirmResolve.current = resolve;
-      setSwapConfirm(info);
+      setSwapConfirm({
+        maxUsdc: info.maxUsdc, allowlist: info.allowlist, offListNote: info.offListNote,
+        slippagePct: info.slippagePct, expiryText: info.expiryText,
+      });
     });
   const resolveSwapConfirm = (ok: boolean) => {
     setSwapConfirm(null);
-    swapConfirmResolve.current?.(ok);
+    swapConfirmResolve.current?.({ ok, amount: confirmAmount, token: confirmToken });
     swapConfirmResolve.current = null;
   };
 
@@ -591,41 +607,53 @@ export default function DemoPage() {
       return null;
     }
     try {
-      const { amountInUsdc, slippageBps } = parseTradeIntent(prompt);
-      let amountIn = parseUnits(String(amountInUsdc), 6);
+      const { amountInUsdc, slippageBps, namedToken } = parseTradeIntent(prompt);
+      const allow = tradeAllowlist();
 
-      // Flag + clamp BEFORE signing — never authorize a swap larger than your
-      // max-trade ceiling or your actual balance (would only fail at execution).
+      // Resolve a token named in the prompt against the SIGNED set (ETH→WETH).
+      const named = namedToken
+        ? allow.find((t) => t.symbol.toUpperCase() === namedToken || (namedToken === "ETH" && t.symbol === "WETH") || (namedToken === "BTC" && t.symbol === "cbBTC"))
+        : undefined;
+      const offListNote = namedToken && !named
+        ? `“${namedToken}” isn't in your approved set — the agent can only buy what you sign. Pick one below, or let the Scout choose.`
+        : undefined;
+
+      // Default + max for the editable amount (clamp to ceiling and balance).
+      const ceilingNum = Number(MAX_TRADE_USDC);
+      const balNum = usdcBalance != null ? Number(usdcBalance) / 1e6 : ceilingNum;
+      const maxUsdc = Math.max(0, Math.min(ceilingNum, balNum));
+      const defaultAmount = Math.min(amountInUsdc, maxUsdc || amountInUsdc).toString();
+
+      // Pre-sign confirmation — EDITABLE amount + token choice, shown before the
+      // (opaque) wallet signature.
+      const res = await confirmSwap({
+        defaultAmount,
+        maxUsdc: maxUsdc || ceilingNum,
+        allowlist: allow.map((t) => ({ name: t.name, symbol: t.symbol, address: t.address })),
+        defaultToken: named ? named.address : "scout",
+        offListNote,
+        slippagePct: (slippageBps / 100).toFixed(2),
+        expiryText: expiryUnix ? `in ${fmtCountdown(expiryUnix - Math.floor(Date.now() / 1000))}` : "no expiry",
+      });
+      if (!res.ok) {
+        append("Coordinator › swap authorization declined — no trade.");
+        return null;
+      }
+
+      // The edited amount, clamped to ceiling + balance (never sign more than held).
+      let amountIn = parseUnits(Math.max(0, Number(res.amount) || 0).toFixed(6), 6);
       const ceiling = parseUnits(MAX_TRADE_USDC, 6);
-      if (amountIn > ceiling) {
-        append(`Coordinator › prompt asked to move ${amountInUsdc} USDC — capping at your ${MAX_TRADE_USDC} USDC max-trade ceiling.`);
-        amountIn = ceiling;
-      }
+      if (amountIn > ceiling) amountIn = ceiling;
       const bal = usdcBalance ?? 0n;
-      if (bal > 0n && amountIn > bal) {
-        append(`Coordinator › you hold ${(Number(bal) / 1e6).toFixed(2)} USDC — sizing the swap to your balance.`);
-        amountIn = bal;
-      }
+      if (bal > 0n && amountIn > bal) amountIn = bal;
       if (amountIn === 0n) {
         append("Coordinator › fund the account with USDC before trading — nothing to swap.");
         return null;
       }
       const finalUsdc = (Number(amountIn) / 1e6).toFixed(2);
+      swapTokenChoiceRef.current = res.token; // "scout" | chosen token address
 
-      // Pre-sign confirmation — the user sees the EXACT cap they're authorizing
-      // before the (opaque) wallet signature, not just a log line after.
-      const ok = await confirmSwap({
-        amountUsdc: finalUsdc,
-        tokens: tradeAllowlist().map((t) => t.symbol).join(", "),
-        slippagePct: (slippageBps / 100).toFixed(2),
-        expiryText: expiryUnix ? `in ${fmtCountdown(expiryUnix - Math.floor(Date.now() / 1000))}` : "no expiry",
-      });
-      if (!ok) {
-        append("Coordinator › swap authorization declined — no trade.");
-        return null;
-      }
-
-      append(`Coordinator › authorizing a bounded swap · ≤ ${finalUsdc} USDC, max ${(slippageBps / 100).toFixed(2)}% slippage, into one of your approved tokens…`);
+      append(`Coordinator › authorizing a bounded swap · ≤ ${finalUsdc} USDC, max ${(slippageBps / 100).toFixed(2)}% slippage, into your approved set…`);
       const swap = await grantSwapAllowlist({
         walletClient, userAddress: address, coordinator, amountIn, slippageBps, expiry: expiryUnix,
       });
@@ -1107,10 +1135,18 @@ export default function DemoPage() {
     const offlist = rogueKind === "offlist";
     const amtUsdc = (Number(swap.maxAmountIn) / 1e6).toFixed(2);
 
-    // 1) SCOUT — a sequential A2A handoff: the scout picks the best token from the
-    //    SIGNED allowlist for this prompt, then hands it to the Trader. (Legit run
-    //    only — the rogue Trader ignores the scout and misbehaves.)
-    const { entry, rationale } = scoutToken(prompt, swap.allowlist);
+    // 1) SCOUT / user choice — if the user picked a token in the pre-sign panel,
+    //    use it; otherwise the Scout picks the best from the SIGNED set. A
+    //    sequential A2A handoff either way. (Legit run only — the rogue ignores it.)
+    const choice = swapTokenChoiceRef.current;
+    const scout = scoutToken(prompt, swap.allowlist);
+    const picked = choice && choice !== "scout"
+      ? swap.allowlist.find((e) => e.token.toLowerCase() === choice.toLowerCase())
+      : undefined;
+    const entry = picked ?? scout.entry;
+    const rationale = picked
+      ? `You chose ${picked.symbol} — from your approved set.`
+      : scout.rationale;
     if (!rogue) {
       const scoutCid = crypto.randomUUID();
       setCards((cs) => [
@@ -1129,7 +1165,7 @@ export default function DemoPage() {
     // a rug token NOT in the signed set (the enforcer rejects it on-chain).
     const rugToken = randomRogueAddr();
     const tokenOut = offlist ? rugToken : entry.token;
-    const tokenOutSymbol = offlist ? "a rug token" : entry.symbol;
+    const tokenOutSymbol = offlist ? "a token you didn't approve" : `${entry.name} (${entry.symbol})`;
     const base: TradeResult = {
       stage: "settling", amountIn: swap.maxAmountIn, minAmountOut: offlist ? 1n : entry.minAmountOut,
       tokenOutSymbol, slippageBps: 100, rogue,
@@ -1140,7 +1176,7 @@ export default function DemoPage() {
     //    renders its SwapAllowlist caveat). Executes the bounded swap.
     const correlationId = crypto.randomUUID();
     const rogueRationale = offlist
-      ? "Tries to buy a rug token outside your approved set."
+      ? "Tries to buy a token outside your approved set."
       : "Tries to redirect the swap proceeds to itself.";
     setCards((cs) => [
       ...cs,
@@ -1157,7 +1193,7 @@ export default function DemoPage() {
     ]);
     append(rogue
       ? (offlist
-          ? "Coordinator → rogue Trader › buying a rug token OUTSIDE your approved set…"
+          ? "Coordinator → rogue Trader › buying a token OUTSIDE your approved set…"
           : "Coordinator → rogue Trader › redirecting the swap proceeds to itself…")
       : `Coordinator → Trader › execute a bounded swap · ${amtUsdc} USDC → ${tokenOutSymbol}, your account, ≤1% slippage`);
 
@@ -1330,12 +1366,51 @@ export default function DemoPage() {
             <p className="mt-1 text-[12px] leading-relaxed text-conduit-muted">
               Your signature binds these on-chain — the agent can do <span className="text-white">exactly this and nothing else</span>.
             </p>
-            <div className="mono mt-4 space-y-1.5 rounded-lg border border-conduit-border/60 bg-black/30 p-3 text-[12px]">
-              <div className="flex justify-between gap-3"><span className="text-conduit-muted">swap up to</span><span className="text-white">{swapConfirm.amountUsdc} USDC</span></div>
-              <div className="flex justify-between gap-3"><span className="text-conduit-muted">into one of</span><span className="text-white">{swapConfirm.tokens}</span></div>
-              <div className="flex justify-between gap-3"><span className="text-conduit-muted">max slippage</span><span className="text-white">{swapConfirm.slippagePct}%</span></div>
-              <div className="flex justify-between gap-3"><span className="text-conduit-muted">proceeds to</span><span className="text-white">your account</span></div>
-              <div className="flex justify-between gap-3"><span className="text-conduit-muted">expires</span><span className="text-white">{swapConfirm.expiryText}</span></div>
+            <div className="mt-4 space-y-3">
+              {/* editable amount */}
+              <label className="block">
+                <span className="text-[12px] text-conduit-muted">swap up to</span>
+                <span className="mt-1 flex items-center gap-2">
+                  <input
+                    type="number" min="0" step="0.01" max={swapConfirm.maxUsdc} inputMode="decimal"
+                    value={confirmAmount}
+                    onChange={(e) => setConfirmAmount(e.target.value)}
+                    className="mono w-32 rounded-lg border border-conduit-border bg-transparent px-2 py-1.5 text-white outline-none focus:border-conduit-cyan"
+                  />
+                  <span className="text-white">USDC</span>
+                  <span className="text-[11px] text-conduit-muted/60">max {swapConfirm.maxUsdc.toFixed(2)}</span>
+                </span>
+              </label>
+              {/* token choice */}
+              <div>
+                <span className="text-[12px] text-conduit-muted">buy</span>
+                <div className="mt-1 flex flex-wrap gap-1.5">
+                  <button
+                    type="button" onClick={() => setConfirmToken("scout")}
+                    className={`rounded-lg border px-2.5 py-1.5 text-[12px] transition-colors ${confirmToken === "scout" ? "border-conduit-cyan bg-conduit-cyan/10 text-white" : "border-conduit-border text-conduit-muted hover:border-conduit-cyan/40"}`}
+                  >
+                    Let the Scout pick
+                  </button>
+                  {swapConfirm.allowlist.map((t) => (
+                    <button
+                      key={t.address} type="button" onClick={() => setConfirmToken(t.address)}
+                      className={`rounded-lg border px-2.5 py-1.5 text-[12px] transition-colors ${confirmToken === t.address ? "border-conduit-cyan bg-conduit-cyan/10 text-white" : "border-conduit-border text-conduit-muted hover:border-conduit-cyan/40"}`}
+                    >
+                      {t.name} <span className="text-conduit-muted/60">{t.symbol}</span>
+                    </button>
+                  ))}
+                </div>
+                {swapConfirm.offListNote && (
+                  <p className="mt-1.5 text-[11px] leading-relaxed text-conduit-magenta/90">{swapConfirm.offListNote}</p>
+                )}
+              </div>
+              {/* fixed terms */}
+              <div className="mono space-y-1.5 rounded-lg border border-conduit-border/60 bg-black/30 p-3 text-[12px]">
+                <div className="flex justify-between gap-3"><span className="text-conduit-muted">max slippage</span><span className="text-white">{swapConfirm.slippagePct}%</span></div>
+                <div className="flex justify-between gap-3"><span className="text-conduit-muted">proceeds to</span><span className="text-white">your account</span></div>
+                <div className="flex justify-between gap-3"><span className="text-conduit-muted">approved set</span><span className="text-white">{swapConfirm.allowlist.map((t) => t.name).join(", ")}</span></div>
+                <div className="flex justify-between gap-3"><span className="text-conduit-muted">expires</span><span className="text-white">{swapConfirm.expiryText}</span></div>
+              </div>
             </div>
             <p className="mono mt-2 text-[11px] leading-relaxed text-conduit-muted/70">
               A hijacked agent can&apos;t swap a different token, overspend this cap, accept a worse fill, or redirect the proceeds — SwapAllowlistEnforcer rejects it on-chain.
@@ -1673,7 +1748,7 @@ export default function DemoPage() {
                       disabled={busy}
                       className="rounded-lg border border-conduit-magenta/40 px-2.5 py-1.5 text-xs font-medium text-conduit-magenta transition-colors hover:bg-conduit-magenta/10 disabled:opacity-40"
                     >
-                      Buy a rug token
+                      Buy an unapproved token
                     </button>
                   </>
                 )}
