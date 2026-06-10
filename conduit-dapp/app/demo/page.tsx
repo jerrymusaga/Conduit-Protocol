@@ -243,6 +243,7 @@ export default function DemoPage() {
 
   // Grant / permission state.
   const [granted, setGranted] = useState(false);
+  const [showGrantForm, setShowGrantForm] = useState(false); // re-open the form to grant a NEW permission while one is active
   const [revoked, setRevoked] = useState(false);
   // Whether the connected account already has on-chain code (a smart account —
   // MetaMask Smart Account or a 7702-upgraded EOA). null = unknown/checking.
@@ -633,6 +634,7 @@ export default function DemoPage() {
       setGrantResult(result);
       setAuthorization(signedAuth);
       setGranted(true);
+      setShowGrantForm(false); // collapse the re-grant form back to the active view
       setRevoked(false);
       setCards([]);
       grantedResult = result;
@@ -1267,7 +1269,7 @@ export default function DemoPage() {
           <div className="mt-4 flex flex-col gap-6 lg:flex-row lg:items-start lg:justify-between">
             {/* setup / status */}
             <div className="flex-1">
-              {!granted ? (
+              {!granted || showGrantForm ? (
                 <div className="flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-end">
                   {/* budget */}
                   <label className="flex flex-col gap-1.5 text-sm">
@@ -1316,15 +1318,33 @@ export default function DemoPage() {
                     disabled={!connected || busy || needsSmartAccount}
                     className="btn-primary justify-center text-sm disabled:opacity-40 sm:self-end"
                   >
-                    Grant permission
+                    {granted ? "Grant new permission" : "Grant permission"}
                   </button>
+                  {granted && (
+                    <button
+                      onClick={() => setShowGrantForm(false)}
+                      disabled={busy}
+                      className="mono justify-center self-end text-[12px] text-conduit-muted underline-offset-4 hover:text-white hover:underline disabled:opacity-40"
+                    >
+                      cancel
+                    </button>
+                  )}
                 </div>
               ) : (
-                <p className="text-[13px] leading-relaxed text-conduit-muted">
-                  Authorizing{" "}
-                  <span className="font-semibold text-white">up to {displayAmount} USDC</span> for
-                  this task. Expires in <span className="mono text-conduit-cyan">{expiryText}</span>.
-                </p>
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <p className="text-[13px] leading-relaxed text-conduit-muted">
+                    Authorizing{" "}
+                    <span className="font-semibold text-white">up to {displayAmount} USDC</span> for
+                    this task. Expires in <span className="mono text-conduit-cyan">{expiryText}</span>.
+                  </p>
+                  <button
+                    onClick={() => setShowGrantForm(true)}
+                    disabled={busy}
+                    className="mono rounded-md border border-conduit-border px-2.5 py-1 text-[12px] text-conduit-muted transition-colors hover:border-conduit-cyan/50 hover:text-conduit-cyan disabled:opacity-40"
+                  >
+                    ↻ New permission
+                  </button>
+                </div>
               )}
               {!granted && connected && (
                 <p className="mt-3 text-[11px] leading-relaxed text-conduit-muted">
