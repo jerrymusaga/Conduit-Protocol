@@ -30,6 +30,9 @@ interface ChainDefaults {
   /** ApproveBoundsEnforcer — bounds the router approval so it rides the same
    *  1Shot batch as the swap (gas in USDC; the user never needs ETH). */
   approveBoundsEnforcer: `0x${string}`;
+  /** SwapAllowlistEnforcer — bounds a swap to a SIGNED SET of output tokens
+   *  (each with its own floor) so a scout can pick the best one safely. */
+  swapAllowlistEnforcer: `0x${string}`;
   /** Uniswap v3 SwapRouter02 — the swap venue the trading flow targets. */
   uniswapRouter: `0x${string}`;
   /** WETH (the demo's tokenOut for a USDC→WETH yield/trade). */
@@ -50,6 +53,7 @@ const CHAIN_DEFAULTS: Record<number, ChainDefaults> = {
     eip7702Impl: "0x63c0c19a282a1B52b07dD5a65b58948A07DAE32B",
     swapBoundsEnforcer: "0x1fd734c9c78e9c34238c2b5f4E936368727326f6",
     approveBoundsEnforcer: "0xA86e7b31fA6a77186F09F36C06b2E7c5D3132795",
+    swapAllowlistEnforcer: "0xb95adacB74E981bcfB1e97B4d277E51A95753C8F",
     uniswapRouter: "0x94cC0AaC535CCDB3C01d6787D6413C739ae12bc4",
     weth: "0x4200000000000000000000000000000000000006",
     explorerUrl: "https://sepolia.basescan.org",
@@ -67,6 +71,7 @@ const CHAIN_DEFAULTS: Record<number, ChainDefaults> = {
     // NEXT_PUBLIC_SWAP_BOUNDS_ENFORCER. Placeholder = Sepolia addr until then.
     swapBoundsEnforcer: "0x1fd734c9c78e9c34238c2b5f4E936368727326f6",
     approveBoundsEnforcer: "0xA86e7b31fA6a77186F09F36C06b2E7c5D3132795",
+    swapAllowlistEnforcer: "0xb95adacB74E981bcfB1e97B4d277E51A95753C8F",
     uniswapRouter: "0x2626664c2603336E57B271c5C0b26F421741e481",
     weth: "0x4200000000000000000000000000000000000006",
     explorerUrl: "https://basescan.org",
@@ -102,6 +107,8 @@ export const config = {
     defaults.swapBoundsEnforcer) as `0x${string}`,
   approveBoundsEnforcer: (process.env.NEXT_PUBLIC_APPROVE_BOUNDS_ENFORCER ??
     defaults.approveBoundsEnforcer) as `0x${string}`,
+  swapAllowlistEnforcer: (process.env.NEXT_PUBLIC_SWAP_ALLOWLIST_ENFORCER ??
+    defaults.swapAllowlistEnforcer) as `0x${string}`,
   uniswapRouter: (process.env.NEXT_PUBLIC_UNISWAP_ROUTER ?? defaults.uniswapRouter) as `0x${string}`,
   weth: (process.env.NEXT_PUBLIC_WETH ?? defaults.weth) as `0x${string}`,
   // Hard fallback so a bad/missing chainId can never produce an "undefined/tx" link.
