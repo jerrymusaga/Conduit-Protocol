@@ -1158,6 +1158,7 @@ export default function DemoPage() {
     let scoutSource = "your choice";
     let scoutPriceUsdc = "—";
     let scoutTxHash: string | null = null;
+    let scoutJobId: string | undefined; // poll this for the receipt tx (settles async)
 
     // Show the Scout as a hired specialist IMMEDIATELY — the paid hire settles a
     // real payment + runs live Venice reasoning before it returns (~10-30s), so
@@ -1224,6 +1225,7 @@ export default function DemoPage() {
           scoutSource = "venice · paid market scout (x402)";
           scoutPriceUsdc = scoutAgent.priceUsdc;
           scoutTxHash = claim.settlement?.transaction ?? null;
+          scoutJobId = claim.settlement?.jobId; // oneshot-pl confirms the tx out of band
           // The Scout's payment just became the FIRST redemption. If it carried the
           // 7702 designation, wait for that tx to confirm so the account actually
           // has code before the swap redeems — then clear it (don't re-designate).
@@ -1253,13 +1255,26 @@ export default function DemoPage() {
     }
 
     if (!rogue) {
-      // Patch the already-visible Scout card with the final pick + receipt.
+      // Patch the already-visible Scout card with the final pick. The paid hire's
+      // payment settles ON-CHAIN out of band (oneshot-pl returns a jobId, confirms
+      // the tx async), so show "settling" until we have the receipt tx, then poll.
+      const haveTx = !!scoutTxHash;
       setCardStage(scoutCid, {
-        stage: "settled", priceUsdc: scoutPriceUsdc, rationale, source: scoutSource, txHash: scoutTxHash,
+        stage: haveTx ? "settled" : scoutJobId ? "settling" : "settled",
+        priceUsdc: scoutPriceUsdc, rationale, source: scoutSource, txHash: scoutTxHash,
       });
       const paidNote = scoutPriceUsdc !== "—" ? ` · paid ${scoutPriceUsdc} USDC` : "";
       append(`Coordinator → Yield Scout › picked ${entry.name} (${entry.symbol})${paidNote} · ${rationale}`);
       append(`Yield Scout → Trader › swap into ${entry.name}`);
+      // Background-poll the Scout's settlement to surface the receipt tx + confirm.
+      if (!haveTx && scoutJobId) {
+        void pollTradeJob(scoutJobId).then((job) => {
+          if (job?.transaction) {
+            setCardStage(scoutCid, { stage: "settled", txHash: job.transaction });
+            append(`Yield Scout › payment settled ✓ · receipt ${job.transaction.slice(0, 10)}…`);
+          }
+        });
+      }
     }
 
     // What the Trader actually attempts: legit = the scout's pick; off-list rogue =
