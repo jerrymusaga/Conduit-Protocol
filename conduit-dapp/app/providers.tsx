@@ -23,6 +23,7 @@ import { http } from "viem";
 import { base, baseSepolia } from "viem/chains";
 import { config } from "@/lib/config";
 import { activeChain } from "@/lib/chain";
+import { WalletProvider } from "@/lib/activeWallet";
 
 const wagmiConfig = createConfig({
   // Expose both chains so the mainnet swap (Phase B) doesn't require a rebuild
@@ -71,7 +72,9 @@ export function Providers({ children }: { children: ReactNode }) {
       }}
     >
       <QueryClientProvider client={queryClient}>
-        <WagmiProvider config={wagmiConfig}>{children}</WagmiProvider>
+        <WagmiProvider config={wagmiConfig}>
+          <WalletProvider>{children}</WalletProvider>
+        </WagmiProvider>
       </QueryClientProvider>
     </PrivyProvider>
   );
