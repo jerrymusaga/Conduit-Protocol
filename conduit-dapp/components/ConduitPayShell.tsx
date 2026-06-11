@@ -7,6 +7,7 @@
 import { usePathname, useRouter } from "next/navigation";
 import Link from "next/link";
 import { useActiveWallet } from "@/lib/activeWallet";
+import { EmbeddedProvider } from "@/lib/conduitEmbedded";
 
 const TABS = [
   { href: "/app/pay", label: "Pay" },
@@ -26,7 +27,7 @@ export function ConduitPayShell({ children }: { children: React.ReactNode }) {
   return (
     <div className="min-h-screen bg-conduit-bg">
       <header className="sticky top-0 z-40 border-b border-conduit-border/70 bg-conduit-bg/80 backdrop-blur">
-        <div className="mx-auto flex max-w-6xl items-center gap-6 px-5 py-3">
+        <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3 sm:gap-x-6 sm:px-5">
           <Link href="/app/pay" className="flex items-center gap-2">
             <span className="text-[15px] font-semibold tracking-tight text-white">ConduitPay</span>
           </Link>
@@ -61,7 +62,9 @@ export function ConduitPayShell({ children }: { children: React.ReactNode }) {
           </div>
         </div>
       </header>
-      <main>{children}</main>
+      <main>
+        <EmbeddedProvider>{children}</EmbeddedProvider>
+      </main>
     </div>
   );
 }

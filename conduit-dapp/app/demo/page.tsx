@@ -7,7 +7,6 @@ import { useAccount, useWalletClient, useSwitchChain } from "wagmi";
 import {
   usePrivy,
   useLogin,
-  useSign7702Authorization,
   useWallets,
   getEmbeddedConnectedWallet,
 } from "@privy-io/react-auth";
@@ -32,6 +31,8 @@ import {
   type RogueAttack,
 } from "@/lib/coordinator";
 import { buildOneshotPayment, type Eip7702Authorization } from "@/lib/payment";
+import { useActiveWallet } from "@/lib/activeWallet";
+import { useConduitEmbedded } from "@/lib/conduitEmbedded";
 import { keccak256, parseUnits, formatUnits, type Hex } from "viem";
 import { Erc7710Inspector, type InspectorBinding } from "@/components/Erc7710Inspector";
 import { useFacilitatorEvents } from "@/lib/useFacilitatorEvents";
@@ -213,13 +214,25 @@ export default function DemoPage() {
   // Privy (auth) + wagmi (wallet client).
   const { ready, authenticated, logout } = usePrivy();
   const { login } = useLogin();
-  const { signAuthorization } = useSign7702Authorization();
   const { wallets } = useWallets();
   const { setActiveWallet } = useSetActiveWallet();
-  const { address, isConnected, chainId: activeChainId } = useAccount();
+  const { address: wagmiAddress, isConnected: wagmiConnected, chainId: activeChainId } = useAccount();
   const { switchChain } = useSwitchChain();
-  const { data: walletClient } = useWalletClient({ chainId: config.chainId });
-  const connected = ready && authenticated && isConnected && !!address;
+  const { data: wagmiWalletClient } = useWalletClient({ chainId: config.chainId });
+
+  // ConduitPay: one signer surface. When signed in via the shell with a PASSKEY,
+  // use that isolated PRF wallet; otherwise (Privy / standalone /demo) the
+  // wagmi-bound wallet. The Privy path is unchanged (the active-wallet privy
+  // branch mirrors wagmi). `embedded` = rendered inside the ConduitPay shell.
+  const activeWallet = useActiveWallet();
+  const embedded = useConduitEmbedded();
+  const isPasskey = activeWallet.provider === "passkey";
+  const address = isPasskey ? activeWallet.address : wagmiAddress;
+  const isConnected = isPasskey ? activeWallet.isConnected : wagmiConnected;
+  const walletClient = isPasskey ? activeWallet.walletClient : wagmiWalletClient;
+  const connected = isPasskey
+    ? activeWallet.isConnected && !!activeWallet.address
+    : ready && authenticated && isConnected && !!address;
   // External wallets (MetaMask) connect on whatever network the user has
   // selected; the embedded wallet is always on the app chain. If the active
   // wallet is on the wrong chain, useWalletClient({chainId}) is null → "waiting
@@ -341,7 +354,8 @@ export default function DemoPage() {
   // the flow (can't be 7702-upgraded from the dapp). Embedded EOAs are fine (we
   // sign the auth); accounts that already have code are fine (no auth needed).
   const isEmbeddedWallet = !!getEmbeddedConnectedWallet(wallets);
-  const needsSmartAccount = connected && hasCode === false && !isEmbeddedWallet;
+  // The passkey EOA is designate-able (we sign its 7702 auth), like an embedded wallet.
+  const needsSmartAccount = connected && hasCode === false && !isEmbeddedWallet && !isPasskey;
 
   // Run guard: distinguish a PERMANENT end (expired/revoked → new grant needed)
   // from a TEMPORARY period cap (budget refills next period → just wait).
@@ -695,8 +709,9 @@ export default function DemoPage() {
     const embeddedWallet = getEmbeddedConnectedWallet(wallets);
     // An external EOA that isn't a smart account can't be 7702-upgraded from the
     // dapp (and we can't bundle an auth for it) — so the redeem would fail.
-    // Guide the user instead of letting settle revert cryptically.
-    if (hasCode === false && !embeddedWallet) {
+    // Guide the user instead of letting settle revert cryptically. (The passkey
+    // EOA IS designate-able, so it's exempt.)
+    if (hasCode === false && !embeddedWallet && !isPasskey) {
       append("This MetaMask account isn't a Smart Account yet — enable MetaMask Smart Account in your wallet (Settings → enable smart account), or sign in with email, then Grant.");
       return null;
     }
@@ -708,29 +723,26 @@ export default function DemoPage() {
       coordinatorRef.current = coordinator;
       append(`Coordinator account · ${shorten(coordinator.address)}`);
 
+      // Whose EOA gets the EIP-7702 designation: the Privy embedded wallet, or the
+      // passkey wallet. Both are designate-able; we sign the auth from the active
+      // wallet (works for either via useActiveWallet).
+      const signerAddress = isPasskey
+        ? activeWallet.address
+        : (embeddedWallet?.address as `0x${string}` | undefined);
+
       let signedAuth: Eip7702Authorization | null = null;
       if (hasCode) {
         // Already a smart account (MetaMask Smart Account or a previously-7702'd
-        // embedded wallet) → it has code on-chain, so redeemDelegations executes
-        // directly. No dapp-side 7702 authorization needed.
+        // wallet) → it has code on-chain, so redeemDelegations executes directly.
         append("Smart Account detected ✓");
-      } else if (embeddedWallet) {
+      } else if (signerAddress) {
         append(`Signing EIP-7702 authorization · designating ${shorten(config.eip7702Impl)}…`);
-        const nonce = await publicClient.getTransactionCount({
-          address: embeddedWallet.address as `0x${string}`,
+        const nonce = await publicClient.getTransactionCount({ address: signerAddress });
+        signedAuth = await activeWallet.signAuthorization({
+          contractAddress: config.eip7702Impl,
+          chainId: config.chainId,
+          nonce,
         });
-        const auth = await signAuthorization(
-          { contractAddress: config.eip7702Impl, chainId: config.chainId, nonce },
-          { address: embeddedWallet.address }
-        );
-        signedAuth = {
-          chainId: auth.chainId,
-          address: auth.address as `0x${string}`,
-          nonce: auth.nonce,
-          r: auth.r,
-          s: auth.s,
-          yParity: (auth.yParity === 1 ? 1 : 0) as 0 | 1,
-        };
         setAuthorization(signedAuth);
         append("EIP-7702 authorization signed · bundled into the first redeem");
       }
@@ -1546,7 +1558,8 @@ export default function DemoPage() {
         </div>
       )}
 
-      {/* top bar */}
+      {/* top bar — only standalone; inside the ConduitPay shell the header lives there */}
+      {!embedded && (
       <div className="border-b border-conduit-border/60">
         <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
           <Link href="/" className="flex items-center gap-2.5">
@@ -1607,6 +1620,7 @@ export default function DemoPage() {
           </div>
         </div>
       </div>
+      )}
 
       {/* PERMISSION — full-width setup bar (the prerequisite: grant a bounded
           budget first, then run). Controls lay out horizontally; the budget
