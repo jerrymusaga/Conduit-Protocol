@@ -17,8 +17,8 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { startRegistration, startAuthentication } from "@simplewebauthn/browser";
-import { generatePrivateKey, privateKeyToAccount, type PrivateKeyAccount } from "viem/accounts";
-import { prfToValidEthPrivKey, bufToHex } from "@/lib/passkey/derive";
+import { privateKeyToAccount, type PrivateKeyAccount } from "viem/accounts";
+import { prfToValidEthPrivKey } from "@/lib/passkey/derive";
 import { ETH_KEY_DERIVATION_LABEL } from "@/lib/passkey/config";
 
 // Mirrors lib/passkey/store's CredentialMode (defined locally so this client
@@ -35,12 +35,6 @@ function deser<T>(s: string): T {
   return JSON.parse(s, (_k, v) => (v && typeof v === "object" && v.__t === "bigint" ? BigInt(v.v) : v)) as T;
 }
 
-function hexToBytes(hex: string): Uint8Array {
-  const h = hex.startsWith("0x") ? hex.slice(2) : hex;
-  const out = new Uint8Array(h.length / 2);
-  for (let i = 0; i < out.length; i++) out[i] = parseInt(h.slice(i * 2, i * 2 + 2), 16);
-  return out;
-}
 function toArrayBuffer(v: unknown): ArrayBuffer | null {
   if (v instanceof ArrayBuffer) return v;
   if (ArrayBuffer.isView(v)) {
@@ -57,12 +51,6 @@ function toArrayBuffer(v: unknown): ArrayBuffer | null {
     return out.buffer;
   }
   return null;
-}
-/** Read a 32-byte key blob (credBlob / largeBlob / PRF output) → 0x private key. */
-function blobToKey(v: unknown): `0x${string}` | null {
-  const ab = toArrayBuffer(v);
-  if (!ab || ab.byteLength < 32) return null;
-  return `0x${bufToHex(ab.byteLength === 32 ? ab : ab.slice(0, 32))}` as `0x${string}`;
 }
 
 export default function WalletIframePage() {
@@ -106,46 +94,25 @@ export default function WalletIframePage() {
       const optRes = await fetch("/api/passkey/register/options", { method: "POST" });
       if (!optRes.ok) throw new Error("couldn't get registration options");
       const options = await optRes.json();
-
-      // A random key for the LongBlob paths (discarded if we end up in PRF mode).
-      const randomKey = generatePrivateKey();
-      const keyBytes = hexToBytes(randomKey);
-
-      // Request ALL paths; the authenticator enables whichever it supports.
-      options.extensions = {
-        ...(options.extensions ?? {}),
-        prf: { eval: { first: infoLabelRef.current } },
-        credBlob: keyBytes,
-        largeBlob: { support: "preferred" },
-      };
+      // PRF ONLY — requesting exotic extensions (credBlob/largeBlob) poisons the
+      // request on PRF authenticators (Android's credential manager throws). PRF
+      // is the path that works on Android/modern + macOS 15 / iOS 18.
+      options.extensions = { ...(options.extensions ?? {}), prf: { eval: { first: infoLabelRef.current } } };
       const credential = await startRegistration({ optionsJSON: options });
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const cer = (credential.clientExtensionResults as any) ?? {};
       const prfEnabled = cer?.prf?.enabled === true;
-      const credBlobWritten = cer?.credBlob === true;
-      const largeBlobSupported = cer?.largeBlob?.supported === true;
-
-      // Prefer LongBlob (multi-passkey + simpler); PRF otherwise.
-      let mode: CredentialMode;
-      if (credBlobWritten) mode = "credBlob";
-      else if (largeBlobSupported) mode = "largeBlob";
-      else if (prfEnabled) mode = "prf";
-      else throw new Error(`authenticator supports neither PRF nor credBlob/largeBlob · cer=${JSON.stringify(cer)}`);
-
-      const longBlobAccount = mode === "prf" ? null : privateKeyToAccount(randomKey);
-      const r = await verifyRegister(credential, options.challengeId, mode, longBlobAccount?.address ?? null);
-      if (!r.ok) throw new Error("registration verification failed");
-      setStatus(`passkey created · mode=${mode}`);
-      emit({ type: "registered", credentialId: credential.id, prfEnabled, mode });
-
-      // Finalize so the wallet is immediately usable.
-      if (mode === "credBlob") {
-        setUnlocked(longBlobAccount!); // key already lives in the credBlob
-      } else if (mode === "largeBlob") {
-        await writeLargeBlob(keyBytes, longBlobAccount!); // write the key, then ready
-      } else {
-        await readUnlock(); // PRF: derive now via an auth ceremony
+      if (!prfEnabled) {
+        throw new Error(
+          "this device's passkey provider doesn't support PRF — use Android/Chrome, a PRF security key, or macOS 15 (Sequoia). " +
+            `cer=${JSON.stringify(cer)}`
+        );
       }
+      const r = await verifyRegister(credential, options.challengeId, "prf", null);
+      if (!r.ok) throw new Error("registration verification failed");
+      setStatus("passkey created (PRF ✓) — unlocking…");
+      emit({ type: "registered", credentialId: credential.id, prfEnabled: true, mode: "prf" });
+      await readUnlock(); // derive the key + open the wallet
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       setStatus(`create failed: ${message}`);
@@ -156,46 +123,18 @@ export default function WalletIframePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [busy]);
 
-  // largeBlob is write-once: store the key in the blob via an auth ceremony.
-  async function writeLargeBlob(keyBytes: Uint8Array, account: PrivateKeyAccount) {
-    const optRes = await fetch("/api/passkey/auth/options", { method: "POST" });
-    if (!optRes.ok) throw new Error("couldn't get auth options (largeBlob write)");
-    const options = await optRes.json();
-    options.extensions = { ...(options.extensions ?? {}), largeBlob: { write: keyBytes } };
-    const credential = await startAuthentication({ optionsJSON: options });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const written = (credential.clientExtensionResults as any)?.largeBlob?.written === true;
-    if (!written) throw new Error("largeBlob write failed — the authenticator didn't store the key");
-    const v = await verifyAuth(credential, options.challengeId, account.address);
-    if (!v.ok) throw new Error("authentication verification failed");
-    setUnlocked(account);
-  }
-
-  // Read/derive the key from whatever the credential holds (PRF / credBlob / largeBlob).
+  // Derive the key from the PRF output and open the wallet.
   const readUnlock = useCallback(async () => {
     const optRes = await fetch("/api/passkey/auth/options", { method: "POST" });
     if (!optRes.ok) throw new Error("couldn't get authentication options");
     const options = await optRes.json();
-    options.extensions = {
-      ...(options.extensions ?? {}),
-      prf: { eval: { first: infoLabelRef.current } },
-      getCredBlob: true,
-      largeBlob: { read: true },
-    };
+    options.extensions = { ...(options.extensions ?? {}), prf: { eval: { first: infoLabelRef.current } } };
     const credential = await startAuthentication({ optionsJSON: options });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const cer = (credential.clientExtensionResults as any) ?? {};
-
-    let key: `0x${string}` | null = null;
-    const prfFirst = cer?.prf?.results?.first;
-    if (prfFirst) {
-      const ab = toArrayBuffer(prfFirst);
-      if (ab) key = await prfToValidEthPrivKey(ab, infoLabelRef.current);
-    }
-    if (!key && cer?.credBlob) key = blobToKey(cer.credBlob);
-    if (!key && cer?.largeBlob?.blob) key = blobToKey(cer.largeBlob.blob);
-    if (!key) throw new Error(`no key material returned · cer=${JSON.stringify(cer)}`);
-
+    const ab = toArrayBuffer(cer?.prf?.results?.first);
+    if (!ab) throw new Error(`no PRF output · cer=${JSON.stringify(cer)}`);
+    const key = await prfToValidEthPrivKey(ab, infoLabelRef.current);
     const account = privateKeyToAccount(key);
     const v = await verifyAuth(credential, options.challengeId, account.address);
     if (!v.ok) throw new Error("authentication verification failed");
