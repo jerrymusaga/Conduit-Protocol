@@ -84,8 +84,20 @@ class PasskeyWallet {
     return this.initPromise;
   }
 
-  private async rpcCall<T>(method: string, params: unknown): Promise<T> {
-    await this.init();
+  /**
+   * Dispatch an RPC. CRITICAL for WebAuthn: this must run SYNCHRONOUSLY inside the
+   * click handler (no awaited init before the `child.call`), or the user's
+   * transient activation is lost and `navigator.credentials.get()` in the iframe
+   * throws NotAllowedError. We also focus the iframe's contentWindow then the
+   * frame, which is what carries activation across the postMessage boundary.
+   */
+  private rpcCall<T>(method: string, params: unknown): Promise<T> {
+    if (!this.child) {
+      return Promise.reject(new Error("passkey wallet not ready — call init() first"));
+    }
+    const frame = this.child.frame as HTMLIFrameElement;
+    frame.contentWindow?.focus();
+    frame.focus();
     return new Promise<T>((resolve, reject) => {
       const callbackNonce = this.rpcNonce++;
       this.callbacks.set(callbackNonce, { resolve: resolve as (v: unknown) => void, reject });

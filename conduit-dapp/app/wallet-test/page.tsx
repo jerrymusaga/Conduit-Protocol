@@ -8,7 +8,7 @@
  *
  * The key is held in the /wallet-iframe frame and never reaches this page.
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { getPasskeyWallet } from "@/lib/passkey/wallet";
 import { config } from "@/lib/config";
 
@@ -16,7 +16,15 @@ export default function WalletTestPage() {
   const [log, setLog] = useState<string[]>([]);
   const [address, setAddress] = useState<`0x${string}` | null>(null);
   const [busy, setBusy] = useState(false);
+  const [ready, setReady] = useState(false);
   const wallet = getPasskeyWallet();
+
+  // Pre-init the iframe + handshake on mount. The WebAuthn ceremony needs the
+  // RPC call to fire SYNCHRONOUSLY inside the click (no awaited init first), or
+  // the user's activation is lost → NotAllowedError. So we get init out of the way.
+  useEffect(() => {
+    wallet.init().then(() => setReady(true)).catch(() => setReady(false));
+  }, [wallet]);
 
   const add = (line: string) => setLog((l) => [...l, `${new Date().toLocaleTimeString()} · ${line}`]);
   const run = async (label: string, fn: () => Promise<void>) => {
@@ -41,12 +49,12 @@ export default function WalletTestPage() {
       </p>
 
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 16 }}>
-        <button disabled={busy} onClick={() => run("Register new passkey", async () => {
+        <button disabled={busy || !ready} onClick={() => run("Register new passkey", async () => {
           const { credentialId } = await wallet.register();
           add(`✓ registered · credential ${credentialId.slice(0, 12)}…`);
         })} style={btn}>1 · Register passkey</button>
 
-        <button disabled={busy} onClick={() => run("Unlock wallet", async () => {
+        <button disabled={busy || !ready} onClick={() => run("Unlock wallet", async () => {
           const addr = await wallet.unlock();
           setAddress(addr);
           add(`✓ unlocked · address ${addr}`);

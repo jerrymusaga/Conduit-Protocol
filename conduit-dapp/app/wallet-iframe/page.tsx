@@ -106,7 +106,17 @@ export default function WalletIframePage() {
         ...(options.extensions ?? {}),
         prf: { eval: { first: infoLabel } },
       };
-      const credential = await startAuthentication({ optionsJSON: options });
+      // Reinforce this frame's user activation before the ceremony.
+      try { window.focus(); } catch { /* noop */ }
+      let credential;
+      try {
+        credential = await startAuthentication({ optionsJSON: options });
+      } catch (e) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const active = (navigator as any).userActivation?.isActive;
+        const msg = e instanceof Error ? e.message : String(e);
+        throw new Error(`${msg} (userActivation.isActive=${active})`);
+      }
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const rawPrf = (credential.clientExtensionResults as any)?.prf?.results?.first;
       const prfOutput = normalizePrfOutput(rawPrf);
