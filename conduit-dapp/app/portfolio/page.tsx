@@ -4,6 +4,8 @@ import Image from "next/image";
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { useAccount, useWalletClient } from "wagmi";
+import { useActiveWallet } from "@/lib/activeWallet";
+import { useConduitEmbedded } from "@/lib/conduitEmbedded";
 import {
   usePrivy,
   useLogin,
@@ -69,9 +71,20 @@ export default function PortfolioPage() {
   const { login } = useLogin();
   const { wallets } = useWallets();
   const { setActiveWallet } = useSetActiveWallet();
-  const { address, isConnected } = useAccount();
-  const { data: walletClient } = useWalletClient({ chainId: config.chainId });
-  const connected = ready && authenticated && isConnected && !!address;
+  const { address: wagmiAddress, isConnected: wagmiConnected } = useAccount();
+  const { data: wagmiWalletClient } = useWalletClient({ chainId: config.chainId });
+
+  // ConduitPay: passkey wallet when signed in that way via the shell, else the
+  // wagmi-bound (Privy) wallet — privy behavior unchanged.
+  const activeWallet = useActiveWallet();
+  const inShell = useConduitEmbedded();
+  const isPasskey = activeWallet.provider === "passkey";
+  const address = isPasskey ? activeWallet.address : wagmiAddress;
+  const isConnected = isPasskey ? activeWallet.isConnected : wagmiConnected;
+  const walletClient = isPasskey ? activeWallet.walletClient : wagmiWalletClient;
+  const connected = isPasskey
+    ? activeWallet.isConnected && !!activeWallet.address
+    : ready && authenticated && isConnected && !!address;
 
   const [grants, setGrants] = useState<GrantRecord[]>([]);
   const [live, setLive] = useState<Record<string, LiveState>>({});
@@ -172,7 +185,8 @@ export default function PortfolioPage() {
 
   return (
     <main className="min-h-screen">
-      {/* top bar */}
+      {/* top bar — standalone only; the ConduitPay shell provides the header */}
+      {!inShell && (
       <div className="border-b border-conduit-border/60">
         <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
           <Link href="/" className="flex items-center gap-2.5">
@@ -197,6 +211,7 @@ export default function PortfolioPage() {
           </div>
         </div>
       </div>
+      )}
 
       <div className="mx-auto max-w-6xl px-6 py-8">
         {/* header */}

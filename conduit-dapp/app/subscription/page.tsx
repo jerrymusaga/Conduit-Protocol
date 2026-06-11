@@ -4,10 +4,11 @@ import Image from "next/image";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAccount, useWalletClient } from "wagmi";
+import { useActiveWallet } from "@/lib/activeWallet";
+import { useConduitEmbedded } from "@/lib/conduitEmbedded";
 import {
   usePrivy,
   useLogin,
-  useSign7702Authorization,
   useWallets,
   getEmbeddedConnectedWallet,
 } from "@privy-io/react-auth";
@@ -71,12 +72,22 @@ export default function SubscriptionPage() {
   // Privy (auth) + wagmi (wallet client) — same wiring as /demo.
   const { ready, authenticated, logout } = usePrivy();
   const { login } = useLogin();
-  const { signAuthorization } = useSign7702Authorization();
   const { wallets } = useWallets();
   const { setActiveWallet } = useSetActiveWallet();
-  const { address, isConnected } = useAccount();
-  const { data: walletClient } = useWalletClient({ chainId: config.chainId });
-  const connected = ready && authenticated && isConnected && !!address;
+  const { address: wagmiAddress, isConnected: wagmiConnected } = useAccount();
+  const { data: wagmiWalletClient } = useWalletClient({ chainId: config.chainId });
+
+  // ConduitPay: passkey wallet when signed in via the shell that way, else the
+  // wagmi-bound (Privy) wallet — privy behavior unchanged.
+  const activeWallet = useActiveWallet();
+  const embedded = useConduitEmbedded();
+  const isPasskey = activeWallet.provider === "passkey";
+  const address = isPasskey ? activeWallet.address : wagmiAddress;
+  const isConnected = isPasskey ? activeWallet.isConnected : wagmiConnected;
+  const walletClient = isPasskey ? activeWallet.walletClient : wagmiWalletClient;
+  const connected = isPasskey
+    ? activeWallet.isConnected && !!activeWallet.address
+    : ready && authenticated && isConnected && !!address;
 
   useEffect(() => {
     if (!authenticated || wallets.length === 0) return;
@@ -301,26 +312,20 @@ export default function SubscriptionPage() {
       append(`Coordinator session account · ${shorten(coordinator.address)}`);
 
       const embeddedWallet = getEmbeddedConnectedWallet(wallets);
-      if (embeddedWallet) {
+      const signerAddress = isPasskey ? activeWallet.address : (embeddedWallet?.address as Hex | undefined);
+      if (signerAddress) {
         append(`Signing EIP-7702 authorization · designating ${shorten(config.eip7702Impl)}…`);
-        const nonce = await publicClient.getTransactionCount({
-          address: embeddedWallet.address as Hex,
-        });
-        const auth = await signAuthorization(
-          { contractAddress: config.eip7702Impl, chainId: config.chainId, nonce },
-          { address: embeddedWallet.address }
+        const nonce = await publicClient.getTransactionCount({ address: signerAddress });
+        setAuthorization(
+          await activeWallet.signAuthorization({
+            contractAddress: config.eip7702Impl,
+            chainId: config.chainId,
+            nonce,
+          })
         );
-        setAuthorization({
-          chainId: auth.chainId,
-          address: auth.address as Hex,
-          nonce: auth.nonce,
-          r: auth.r,
-          s: auth.s,
-          yParity: (auth.yParity === 1 ? 1 : 0) as 0 | 1,
-        });
         append("EIP-7702 authorization signed · bundled into the first charge");
       } else {
-        append("External wallet can't sign EIP-7702 — sign in with email for the full flow.");
+        append("External wallet can't sign EIP-7702 — sign in with email or a passkey for the full flow.");
       }
 
       const terms = termsFromRequirements(req, req.subscription);
@@ -460,7 +465,8 @@ export default function SubscriptionPage() {
 
   return (
     <main className="min-h-screen">
-      {/* top bar */}
+      {/* top bar — standalone only; the ConduitPay shell provides the header */}
+      {!embedded && (
       <div className="border-b border-conduit-border/60">
         <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
           <Link href="/" className="flex items-center gap-2.5">
@@ -508,6 +514,7 @@ export default function SubscriptionPage() {
           </div>
         </div>
       </div>
+      )}
 
       {/* Safety hero — the differentiator as the headline, not a footnote. */}
       <SubscriptionHero subscribed={subscribed} />
