@@ -1159,6 +1159,25 @@ export default function DemoPage() {
     let scoutPriceUsdc = "—";
     let scoutTxHash: string | null = null;
 
+    // Show the Scout as a hired specialist IMMEDIATELY — the paid hire settles a
+    // real payment + runs live Venice reasoning before it returns (~10-30s), so
+    // without this the feed sits silent and the Trader looks like it never shows.
+    const scoutCid = crypto.randomUUID();
+    if (!rogue) {
+      setCards((cs) => [
+        ...cs,
+        {
+          correlationId: scoutCid, service: "scout", label: "Yield Scout", agent: "scout",
+          priceUsdc: userPicked ? "—" : "0.06",
+          rationale: userPicked
+            ? `You chose ${userPicked.name} (${userPicked.symbol}) — from your approved set.`
+            : "Reasoning over your approved assets with live market data…",
+          stage: (userPicked ? "settled" : "settling") as CardStage,
+          source: userPicked ? "your choice" : "hiring · x402",
+        },
+      ]);
+    }
+
     if (userPicked) {
       entry = userPicked;
       rationale = `You chose ${userPicked.name} (${userPicked.symbol}) — from your approved set.`;
@@ -1170,7 +1189,8 @@ export default function DemoPage() {
     } else {
       // PAID Yield Scout — hire it via x402 + erc7710 from the user's budget grant,
       // then read its pick. Falls back to the free local scout if the hire can't
-      // proceed (budget exhausted / endpoint down), so the trade still completes.
+      // proceed (budget exhausted / endpoint down / too slow), so the trade always
+      // completes and the Trader always appears.
       append("Coordinator → Yield Scout › hiring a paid market-intelligence agent (x402 · 0.06 USDC)…");
       const scoutAgent = getAgent("yield-scout");
       let picked: { entry: AllowlistEntry; rationale: string } | null = null;
@@ -1184,9 +1204,15 @@ export default function DemoPage() {
             goal: prompt,
             tokens: swap.allowlist.map((e) => ({ name: e.name, symbol: e.symbol, note: e.note })),
           });
-          const claim = await payAndClaim(built.paymentPayload, {
-            path: scoutAgent.resource, agent: "Yield Scout", correlationId: crypto.randomUUID(), topic,
-          });
+          // Safety net: never let a slow/hung hosted call block the Trader forever.
+          const claim = await Promise.race([
+            payAndClaim(built.paymentPayload, {
+              path: scoutAgent.resource, agent: "Yield Scout", correlationId: crypto.randomUUID(), topic,
+            }),
+            new Promise<never>((_, rej) =>
+              setTimeout(() => rej(new Error("the Scout took too long to respond")), 60_000)
+            ),
+          ]);
           if (!claim.ok) throw new Error(claim.error ?? "the Scout's payment was rejected");
           const pick = (claim.data as { content?: { pick?: { symbol?: string; reason?: string } | null } } | undefined)
             ?.content?.pick;
@@ -1227,15 +1253,10 @@ export default function DemoPage() {
     }
 
     if (!rogue) {
-      const scoutCid = crypto.randomUUID();
-      setCards((cs) => [
-        ...cs,
-        {
-          correlationId: scoutCid, service: "scout", label: "Yield Scout", agent: "scout",
-          priceUsdc: scoutPriceUsdc, rationale, stage: "settled" as CardStage,
-          source: scoutSource, txHash: scoutTxHash,
-        },
-      ]);
+      // Patch the already-visible Scout card with the final pick + receipt.
+      setCardStage(scoutCid, {
+        stage: "settled", priceUsdc: scoutPriceUsdc, rationale, source: scoutSource, txHash: scoutTxHash,
+      });
       const paidNote = scoutPriceUsdc !== "—" ? ` · paid ${scoutPriceUsdc} USDC` : "";
       append(`Coordinator → Yield Scout › picked ${entry.name} (${entry.symbol})${paidNote} · ${rationale}`);
       append(`Yield Scout → Trader › swap into ${entry.name}`);
