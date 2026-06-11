@@ -1,11 +1,11 @@
 "use client";
 /**
  * ConduitPay sign-in gate. You can't enter the app without signing in — with a
- * Passkey (the isolated WebAuthn-PRF embedded wallet) or with Privy (email /
- * MetaMask / injected). Privy is the default, universal path; passkey is the
- * non-custodial showcase (works on Chrome/Android + PRF security keys + macOS 15).
+ * Passkey (the isolated WebAuthn-PRF embedded wallet, shown INLINE here) or with
+ * Privy (email / MetaMask / injected). Privy is the universal default; passkey is
+ * the non-custodial showcase (Chrome/Android, PRF security keys, macOS 15+).
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useLogin } from "@privy-io/react-auth";
 import { useActiveWallet } from "@/lib/activeWallet";
 
@@ -14,63 +14,117 @@ export function ConduitPaySignIn() {
   const { login } = useLogin();
   const [mode, setMode] = useState<"choose" | "passkey">("choose");
   const [note, setNote] = useState<string>("");
+  const frameRef = useRef<HTMLDivElement>(null);
 
-  // When the user picks passkey, mount the wallet iframe + surface its events.
+  // Passkey mode → reveal the persistent wallet frame OVER the inline slot, and
+  // keep it positioned there. It parks itself (stays mounted) once we leave.
   useEffect(() => {
     if (mode !== "passkey") return;
     setProvider("passkey");
-    void passkeyWallet.init();
+    let active = true;
+    const reposition = () => active && passkeyWallet.showAt(frameRef.current);
+    void passkeyWallet.init().then(reposition);
+    window.addEventListener("resize", reposition);
+    window.addEventListener("scroll", reposition, true);
     const off = passkeyWallet.onEvent((e) => {
-      if (e.type === "registered") setNote("Passkey created — now tap Unlock in the wallet panel.");
-      else if (e.type === "unlocked") setNote("Unlocked ✓");
+      if (e.type === "registered") setNote("Passkey created — now tap Unlock.");
+      else if (e.type === "unlocked") setNote("Unlocked ✓ — entering ConduitPay…");
       else if (e.type === "error") setNote(`${e.phase} failed · ${e.message}`);
     });
-    return off;
+    return () => {
+      active = false;
+      window.removeEventListener("resize", reposition);
+      window.removeEventListener("scroll", reposition, true);
+      passkeyWallet.showAt(null); // park the frame (keeps it mounted for signing)
+      off();
+    };
   }, [mode, setProvider, passkeyWallet]);
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-conduit-bg px-6">
-      <div className="panel reveal w-full max-w-md p-8">
-        <div className="flex items-center gap-2">
-          <span className="text-lg font-semibold tracking-tight text-white">ConduitPay</span>
-          <span className="mono rounded bg-conduit-cyan/10 px-1.5 py-0.5 text-[10px] text-conduit-cyan">sign in</span>
+    <main className="relative flex min-h-screen items-center justify-center overflow-hidden bg-conduit-bg px-6">
+      {/* ambient glows */}
+      <div className="pointer-events-none absolute -top-40 left-1/2 h-[420px] w-[720px] -translate-x-1/2 rounded-full bg-conduit-cyan/10 blur-[120px]" />
+      <div className="pointer-events-none absolute bottom-[-160px] right-[-80px] h-[360px] w-[360px] rounded-full bg-conduit-violet/10 blur-[120px]" />
+
+      <div className="relative grid w-full max-w-4xl gap-10 md:grid-cols-2 md:items-center">
+        {/* Left — brand + pitch */}
+        <div className="hidden md:block">
+          <div className="flex items-center gap-3">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src="/images/conduit-logo.png" alt="Conduit" className="h-9 w-9 object-contain drop-shadow-[0_0_16px_rgba(0,229,255,0.4)]" />
+            <span className="text-xl font-semibold tracking-tight text-white">ConduitPay</span>
+          </div>
+          <h1 className="mt-6 text-[28px] font-semibold leading-tight tracking-tight text-white">
+            Pay AI agents<br />you don&apos;t have to trust.
+          </h1>
+          <p className="mt-4 max-w-sm text-[14px] leading-relaxed text-conduit-muted">
+            Every payment is bounded by a permission you sign — exact amount, recipient, intent — enforced on-chain.
+            A compromised agent still can&apos;t overspend, redirect, or pay anyone you didn&apos;t approve.
+          </p>
+          <ul className="mt-6 space-y-2.5">
+            {["One signature, many agents, one transaction", "Gas paid in USDC via 1Shot", "Revoke any permission on-chain, anytime"].map((t) => (
+              <li key={t} className="flex items-start gap-2.5 text-[13px] text-conduit-muted">
+                <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-conduit-cyan shadow-glow" />
+                {t}
+              </li>
+            ))}
+          </ul>
         </div>
-        <p className="mt-2 text-[13px] leading-relaxed text-conduit-muted">
-          Pay AI agents within bounded, on-chain permissions you sign. Sign in to continue.
-        </p>
 
-        {mode === "choose" ? (
-          <div className="mt-6 space-y-3">
-            <button
-              onClick={() => { setProvider("privy"); login(); }}
-              className="w-full rounded-xl border border-conduit-cyan/40 bg-conduit-cyan/10 px-4 py-3 text-sm font-medium text-white transition-colors hover:bg-conduit-cyan/15"
-            >
-              Continue with email or wallet
-              <span className="mt-0.5 block text-[11px] font-normal text-conduit-muted">Email, MetaMask, or an injected wallet · works everywhere</span>
-            </button>
-            <button
-              onClick={() => setMode("passkey")}
-              className="w-full rounded-xl border border-conduit-border px-4 py-3 text-sm font-medium text-white transition-colors hover:border-conduit-violet/50"
-            >
-              Continue with a passkey
-              <span className="mt-0.5 block text-[11px] font-normal text-conduit-muted">Non-custodial · Face/Touch ID · Chrome, Android, or a security key</span>
-            </button>
+        {/* Right — sign-in card */}
+        <div className="panel reveal w-full p-7">
+          <div className="flex items-center gap-2 md:hidden">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src="/images/conduit-logo.png" alt="Conduit" className="h-7 w-7 object-contain" />
+            <span className="text-lg font-semibold tracking-tight text-white">ConduitPay</span>
           </div>
-        ) : (
-          <div className="mt-6 space-y-3">
-            <div className="rounded-xl border border-conduit-violet/30 bg-conduit-violet/[0.06] px-4 py-3 text-[13px] text-conduit-muted">
-              Use the <span className="text-white">wallet panel (bottom-right)</span> → <span className="text-white">Create wallet</span>, then <span className="text-white">Unlock</span>. Your key is derived from the passkey and held in an isolated iframe — it never touches this page.
+          <h2 className="mt-1 text-lg font-semibold tracking-tight text-white md:mt-0">Sign in</h2>
+          <p className="mt-1 text-[13px] text-conduit-muted">Choose how you want to hold your account.</p>
+
+          {mode === "choose" ? (
+            <div className="mt-6 space-y-3">
+              <button
+                onClick={() => { setProvider("privy"); login(); }}
+                className="group flex w-full items-center gap-3 rounded-xl border border-conduit-cyan/40 bg-conduit-cyan/[0.07] px-4 py-3.5 text-left transition-colors hover:bg-conduit-cyan/[0.12]"
+              >
+                <span className="grid h-9 w-9 place-items-center rounded-lg bg-conduit-cyan/15 text-conduit-cyan">✉</span>
+                <span>
+                  <span className="block text-sm font-medium text-white">Email or wallet</span>
+                  <span className="block text-[11px] text-conduit-muted">Email, MetaMask, or injected · works everywhere</span>
+                </span>
+              </button>
+              <button
+                onClick={() => setMode("passkey")}
+                className="group flex w-full items-center gap-3 rounded-xl border border-conduit-border px-4 py-3.5 text-left transition-colors hover:border-conduit-violet/50"
+              >
+                <span className="grid h-9 w-9 place-items-center rounded-lg bg-conduit-violet/15 text-conduit-violet">🔑</span>
+                <span>
+                  <span className="block text-sm font-medium text-white">Passkey</span>
+                  <span className="block text-[11px] text-conduit-muted">Non-custodial · Face/Touch ID · key never leaves an isolated frame</span>
+                </span>
+              </button>
             </div>
-            {note && <div className="mono text-[12px] text-conduit-cyan">{note}</div>}
-            <button onClick={() => setMode("choose")} className="text-[12px] text-conduit-muted hover:text-white">
-              ← back
-            </button>
-          </div>
-        )}
+          ) : (
+            <div className="mt-6 space-y-3">
+              <p className="text-[12px] text-conduit-muted">
+                <span className="text-white">Create</span> a wallet, then <span className="text-white">Unlock</span> — below. Your key is derived from the passkey and held in an isolated iframe; it never touches this page.
+              </p>
+              {/* the isolated wallet frame, mounted inline here */}
+              <div
+                ref={frameRef}
+                className="h-[124px] w-full overflow-hidden rounded-xl border border-conduit-violet/30"
+              />
+              {note && <div className="mono text-[12px] text-conduit-cyan">{note}</div>}
+              <button onClick={() => setMode("choose")} className="text-[12px] text-conduit-muted transition-colors hover:text-white">
+                ← other options
+              </button>
+            </div>
+          )}
 
-        <p className="mt-6 border-t border-conduit-border/60 pt-4 text-[11px] text-conduit-muted">
-          Building with Conduit? See the <a href="/docs" className="text-conduit-cyan hover:underline">developer docs</a>.
-        </p>
+          <p className="mt-6 border-t border-conduit-border/60 pt-4 text-[11px] text-conduit-muted">
+            Building with Conduit? See the <a href="/docs" className="text-conduit-cyan hover:underline">developer docs</a>.
+          </p>
+        </div>
       </div>
     </main>
   );

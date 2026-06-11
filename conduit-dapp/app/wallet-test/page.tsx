@@ -5,7 +5,7 @@
  * WebAuthn ceremony keeps that frame's activation; this page listens for the
  * result and then exercises SIGNING (EIP-712 + EIP-7702), driven over the RPC.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { getPasskeyWallet } from "@/lib/passkey/wallet";
 import { config } from "@/lib/config";
 
@@ -13,19 +13,26 @@ export default function WalletTestPage() {
   const [log, setLog] = useState<string[]>([]);
   const [address, setAddress] = useState<`0x${string}` | null>(null);
   const [busy, setBusy] = useState(false);
+  const frameRef = useRef<HTMLDivElement>(null);
   const wallet = getPasskeyWallet();
 
   const add = (line: string) => setLog((l) => [...l, `${new Date().toLocaleTimeString()} · ${line}`]);
 
-  // Init the iframe + subscribe to its register/unlock/error events.
+  // Init the iframe, reveal it in the slot below, and subscribe to events.
   useEffect(() => {
-    void wallet.init();
+    const reposition = () => wallet.showAt(frameRef.current);
+    void wallet.init().then(reposition);
+    window.addEventListener("resize", reposition);
     const off = wallet.onEvent((e) => {
       if (e.type === "registered") add(`✓ registered · mode=${e.mode} · PRF ${e.prfEnabled ? "✓" : "✗"}`);
       else if (e.type === "unlocked") { setAddress(e.address); add(`✓ unlocked · ${e.address}`); }
       else add(`✗ ${e.phase} failed · ${e.message}`);
     });
-    return off;
+    return () => {
+      window.removeEventListener("resize", reposition);
+      wallet.showAt(null);
+      off();
+    };
   }, [wallet]);
 
   const run = async (label: string, fn: () => Promise<void>) => {
@@ -45,10 +52,13 @@ export default function WalletTestPage() {
     <main style={{ maxWidth: 760, margin: "40px auto", padding: 24, fontFamily: "system-ui" }}>
       <h1 style={{ fontSize: 20, fontWeight: 700 }}>Passkey wallet — isolated test</h1>
       <p style={{ color: "#667", fontSize: 13, marginTop: 4 }}>
-        WebAuthn PRF → secp256k1, key held in the <code>/wallet-iframe</code> frame. Use the
-        <strong> wallet frame (bottom-right)</strong> to <em>Create</em> then <em>Unlock</em> — the ceremony
-        runs there so it keeps activation. Then sign below. Needs a platform passkey (Touch ID etc.).
+        WebAuthn PRF → secp256k1, key held in the <code>/wallet-iframe</code> frame. Use the wallet
+        frame below to <em>Create</em> then <em>Unlock</em> — the ceremony runs there so it keeps
+        activation. Then sign below. Needs a platform passkey (Touch ID etc.).
       </p>
+
+      {/* the isolated wallet frame is positioned over this slot */}
+      <div ref={frameRef} style={{ height: 124, marginTop: 16, borderRadius: 12, border: "1px solid #234", overflow: "hidden" }} />
 
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 16 }}>
         <button disabled={busy || !address} onClick={() => run("Sign EIP-712 typed data", async () => {

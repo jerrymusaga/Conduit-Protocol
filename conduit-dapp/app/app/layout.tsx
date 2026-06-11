@@ -8,18 +8,13 @@ import { usePrivy } from "@privy-io/react-auth";
 import { useActiveWallet } from "@/lib/activeWallet";
 import { ConduitPaySignIn } from "@/components/ConduitPaySignIn";
 import { ConduitPayShell } from "@/components/ConduitPayShell";
+import { ConduitLogoLoader } from "@/components/ConduitLogoLoader";
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const { ready } = usePrivy();
   const { isConnected } = useActiveWallet();
 
-  if (!ready) {
-    return (
-      <main className="flex min-h-screen items-center justify-center bg-conduit-bg">
-        <span className="mono text-sm text-conduit-muted">Loading ConduitPay…</span>
-      </main>
-    );
-  }
+  if (!ready) return <ConduitLogoLoader />;
   if (!isConnected) return <ConduitPaySignIn />;
   return <ConduitPayShell>{children}</ConduitPayShell>;
 }

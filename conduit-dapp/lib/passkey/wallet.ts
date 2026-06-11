@@ -37,6 +37,7 @@ type Resolver = { resolve: (v: unknown) => void; reject: (e: Error) => void };
 class PasskeyWallet {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private child: any = null;
+  private host: HTMLElement | null = null;
   private initPromise: Promise<void> | null = null;
   private rpcNonce = 0;
   private callbacks = new Map<number, Resolver>();
@@ -53,24 +54,27 @@ class PasskeyWallet {
     return () => this.listeners.delete(cb);
   }
 
-  /** Embed the iframe + handshake (idempotent). Call once on mount. */
+  /**
+   * Embed the iframe + handshake (idempotent). The frame lives in a PERSISTENT
+   * body-level host (so the key survives the sign-in card unmounting); call
+   * showAt() to position it over a slot so it appears inline. The user must click
+   * Create/Unlock INSIDE this frame so the WebAuthn ceremony has its activation.
+   */
   async init(): Promise<void> {
     if (this.child) return;
     if (this.initPromise) return this.initPromise;
     this.initPromise = (async () => {
       const { default: Postmate } = await import("postmate");
 
-      // VISIBLE + interactive — the user clicks Create/Unlock INSIDE this frame so
-      // the WebAuthn ceremony has the frame's activation. Parked bottom-right.
-      const container = document.createElement("div");
-      container.style.cssText =
-        "position:fixed;right:12px;bottom:12px;width:320px;height:120px;z-index:2147483647;border-radius:10px;overflow:hidden;box-shadow:0 6px 24px rgba(0,0,0,.4);";
-      document.body.appendChild(container);
+      const host = document.createElement("div");
+      document.body.appendChild(host);
+      this.host = host;
+      this.parkHost();
 
-      const handshake = new Postmate({ container, url: IFRAME_URL, name: "conduit-wallet-iframe", classListArray: [] });
+      const handshake = new Postmate({ container: host, url: IFRAME_URL, name: "conduit-wallet-iframe", classListArray: [] });
       const child = await handshake;
       child.frame.setAttribute("allow", "publickey-credentials-get *; publickey-credentials-create *");
-      child.frame.style.cssText = "width:100%;height:100%;border:0;";
+      child.frame.style.cssText = "width:100%;height:100%;border:0;display:block;";
 
       child.on(RPC_CALLBACK, (payload: string) => {
         let parsed: { success: boolean; callbackNonce: number; result: string };
@@ -101,6 +105,30 @@ class PasskeyWallet {
       this.child = child;
     })();
     return this.initPromise;
+  }
+
+  /** Park the frame invisibly (kept mounted for RPC signing; no ceremony here). */
+  private parkHost(): void {
+    if (this.host) {
+      this.host.style.cssText =
+        "position:fixed;right:8px;bottom:8px;width:1px;height:1px;opacity:0;pointer-events:none;overflow:hidden;z-index:-1;";
+    }
+  }
+
+  /**
+   * Position the persistent wallet frame OVER a slot element so it appears inline
+   * (e.g. inside the sign-in card), or park it (null) once unlocked — the key
+   * lives in the frame either way, surviving the slot/card unmounting.
+   */
+  showAt(el: HTMLElement | null): void {
+    if (!this.host) return;
+    if (!el) {
+      this.parkHost();
+      return;
+    }
+    const r = el.getBoundingClientRect();
+    this.host.style.cssText =
+      `position:fixed;left:${r.left}px;top:${r.top}px;width:${r.width}px;height:${r.height}px;z-index:50;border-radius:12px;overflow:hidden;`;
   }
 
   private rpcCall<T>(method: string, params: unknown): Promise<T> {
