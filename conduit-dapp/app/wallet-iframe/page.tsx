@@ -79,6 +79,13 @@ export default function WalletIframePage() {
       const optRes = await fetch("/api/passkey/register/options", { method: "POST" });
       if (!optRes.ok) throw new Error("couldn't get registration options");
       const options = await optRes.json();
+      // Enable PRF on the new credential with the eval input as RAW BYTES — the
+      // browser's create() rejects a base64url string here (it wants an
+      // ArrayBuffer/View), and @simplewebauthn doesn't convert PRF values.
+      options.extensions = {
+        ...(options.extensions ?? {}),
+        prf: { eval: { first: infoLabel } },
+      };
       const credential = await startRegistration({ optionsJSON: options });
       const verifyRes = await fetch("/api/passkey/register/verify", {
         method: "POST",
