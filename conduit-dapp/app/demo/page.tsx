@@ -31,11 +31,12 @@ import {
   type RogueKind,
   type RogueAttack,
 } from "@/lib/coordinator";
-import type { Eip7702Authorization } from "@/lib/payment";
+import { buildOneshotPayment, type Eip7702Authorization } from "@/lib/payment";
 import { keccak256, parseUnits, formatUnits, type Hex } from "viem";
 import { Erc7710Inspector, type InspectorBinding } from "@/components/Erc7710Inspector";
 import { useFacilitatorEvents } from "@/lib/useFacilitatorEvents";
-import { fetchJob, fetch402 } from "@/lib/endpoint";
+import { fetchJob, fetch402, payAndClaim } from "@/lib/endpoint";
+import { getAgent } from "@/lib/agents";
 import { registerGrant } from "@/lib/grants";
 import {
   grantSwapAllowlist,
@@ -46,6 +47,7 @@ import {
   isTradeIntent,
   parseTradeIntent,
   type SwapAllowlistGrant,
+  type AllowlistEntry,
 } from "@/lib/trade";
 import { config } from "@/lib/config";
 import { publicClient } from "@/lib/chain";
@@ -1109,7 +1111,7 @@ export default function DemoPage() {
           append("Coordinator › this is a trade — authorizing the bounded swap now (approve in your wallet)…");
           swap = await authorizeSwap(coordinatorRef.current, activeGrant?.expiry);
         }
-        if (swap) await runTrade(swap, undefined, commissionOk ? undefined : (authorization ?? undefined));
+        if (swap) await runTrade(swap, undefined, commissionOk ? undefined : (authorization ?? undefined), activeGrant ?? undefined);
       }
     } catch (e) {
       console.error("[run] threw:", e);
@@ -1129,39 +1131,113 @@ export default function DemoPage() {
     swap: SwapAllowlistGrant,
     rogueKind?: "redirect" | "offlist",
     authorization?: Eip7702Authorization,
+    budget?: GrantResult,
   ) => {
     if (!coordinatorRef.current || !walletClient || !address) return;
     const rogue = !!rogueKind;
     const offlist = rogueKind === "offlist";
     const amtUsdc = (Number(swap.maxAmountIn) / 1e6).toFixed(2);
+    // The 7702 designation rides the FIRST on-chain redemption. When the paid
+    // Scout runs first and carries it, we clear this so the swap doesn't
+    // re-designate; if the Scout is skipped/free, the swap still carries it.
+    let swapAuth = authorization;
 
     // 1) SCOUT / user choice — if the user picked a token in the pre-sign panel,
-    //    use it; otherwise the Scout picks the best from the SIGNED set. A
-    //    sequential A2A handoff either way. (Legit run only — the rogue ignores it.)
+    //    use it; otherwise the user HIRES the Yield Scout — a PAID, autonomous
+    //    market-intelligence agent (x402 + erc7710, paid from the user's budget
+    //    grant) that reasons over the SIGNED set with live data and returns the
+    //    single best pick. A real agents-paying-agents handoff: Scout → Trader.
+    //    (Legit run only — the rogue ignores it and just needs a target token.)
     const choice = swapTokenChoiceRef.current;
     const userPicked = choice && choice !== "scout"
       ? swap.allowlist.find((e) => e.token.toLowerCase() === choice.toLowerCase())
       : undefined;
-    // Venice-powered scout (live data) unless the user picked a token themselves.
-    if (!rogue && !userPicked) append("Coordinator → Yield Scout › analyzing your approved assets with live market data…");
-    const scout = userPicked ? null : await veniceScout(prompt, swap.allowlist);
-    const entry = userPicked ?? scout!.entry;
-    const rationale = userPicked
-      ? `You chose ${userPicked.name} (${userPicked.symbol}) — from your approved set.`
-      : scout!.rationale;
+
+    let entry: AllowlistEntry;
+    let rationale: string;
+    let scoutSource = "your choice";
+    let scoutPriceUsdc = "—";
+    let scoutTxHash: string | null = null;
+
+    if (userPicked) {
+      entry = userPicked;
+      rationale = `You chose ${userPicked.name} (${userPicked.symbol}) — from your approved set.`;
+    } else if (rogue) {
+      // The rogue doesn't pay the Scout; a free pick just gives it a target token.
+      const free = await veniceScout(prompt, swap.allowlist);
+      entry = free.entry;
+      rationale = free.rationale;
+    } else {
+      // PAID Yield Scout — hire it via x402 + erc7710 from the user's budget grant,
+      // then read its pick. Falls back to the free local scout if the hire can't
+      // proceed (budget exhausted / endpoint down), so the trade still completes.
+      append("Coordinator → Yield Scout › hiring a paid market-intelligence agent (x402 · 0.06 USDC)…");
+      const scoutAgent = getAgent("yield-scout");
+      let picked: { entry: AllowlistEntry; rationale: string } | null = null;
+      if (scoutAgent && budget) {
+        try {
+          const sreq = await fetch402(scoutAgent.resource);
+          const built = await buildOneshotPayment({
+            grant: budget, coordinator: coordinatorRef.current, req: sreq, authorization,
+          });
+          const topic = JSON.stringify({
+            goal: prompt,
+            tokens: swap.allowlist.map((e) => ({ name: e.name, symbol: e.symbol, note: e.note })),
+          });
+          const claim = await payAndClaim(built.paymentPayload, {
+            path: scoutAgent.resource, agent: "Yield Scout", correlationId: crypto.randomUUID(), topic,
+          });
+          if (!claim.ok) throw new Error(claim.error ?? "the Scout's payment was rejected");
+          const pick = (claim.data as { content?: { pick?: { symbol?: string; reason?: string } | null } } | undefined)
+            ?.content?.pick;
+          const match = pick?.symbol
+            ? swap.allowlist.find((e) => e.symbol.toLowerCase() === pick.symbol!.toLowerCase())
+            : undefined;
+          if (!match) throw new Error("the Scout returned no usable pick");
+          picked = { entry: match, rationale: pick?.reason || `${match.name} — the Scout's pick from your approved set.` };
+          scoutSource = "venice · paid market scout (x402)";
+          scoutPriceUsdc = scoutAgent.priceUsdc;
+          scoutTxHash = claim.settlement?.transaction ?? null;
+          // The Scout's payment just became the FIRST redemption. If it carried the
+          // 7702 designation, wait for that tx to confirm so the account actually
+          // has code before the swap redeems — then clear it (don't re-designate).
+          if (authorization) {
+            if (scoutTxHash) {
+              append("Coordinator › awaiting 7702 designation confirmation…");
+              try {
+                await publicClient.waitForTransactionReceipt({ hash: scoutTxHash as Hex });
+                append("Coordinator › account upgraded to a smart account ✓");
+              } catch {
+                /* best effort — the swap's own verify still gates correctness */
+              }
+            }
+            swapAuth = undefined;
+          }
+        } catch (e) {
+          append(`Yield Scout › paid hire unavailable (${errMsg(e)}) — falling back to the free scout`);
+        }
+      }
+      if (!picked) {
+        const free = await veniceScout(prompt, swap.allowlist);
+        picked = { entry: free.entry, rationale: free.rationale };
+        scoutSource = free.live ? "venice · live market scout" : "scout · from your approved set";
+      }
+      entry = picked.entry;
+      rationale = picked.rationale;
+    }
+
     if (!rogue) {
       const scoutCid = crypto.randomUUID();
       setCards((cs) => [
         ...cs,
         {
           correlationId: scoutCid, service: "scout", label: "Yield Scout", agent: "scout",
-          priceUsdc: "—", rationale, stage: "settled" as CardStage,
-          source: userPicked
-            ? "your choice"
-            : scout!.live ? "venice · live market scout" : "scout · from your approved set",
+          priceUsdc: scoutPriceUsdc, rationale, stage: "settled" as CardStage,
+          source: scoutSource, txHash: scoutTxHash,
         },
       ]);
-      append(`Coordinator → Yield Scout › picked ${entry.name} (${entry.symbol}) · ${rationale}`);
+      const paidNote = scoutPriceUsdc !== "—" ? ` · paid ${scoutPriceUsdc} USDC` : "";
+      append(`Coordinator → Yield Scout › picked ${entry.name} (${entry.symbol})${paidNote} · ${rationale}`);
       append(`Yield Scout → Trader › swap into ${entry.name}`);
     }
 
@@ -1211,7 +1287,7 @@ export default function DemoPage() {
         grant: swap, coordinator: coordinatorRef.current, req,
         tokenOut,
         amountIn: swap.maxAmountIn,
-        authorization,
+        authorization: swapAuth,
         recipientOverride: rogueKind === "redirect" ? randomRogueAddr() : undefined,
         allowOffList: offlist,
       });

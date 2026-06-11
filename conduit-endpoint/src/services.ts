@@ -29,6 +29,7 @@ export type AgentRole =
   | "analysis"
   | "onchain"
   | "voice"
+  | "scout" // paid market-intelligence: picks the best asset from a signed set
   | "feed"; // subscription feeds
 
 /** Subscription-only terms a recurring service advertises in its 402 envelope. */
@@ -111,6 +112,14 @@ export const SERVICES: Service[] = [
     "Pulls real on-chain data via Venice's RPC proxy (for crypto topics)."),
   svc("narrator", "Narrator", "audio", "voice", "venice:tts", "0.07",
     "Speaks a summary of the deliverable — a playable voiceover (Venice TTS)."),
+
+  // --- TRADING agents (one-shot, X402ReceiptEnforcer for the FEE) -----------
+  // A paid market-intelligence agent. The buyer pays it (x402 + erc7710), then it
+  // reasons over the buyer's APPROVED token set with live data and returns the
+  // single best pick. It never sees the user's funds — it only advises; the bound
+  // Trader executes the swap within the on-chain allowlist.
+  svc("yield-scout", "Yield Scout", "data", "scout", "venice:chat+search", "0.06",
+    "Picks the single best asset from your approved set, with live market reasoning."),
 
   // --- SUBSCRIPTION agents (recurring, X402SubscriptionEnforcer) ------------
   // Variety of periods for the portfolio showcase; the LIVE demo drives the 60s

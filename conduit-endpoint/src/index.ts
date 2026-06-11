@@ -178,15 +178,21 @@ async function imageOutput(topic: string): Promise<Output> {
  */
 async function voiceOutput(topic: string, context?: string): Promise<Output> {
   const user = context
-    ? `The team just produced this deliverable about "${topic}":\n\n${context}\n\n` +
-      "Write ONE natural spoken sentence (max 30 words) that tells the listener the single " +
-      "most important takeaway from it. No preamble, no markdown, no quotes."
-    : `One spoken opening line summarizing a brief about: ${topic}`;
+    ? `A team of AI agents just produced this deliverable about "${topic}". Here is what each agent contributed:\n\n${context}\n\n` +
+      "Narrate a short spoken briefing — 4 to 5 sentences, roughly 80-110 words — that walks the " +
+      "listener through what the team delivered. Open with the headline finding, then weave in the " +
+      "most concrete specifics the agents produced (figures, the market outlook, the on-chain data, " +
+      "the recommendation), and close with the bottom-line takeaway. Reference the work naturally " +
+      "(e.g. 'the research found…', 'the on-chain data shows…'). Natural, confident broadcast tone. " +
+      "No preamble, no markdown, no quotes, no lists."
+    : `Narrate a short spoken briefing (3-4 sentences) summarizing a deliverable about: ${topic}`;
   const script = await veniceChat(
-    "You are a voiceover narrator. Speak ONE natural, confident sentence that gives the listener " +
-      "the key takeaway of the deliverable — specific and concrete, no jargon, no preamble, no quotes.",
+    "You are a professional voiceover narrator delivering a concise spoken briefing on what a team " +
+      "of AI agents just produced. Specific and concrete — name the real figures, findings and the " +
+      "recommendation from the material, and reference what the agents did. Confident broadcast " +
+      "tone. No preamble, no markdown, no quotes, no bullet points.",
     user,
-    { stripThinking: true, maxTokens: 140 }
+    { stripThinking: true, maxTokens: 320 }
   );
   // No canned script: if Venice can't write one, don't synthesize a fake voiceover.
   if (!script) {
@@ -196,6 +202,69 @@ async function voiceOutput(topic: string, context?: string): Promise<Output> {
   return audio
     ? { type: "audio", source: "venice:tts", content: audio, transcript: script }
     : { type: "audio", source: "venice unavailable", content: null, transcript: script, note: "Voiceover couldn't be generated right now — please try again." };
+}
+
+/**
+ * Yield Scout: a PAID market-intelligence agent. Given the buyer's goal + their
+ * APPROVED token set (passed as JSON in the X-TOPIC header — the endpoint never
+ * sees the user's on-chain allowlist otherwise), Venice picks the SINGLE best
+ * asset right now, constrained to that set, with a concrete data-backed rationale
+ * (web search on). The buyer already paid for this via x402 + erc7710; the bound
+ * Trader then swaps into the pick within the on-chain allowlist.
+ *
+ * `topic` is the JSON blob {goal, tokens:[{name,symbol,note}]}. Returns
+ * { pick: {symbol,name,reason} | null } so the buyer can map symbol → allowlist.
+ */
+async function scoutOutput(topic: string): Promise<Output> {
+  let goal = "";
+  let tokens: { name: string; symbol: string; note?: string }[] = [];
+  try {
+    const parsed = JSON.parse(topic) as { goal?: string; tokens?: typeof tokens };
+    goal = typeof parsed.goal === "string" ? parsed.goal : "";
+    tokens = Array.isArray(parsed.tokens) ? parsed.tokens : [];
+  } catch {
+    /* topic wasn't the structured scout payload */
+  }
+  if (tokens.length === 0) {
+    return { type: "data", source: "venice unavailable", content: { pick: null, note: "No approved assets to choose from." } };
+  }
+
+  const list = tokens.map((t) => `- ${t.name} (${t.symbol})${t.note ? `: ${t.note}` : ""}`).join("\n");
+  const text = await veniceChat(
+    "You are a crypto market & yield scout advising on which asset to buy. From the APPROVED " +
+      "ASSETS below — and ONLY these — choose the SINGLE best one for the user's goal given current " +
+      "market and staking conditions. Be concrete: cite a figure (e.g. an APR or a recent move) when " +
+      'you can. Reply with ONLY JSON, no prose: {"symbol":"<exact symbol from the list>","reason":"<1-2 sentences>"}.',
+    `Goal: "${goal}"\n\nApproved assets (pick exactly one):\n${list}`,
+    { webSearch: "on", stripThinking: true, maxTokens: 350 }
+  );
+  if (!text) {
+    return { type: "data", source: "venice unavailable", content: { pick: null, note: "The Scout couldn't reach a view right now — please try again." } };
+  }
+  try {
+    const m = text.match(/\{[\s\S]*\}/);
+    const parsed = m ? (JSON.parse(m[0]) as { symbol?: unknown; reason?: unknown }) : null;
+    const sym = typeof parsed?.symbol === "string" ? parsed.symbol.trim() : "";
+    const match = tokens.find(
+      (t) => t.symbol.toLowerCase() === sym.toLowerCase() || t.name.toLowerCase() === sym.toLowerCase()
+    );
+    if (!match) {
+      return { type: "data", source: "venice unavailable", content: { pick: null, note: "The Scout's pick wasn't in your approved set." } };
+    }
+    return {
+      type: "data",
+      source: "venice:chat · web-search",
+      content: {
+        pick: {
+          symbol: match.symbol,
+          name: match.name,
+          reason: typeof parsed?.reason === "string" ? parsed.reason.trim() : "",
+        },
+      },
+    };
+  } catch {
+    return { type: "data", source: "venice unavailable", content: { pick: null, note: "The Scout's response couldn't be parsed — please try again." } };
+  }
 }
 
 /** Subscription feed: a recurring sample (the period mechanic is the demo beat). */
@@ -216,6 +285,7 @@ async function serviceResult(service: Service, topic: string): Promise<Output> {
     case "onchain": return onchainOutput();
     case "image": return imageOutput(topic);
     case "voice": return voiceOutput(topic);
+    case "scout": return scoutOutput(topic);
     case "feed": return feedOutput(service);
     default: return { type: "text", source: "cached", content: `Generated output for: ${service.label}` };
   }
@@ -308,11 +378,13 @@ async function handlePaidResource(
 
   // The agent produces its output ABOUT the user's topic (X-TOPIC header,
   // URL-encoded by the dapp for header-safety).
+  // The Yield Scout carries a small JSON payload (goal + approved set) here, so
+  // allow more than a bare prompt; other services just see a longer topic string.
   let topic = DEFAULT_TOPIC;
   const rawTopic = req.header("X-TOPIC");
   if (rawTopic) {
     try {
-      topic = decodeURIComponent(rawTopic).slice(0, 300).trim() || DEFAULT_TOPIC;
+      topic = decodeURIComponent(rawTopic).slice(0, 2000).trim() || DEFAULT_TOPIC;
     } catch {
       /* malformed encoding — keep default */
     }

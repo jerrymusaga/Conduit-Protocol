@@ -160,8 +160,10 @@ export async function payAndClaim(
   const headers: Record<string, string> = { "X-PAYMENT": header };
   if (opts.agent) headers["X-AGENT"] = opts.agent;
   if (opts.correlationId) headers["X-CORRELATION-ID"] = opts.correlationId;
-  // The topic (user prompt) → the agent produces its output about it (X-TOPIC).
-  if (opts.topic) headers["X-TOPIC"] = encodeURIComponent(opts.topic).slice(0, 600);
+  // The topic → the agent produces its output about it (X-TOPIC). Usually the
+  // user prompt; the Yield Scout passes a small JSON blob (goal + approved set),
+  // so allow enough room that the encoded payload is never truncated mid-escape.
+  if (opts.topic) headers["X-TOPIC"] = encodeURIComponent(opts.topic).slice(0, 4000);
   const res = await fetch(`${config.endpointUrl}${opts.path ?? RESOURCE_PATH}`, {
     headers,
   });

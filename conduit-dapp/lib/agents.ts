@@ -9,7 +9,7 @@
  */
 import { keccak256, toHex, type Hex } from "viem";
 
-export type AgentRole = "research" | "copy" | "image" | "analysis" | "onchain" | "voice" | "feed";
+export type AgentRole = "research" | "copy" | "image" | "analysis" | "onchain" | "voice" | "scout" | "feed";
 export type PaymentKind = "one-shot" | "subscription";
 
 export interface AgentSubscription {
@@ -68,6 +68,12 @@ export const AGENTS: Agent[] = [
     "Pulls real on-chain data via Venice's RPC proxy (for crypto topics)."),
   a("narrator", "Narrator", "voice", "venice:tts", "0.07", "one-shot",
     "Speaks a summary of the deliverable — a playable voiceover (Venice TTS)."),
+
+  // TRADING (one-shot) — a paid market-intelligence agent. The trade flow hires
+  // it directly (not the research planner, which has no "scout" role); kept out
+  // of the research marketplace via the discovery filter.
+  a("yield-scout", "Yield Scout", "scout", "venice:chat+search", "0.06", "one-shot",
+    "Picks the single best asset from your approved set, with live market reasoning."),
 
   // SUBSCRIPTION (recurring, X402SubscriptionEnforcer) — varied periods.
   a("pulse-feed", "Realtime Pulse Feed", "feed", "venice:chat", "0.01", "subscription",

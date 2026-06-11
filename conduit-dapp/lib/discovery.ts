@@ -68,6 +68,7 @@ export async function discoverAgents(): Promise<DiscoveredAgent[]> {
         if (!id || seen.has(id)) continue;
         const base = getAgent(id);
         if (!base) continue; // a registry entry we don't recognize
+        if (base.role === "scout") continue; // hired by the trade flow, not research
         seen.add(id);
         discovered.push({
           ...base,
@@ -82,5 +83,7 @@ export async function discoverAgents(): Promise<DiscoveredAgent[]> {
     }
   }
   // Fallback: the static catalog (pre-registration / local dev / no registrant).
-  return AGENTS.map((a) => ({ ...a, source: "catalog" as const }));
+  // The Yield Scout is hired directly by the trade flow, not discovered for
+  // research procurement — keep it out of the research marketplace.
+  return AGENTS.filter((a) => a.role !== "scout").map((a) => ({ ...a, source: "catalog" as const }));
 }
