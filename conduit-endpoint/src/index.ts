@@ -170,14 +170,23 @@ async function imageOutput(topic: string): Promise<Output> {
     : { type: "image", source: "venice unavailable", content: null, note: "Image couldn't be generated right now — please try again." };
 }
 
-/** Narrator: a spoken summary of the deliverable (Venice TTS) → playable audio. */
-async function voiceOutput(topic: string): Promise<Output> {
+/**
+ * Narrator: a spoken summary of the deliverable (Venice TTS) → playable audio.
+ * `context` is a digest of what the OTHER agents actually produced — so the
+ * voiceover narrates the real findings, not just the topic. The Narrator runs
+ * LAST (see /commission/deliver) precisely so it has this.
+ */
+async function voiceOutput(topic: string, context?: string): Promise<Output> {
+  const user = context
+    ? `The team just produced this deliverable about "${topic}":\n\n${context}\n\n` +
+      "Write ONE natural spoken sentence (max 30 words) that tells the listener the single " +
+      "most important takeaway from it. No preamble, no markdown, no quotes."
+    : `One spoken opening line summarizing a brief about: ${topic}`;
   const script = await veniceChat(
-    "Write ONE natural, engaging spoken sentence (max 28 words) to open a voiceover that " +
-      "summarizes the deliverable — conversational and confident, no jargon. " +
-      "No preamble, no markdown, no quotes.",
-    `One spoken opening line summarizing a brief about: ${topic}`,
-    { stripThinking: true, maxTokens: 120 }
+    "You are a voiceover narrator. Speak ONE natural, confident sentence that gives the listener " +
+      "the key takeaway of the deliverable — specific and concrete, no jargon, no preamble, no quotes.",
+    user,
+    { stripThinking: true, maxTokens: 140 }
   );
   // No canned script: if Venice can't write one, don't synthesize a fake voiceover.
   if (!script) {
@@ -423,18 +432,37 @@ app.post("/commission/deliver", async (req: Request, res: Response) => {
   }
 
   // Settled on-chain → every agent produces its Venice output about the topic.
-  // serviceResult is best-effort (falls back to canned on any Venice error), but
-  // wrap anyway so an unexpected throw returns a CLEAR reason, not a bare 500.
+  // The Narrator runs LAST with the others' outputs as context, so it voices the
+  // ACTUAL deliverable (what the team produced), not just the topic.
   let results;
   try {
-    results = await Promise.all(
-      (services as Service[]).map(async (s) => ({
-        service: s.id,
-        label: s.label,
-        role: s.role,
-        data: await serviceResult(s, topic),
-      }))
+    const svc = services as Service[];
+    const others = svc.filter((s) => s.role !== "voice");
+    const narrators = svc.filter((s) => s.role === "voice");
+
+    const otherResults = await Promise.all(
+      others.map(async (s) => ({ service: s.id, label: s.label, role: s.role, data: await serviceResult(s, topic) }))
     );
+
+    // Digest the team's text/data outputs for the narrator (cap the length).
+    const digest = otherResults
+      .map((r) => {
+        const c = (r.data as { content?: unknown } | undefined)?.content;
+        if (typeof c === "string") return `${r.label}: ${c}`;
+        if (c && typeof c === "object") return `${r.label}: ${JSON.stringify(c)}`;
+        return "";
+      })
+      .filter(Boolean)
+      .join("\n")
+      .slice(0, 1600);
+
+    const narratorResults = await Promise.all(
+      narrators.map(async (s) => ({ service: s.id, label: s.label, role: s.role, data: await voiceOutput(topic, digest || undefined) }))
+    );
+
+    // Reassemble in the originally-requested order.
+    const byId = new Map([...otherResults, ...narratorResults].map((r) => [r.service, r]));
+    results = svc.map((s) => byId.get(s.id)!);
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     console.error("[commission/deliver] output generation failed:", detail);
