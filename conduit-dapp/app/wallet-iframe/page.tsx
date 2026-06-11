@@ -1,21 +1,29 @@
 "use client";
 /**
- * The ISOLATED passkey wallet iframe (Conduit). The passkey-derived EVM key is
- * created and held HERE, in this frame's closure, and never crosses to the
- * parent — only signatures and the public address do (the webauthn-prf-wallet /
- * 1Shot isolation pattern).
+ * The ISOLATED passkey wallet iframe (Conduit). The EVM key is created/held HERE
+ * and never crosses to the parent — only signatures + the address do (the
+ * webauthn-prf-wallet / 1Shot isolation pattern). WebAuthn runs from in-frame
+ * buttons so the ceremony keeps this frame's user activation.
  *
- * WebAuthn (register/unlock) is triggered by buttons RENDERED IN THIS FRAME, so
- * the ceremony always has this frame's transient user activation — the reliable
- * fix for the cross-frame "NotAllowedError / no prompt" gotcha. The parent learns
- * the result via emitted `wallet:event`s. SIGNING (no passkey prompt, so no
- * activation needed) is driven by the parent over the Postmate RPC.
+ * Three key-holding modes, chosen at registration by what the authenticator
+ * supports (so it works whether or not PRF is available):
+ *   - credBlob  : a random 32-byte key stored IN the credential at create; read
+ *                 back every auth. One step. (security keys, some platforms)
+ *   - largeBlob : a random key written to the credential's large blob via a
+ *                 follow-up auth; read after. Two steps. (Apple iCloud Keychain)
+ *   - prf       : key DERIVED from the authenticator's PRF output. (Android/modern)
+ * PRF is preferred when available; otherwise LongBlob. Signing has no passkey
+ * prompt, so it's driven by the parent over the Postmate RPC.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { startRegistration, startAuthentication } from "@simplewebauthn/browser";
-import { privateKeyToAccount, type PrivateKeyAccount } from "viem/accounts";
-import { prfToValidEthPrivKey } from "@/lib/passkey/derive";
+import { generatePrivateKey, privateKeyToAccount, type PrivateKeyAccount } from "viem/accounts";
+import { prfToValidEthPrivKey, bufToHex } from "@/lib/passkey/derive";
 import { ETH_KEY_DERIVATION_LABEL } from "@/lib/passkey/config";
+
+// Mirrors lib/passkey/store's CredentialMode (defined locally so this client
+// iframe never imports the server-only store module).
+type CredentialMode = "prf" | "credBlob" | "largeBlob";
 
 const RPC_CALLBACK = "rpc:callback";
 const WALLET_EVENT = "wallet:event";
@@ -27,27 +35,34 @@ function deser<T>(s: string): T {
   return JSON.parse(s, (_k, v) => (v && typeof v === "object" && v.__t === "bigint" ? BigInt(v.v) : v)) as T;
 }
 
-function bytesToArrayBuffer(bytes: Uint8Array): ArrayBuffer {
-  const copy = new Uint8Array(bytes.byteLength);
-  copy.set(bytes);
-  return copy.buffer;
+function hexToBytes(hex: string): Uint8Array {
+  const h = hex.startsWith("0x") ? hex.slice(2) : hex;
+  const out = new Uint8Array(h.length / 2);
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(h.slice(i * 2, i * 2 + 2), 16);
+  return out;
 }
-function normalizePrfOutput(prfOutput: unknown): ArrayBuffer | null {
-  if (prfOutput instanceof ArrayBuffer) return prfOutput;
-  if (ArrayBuffer.isView(prfOutput)) {
-    const v = prfOutput as ArrayBufferView;
-    return bytesToArrayBuffer(new Uint8Array(v.buffer, v.byteOffset, v.byteLength));
+function toArrayBuffer(v: unknown): ArrayBuffer | null {
+  if (v instanceof ArrayBuffer) return v;
+  if (ArrayBuffer.isView(v)) {
+    const view = v as ArrayBufferView;
+    return new Uint8Array(view.buffer, view.byteOffset, view.byteLength).slice().buffer;
   }
-  if (Array.isArray(prfOutput)) {
-    const out = new Uint8Array(prfOutput.length);
-    for (let i = 0; i < prfOutput.length; i++) {
-      const n = prfOutput[i];
+  if (Array.isArray(v)) {
+    const out = new Uint8Array(v.length);
+    for (let i = 0; i < v.length; i++) {
+      const n = v[i];
       if (typeof n !== "number" || n < 0 || n > 255) return null;
       out[i] = n;
     }
-    return bytesToArrayBuffer(out);
+    return out.buffer;
   }
   return null;
+}
+/** Read a 32-byte key blob (credBlob / largeBlob / PRF output) → 0x private key. */
+function blobToKey(v: unknown): `0x${string}` | null {
+  const ab = toArrayBuffer(v);
+  if (!ab || ab.byteLength < 32) return null;
+  return `0x${bufToHex(ab.byteLength === 32 ? ab : ab.slice(0, 32))}` as `0x${string}`;
 }
 
 export default function WalletIframePage() {
@@ -62,7 +77,28 @@ export default function WalletIframePage() {
 
   const emit = (data: unknown) => modelRef.current?.emit(WALLET_EVENT, ser(data));
 
-  const doRegister = useCallback(async () => {
+  // Persist the credential + (LongBlob) address/mode server-side.
+  const verifyRegister = (credential: unknown, challengeId: string, mode: CredentialMode, addr: `0x${string}` | null) =>
+    fetch("/api/passkey/register/verify", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ credential, challengeId, mode, address: addr }),
+    });
+  const verifyAuth = (credential: unknown, challengeId: string, addr: `0x${string}`) =>
+    fetch("/api/passkey/auth/verify", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ credential, challengeId, address: addr }),
+    });
+
+  const setUnlocked = (account: PrivateKeyAccount) => {
+    accountRef.current = account;
+    setAddress(account.address);
+    setStatus("unlocked");
+    emit({ type: "unlocked", address: account.address });
+  };
+
+  const doCreate = useCallback(async () => {
     if (busy) return;
     setBusy(true);
     setStatus("creating passkey…");
@@ -70,56 +106,109 @@ export default function WalletIframePage() {
       const optRes = await fetch("/api/passkey/register/options", { method: "POST" });
       if (!optRes.ok) throw new Error("couldn't get registration options");
       const options = await optRes.json();
-      options.extensions = { ...(options.extensions ?? {}), prf: { eval: { first: infoLabelRef.current } } };
+
+      // A random key for the LongBlob paths (discarded if we end up in PRF mode).
+      const randomKey = generatePrivateKey();
+      const keyBytes = hexToBytes(randomKey);
+
+      // Request ALL paths; the authenticator enables whichever it supports.
+      options.extensions = {
+        ...(options.extensions ?? {}),
+        prf: { eval: { first: infoLabelRef.current } },
+        credBlob: keyBytes,
+        largeBlob: { support: "preferred" },
+      };
       const credential = await startRegistration({ optionsJSON: options });
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const prfEnabled = (credential.clientExtensionResults as any)?.prf?.enabled === true;
-      const verifyRes = await fetch("/api/passkey/register/verify", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ credential, challengeId: options.challengeId }),
-      });
-      if (!verifyRes.ok) throw new Error("registration verification failed");
-      setStatus(prfEnabled ? "passkey created (PRF ✓) — now unlock" : "⚠ passkey created but this authenticator did NOT enable PRF");
-      emit({ type: "registered", credentialId: credential.id, prfEnabled });
+      const cer = (credential.clientExtensionResults as any) ?? {};
+      const prfEnabled = cer?.prf?.enabled === true;
+      const credBlobWritten = cer?.credBlob === true;
+      const largeBlobSupported = cer?.largeBlob?.supported === true;
+
+      // Prefer LongBlob (multi-passkey + simpler); PRF otherwise.
+      let mode: CredentialMode;
+      if (credBlobWritten) mode = "credBlob";
+      else if (largeBlobSupported) mode = "largeBlob";
+      else if (prfEnabled) mode = "prf";
+      else throw new Error(`authenticator supports neither PRF nor credBlob/largeBlob · cer=${JSON.stringify(cer)}`);
+
+      const longBlobAccount = mode === "prf" ? null : privateKeyToAccount(randomKey);
+      const r = await verifyRegister(credential, options.challengeId, mode, longBlobAccount?.address ?? null);
+      if (!r.ok) throw new Error("registration verification failed");
+      setStatus(`passkey created · mode=${mode}`);
+      emit({ type: "registered", credentialId: credential.id, prfEnabled, mode });
+
+      // Finalize so the wallet is immediately usable.
+      if (mode === "credBlob") {
+        setUnlocked(longBlobAccount!); // key already lives in the credBlob
+      } else if (mode === "largeBlob") {
+        await writeLargeBlob(keyBytes, longBlobAccount!); // write the key, then ready
+      } else {
+        await readUnlock(); // PRF: derive now via an auth ceremony
+      }
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
-      setStatus(`register failed: ${message}`);
+      setStatus(`create failed: ${message}`);
       emit({ type: "error", phase: "register", message });
     } finally {
       setBusy(false);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [busy]);
+
+  // largeBlob is write-once: store the key in the blob via an auth ceremony.
+  async function writeLargeBlob(keyBytes: Uint8Array, account: PrivateKeyAccount) {
+    const optRes = await fetch("/api/passkey/auth/options", { method: "POST" });
+    if (!optRes.ok) throw new Error("couldn't get auth options (largeBlob write)");
+    const options = await optRes.json();
+    options.extensions = { ...(options.extensions ?? {}), largeBlob: { write: keyBytes } };
+    const credential = await startAuthentication({ optionsJSON: options });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const written = (credential.clientExtensionResults as any)?.largeBlob?.written === true;
+    if (!written) throw new Error("largeBlob write failed — the authenticator didn't store the key");
+    const v = await verifyAuth(credential, options.challengeId, account.address);
+    if (!v.ok) throw new Error("authentication verification failed");
+    setUnlocked(account);
+  }
+
+  // Read/derive the key from whatever the credential holds (PRF / credBlob / largeBlob).
+  const readUnlock = useCallback(async () => {
+    const optRes = await fetch("/api/passkey/auth/options", { method: "POST" });
+    if (!optRes.ok) throw new Error("couldn't get authentication options");
+    const options = await optRes.json();
+    options.extensions = {
+      ...(options.extensions ?? {}),
+      prf: { eval: { first: infoLabelRef.current } },
+      getCredBlob: true,
+      largeBlob: { read: true },
+    };
+    const credential = await startAuthentication({ optionsJSON: options });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const cer = (credential.clientExtensionResults as any) ?? {};
+
+    let key: `0x${string}` | null = null;
+    const prfFirst = cer?.prf?.results?.first;
+    if (prfFirst) {
+      const ab = toArrayBuffer(prfFirst);
+      if (ab) key = await prfToValidEthPrivKey(ab, infoLabelRef.current);
+    }
+    if (!key && cer?.credBlob) key = blobToKey(cer.credBlob);
+    if (!key && cer?.largeBlob?.blob) key = blobToKey(cer.largeBlob.blob);
+    if (!key) throw new Error(`no key material returned · cer=${JSON.stringify(cer)}`);
+
+    const account = privateKeyToAccount(key);
+    const v = await verifyAuth(credential, options.challengeId, account.address);
+    if (!v.ok) throw new Error("authentication verification failed");
+    setUnlocked(account);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const doUnlock = useCallback(async () => {
     if (busy) return;
     setBusy(true);
     setStatus("unlocking…");
     try {
-      const optRes = await fetch("/api/passkey/auth/options", { method: "POST" });
-      if (!optRes.ok) throw new Error("couldn't get authentication options");
-      const options = await optRes.json();
-      options.extensions = { ...(options.extensions ?? {}), prf: { eval: { first: infoLabelRef.current } } };
-      const credential = await startAuthentication({ optionsJSON: options });
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const cer = (credential.clientExtensionResults as any) ?? {};
-      const rawPrf = cer?.prf?.results?.first;
-      const prfOutput = normalizePrfOutput(rawPrf);
-      if (!prfOutput) {
-        throw new Error(`no PRF output · clientExtensionResults=${JSON.stringify(cer)}`);
-      }
-      const privateKey = await prfToValidEthPrivKey(prfOutput, infoLabelRef.current);
-      const account = privateKeyToAccount(privateKey);
-      accountRef.current = account;
-      const verifyRes = await fetch("/api/passkey/auth/verify", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ credential, challengeId: options.challengeId, address: account.address }),
-      });
-      if (!verifyRes.ok) throw new Error("authentication verification failed");
-      setAddress(account.address);
-      setStatus("unlocked");
-      emit({ type: "unlocked", address: account.address });
+      await readUnlock();
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       setStatus(`unlock failed: ${message}`);
@@ -127,10 +216,10 @@ export default function WalletIframePage() {
     } finally {
       setBusy(false);
     }
-  }, [busy]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [busy, readUnlock]);
 
-  // Set up the Postmate Model (SIGNING RPC + getAddress). Register/unlock are
-  // driven by the in-frame buttons above, not the RPC, so they keep activation.
+  // Postmate Model for SIGNING (no passkey prompt → safe over RPC).
   useEffect(() => {
     let cancelled = false;
     void (async () => {
@@ -187,7 +276,7 @@ export default function WalletIframePage() {
         <div style={{ fontFamily: "monospace", fontSize: 12 }}>🔓 {address.slice(0, 10)}…{address.slice(-6)}</div>
       ) : (
         <div style={{ display: "flex", gap: 8 }}>
-          <button onClick={doRegister} disabled={busy} style={btn}>Create wallet</button>
+          <button onClick={doCreate} disabled={busy} style={btn}>Create wallet</button>
           <button onClick={doUnlock} disabled={busy} style={btn}>Unlock</button>
         </div>
       )}

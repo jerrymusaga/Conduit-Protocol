@@ -8,13 +8,18 @@
 import { NextResponse } from "next/server";
 import { verifyRegistrationResponse } from "@simplewebauthn/server";
 import { RP_ID, RP_ORIGIN } from "@/lib/passkey/config";
-import { takeChallenge, putCredential } from "@/lib/passkey/store";
+import { takeChallenge, putCredential, type CredentialMode } from "@/lib/passkey/store";
 
 export const runtime = "nodejs";
 
 export async function POST(req: Request) {
   try {
-    const body = (await req.json()) as { credential?: unknown; challengeId?: string };
+    const body = (await req.json()) as {
+      credential?: unknown;
+      challengeId?: string;
+      mode?: CredentialMode;
+      address?: `0x${string}` | null;
+    };
     if (!body.credential || !body.challengeId) {
       return NextResponse.json({ error: "credential and challengeId are required" }, { status: 400 });
     }
@@ -41,7 +46,9 @@ export async function POST(req: Request) {
       id: credential.id,
       publicKey: Buffer.from(credential.publicKey).toString("base64"),
       counter: credential.counter,
-      address: null,
+      // LongBlob modes know the address now; PRF fills it at first auth.
+      address: body.address ?? null,
+      mode: body.mode,
     });
     return NextResponse.json({ verified: true, credentialId: credential.id });
   } catch (err) {

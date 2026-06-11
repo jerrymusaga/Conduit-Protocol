@@ -35,6 +35,13 @@ export async function takeChallenge(id: string): Promise<string | null> {
   return challenge ?? null;
 }
 
+/** How the EVM key is held for this credential:
+ *  - prf:       derived on demand from the authenticator's PRF output
+ *  - credBlob:  the 32-byte key is stored inside the credential (read every auth)
+ *  - largeBlob: the key is stored in the credential's large blob (write-once, read after)
+ */
+export type CredentialMode = "prf" | "credBlob" | "largeBlob";
+
 export interface StoredCredential {
   /** base64url credential id (the WebAuthn credential.id). */
   id: string;
@@ -42,9 +49,11 @@ export interface StoredCredential {
   publicKey: string;
   /** Signature counter (replay protection; 0 for many platform authenticators). */
   counter: number;
-  /** The EVM address derived from this passkey — filled on first authentication
-   *  (the address isn't known at registration: it comes from the PRF output). */
+  /** The EVM address. For LongBlob modes it's known at registration; for PRF it's
+   *  filled on first authentication (it comes from the PRF output). */
   address: `0x${string}` | null;
+  /** Which key-holding mode this credential uses (set at registration). */
+  mode?: CredentialMode;
 }
 
 export async function putCredential(cred: StoredCredential): Promise<void> {
