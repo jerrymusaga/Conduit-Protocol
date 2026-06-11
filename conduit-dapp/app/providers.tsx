@@ -15,6 +15,7 @@
  *     required by the 1Shot Permissionless Relayer track)
  */
 import { useState, type ReactNode } from "react";
+import { usePathname } from "next/navigation";
 import { PrivyProvider } from "@privy-io/react-auth";
 import { WagmiProvider, createConfig } from "@privy-io/wagmi";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -37,6 +38,15 @@ export function Providers({ children }: { children: ReactNode }) {
   // One QueryClient per app lifetime, created lazily in client state to survive
   // Next.js hydration without re-creating on every render.
   const [queryClient] = useState(() => new QueryClient());
+
+  // The passkey wallet iframe (/wallet-iframe) is deliberately ISOLATED — it must
+  // not pull the parent app's heavy deps (Privy/wagmi) into its bundle/context.
+  // That's the whole point of the iframe (a tiny, audit-able key holder), so we
+  // render it bare. The main app still gets the full provider stack below.
+  const pathname = usePathname();
+  if (pathname?.startsWith("/wallet-iframe")) {
+    return <>{children}</>;
+  }
 
   return (
     <PrivyProvider
