@@ -35,6 +35,7 @@ import { useActiveWallet } from "@/lib/activeWallet";
 import { useConduitEmbedded } from "@/lib/conduitEmbedded";
 import { keccak256, parseUnits, formatUnits, type Hex } from "viem";
 import { Erc7710Inspector, type InspectorBinding } from "@/components/Erc7710Inspector";
+import { Toast, type ToastState } from "@/components/Toast";
 import { useFacilitatorEvents } from "@/lib/useFacilitatorEvents";
 import { fetchJob, fetch402, payAndClaim } from "@/lib/endpoint";
 import { getAgent } from "@/lib/agents";
@@ -372,6 +373,17 @@ export default function DemoPage() {
   const append = useCallback((text: string) => {
     setLog((l) => [...l, { t: now(), text }]);
     requestAnimationFrame(() => logEndRef.current?.scrollIntoView({ behavior: "smooth" }));
+  }, []);
+
+  // Toast feedback — embedded/passkey wallets sign SILENTLY (no wallet popup),
+  // so on mobile a grant/run can look like nothing happened. This surfaces it.
+  const [toast, setToast] = useState<ToastState>(null);
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showToast = useCallback((kind: "pending" | "success" | "error", text: string, autoHideMs?: number) => {
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    setToast({ kind, text });
+    const ms = autoHideMs ?? (kind === "pending" ? 0 : 3500);
+    if (ms > 0) toastTimer.current = setTimeout(() => setToast(null), ms);
   }, []);
 
   // Rehydrate a persisted session on (re)connect so a refresh doesn't wipe the
@@ -716,6 +728,7 @@ export default function DemoPage() {
       return null;
     }
     setBusy(true);
+    showToast("pending", "Signing your permission…");
     let grantedResult: GrantResult | null = null;
     try {
       append("Creating coordinator session account…");
@@ -772,6 +785,7 @@ export default function DemoPage() {
       // The session-sync effect persists grant+coordinator+auth+spent so a
       // refresh restores the active session (survives reload).
       append("Permission granted · the coordinator holds the root policy");
+      showToast("success", "Permission granted ✓ — agents can now be paid within it");
       // Register in the per-wallet grants index so /portfolio can enumerate it
       // (ERC-7715 grants have no on-chain "created" event). Best-effort.
       // A budget is a GENERIC allowance any run draws from — not tied to one
@@ -801,6 +815,7 @@ export default function DemoPage() {
     } catch (e) {
       console.error("[conduit] grant failed →", e);
       append(`Grant failed · ${errMsg(e)}`);
+      showToast("error", `Grant failed · ${errMsg(e)}`);
     } finally {
       setBusy(false);
     }
@@ -965,6 +980,7 @@ export default function DemoPage() {
     const activeGrant = opts?.grantOverride ?? grantResult;
     if (busy || !granted || !activeGrant || !coordinatorRef.current) return;
     setBusy(true);
+    showToast("pending", "Hiring agents + settling payments…");
     setCards([]);
     setRevoked(false);
     setReport(null);
@@ -1110,6 +1126,7 @@ export default function DemoPage() {
         setReportTitle(deriveTitle(prompt));
         setReport(sections);
         append("Results ready ✓");
+        showToast("success", "Done ✓ — agents paid, results ready");
         void enrichReport(prompt, sections);
       }
 
@@ -1485,6 +1502,7 @@ export default function DemoPage() {
 
   return (
     <main className="min-h-screen">
+      <Toast toast={toast} />
       {/* Pre-sign swap confirmation — the exact cap the user is authorizing, in
           plain language, before the (opaque) wallet signature. */}
       {swapConfirm && (
