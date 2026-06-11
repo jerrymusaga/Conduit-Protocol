@@ -28,7 +28,7 @@ function deser<T>(s: string): T {
 }
 
 export type WalletEvent =
-  | { type: "registered"; credentialId: string }
+  | { type: "registered"; credentialId: string; prfEnabled?: boolean }
   | { type: "unlocked"; address: `0x${string}` }
   | { type: "error"; phase: "register" | "unlock"; message: string };
 

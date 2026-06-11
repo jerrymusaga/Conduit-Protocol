@@ -21,7 +21,7 @@ export default function WalletTestPage() {
   useEffect(() => {
     void wallet.init();
     const off = wallet.onEvent((e) => {
-      if (e.type === "registered") add(`✓ registered · credential ${e.credentialId.slice(0, 12)}…`);
+      if (e.type === "registered") add(`✓ registered · credential ${e.credentialId.slice(0, 12)}… · PRF ${e.prfEnabled ? "ENABLED ✓" : "NOT enabled ✗"}`);
       else if (e.type === "unlocked") { setAddress(e.address); add(`✓ unlocked · ${e.address}`); }
       else add(`✗ ${e.phase} failed · ${e.message}`);
     });

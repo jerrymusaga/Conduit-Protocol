@@ -72,14 +72,16 @@ export default function WalletIframePage() {
       const options = await optRes.json();
       options.extensions = { ...(options.extensions ?? {}), prf: { eval: { first: infoLabelRef.current } } };
       const credential = await startRegistration({ optionsJSON: options });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const prfEnabled = (credential.clientExtensionResults as any)?.prf?.enabled === true;
       const verifyRes = await fetch("/api/passkey/register/verify", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ credential, challengeId: options.challengeId }),
       });
       if (!verifyRes.ok) throw new Error("registration verification failed");
-      setStatus("passkey created — now unlock");
-      emit({ type: "registered", credentialId: credential.id });
+      setStatus(prfEnabled ? "passkey created (PRF ✓) — now unlock" : "⚠ passkey created but this authenticator did NOT enable PRF");
+      emit({ type: "registered", credentialId: credential.id, prfEnabled });
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       setStatus(`register failed: ${message}`);
@@ -100,9 +102,12 @@ export default function WalletIframePage() {
       options.extensions = { ...(options.extensions ?? {}), prf: { eval: { first: infoLabelRef.current } } };
       const credential = await startAuthentication({ optionsJSON: options });
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const rawPrf = (credential.clientExtensionResults as any)?.prf?.results?.first;
+      const cer = (credential.clientExtensionResults as any) ?? {};
+      const rawPrf = cer?.prf?.results?.first;
       const prfOutput = normalizePrfOutput(rawPrf);
-      if (!prfOutput) throw new Error("passkey returned no PRF output — use the provider you registered with");
+      if (!prfOutput) {
+        throw new Error(`no PRF output · clientExtensionResults=${JSON.stringify(cer)}`);
+      }
       const privateKey = await prfToValidEthPrivKey(prfOutput, infoLabelRef.current);
       const account = privateKeyToAccount(privateKey);
       accountRef.current = account;
