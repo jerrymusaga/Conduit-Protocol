@@ -1,12 +1,9 @@
 "use client";
 /**
  * Standalone proving ground for the passkey (WebAuthn PRF) wallet — NOT wired
- * into the demo. It exercises the full isolated path so we can verify the wallet
- * works before integrating it as a connect option:
- *   register → unlock (derives the key in the iframe) → sign EIP-712 typed data →
- *   sign an EIP-7702 authorization (the two signatures Conduit actually needs).
- *
- * The key is held in the /wallet-iframe frame and never reaches this page.
+ * into the demo. Create/unlock happen in the wallet frame (bottom-right) so the
+ * WebAuthn ceremony keeps that frame's activation; this page listens for the
+ * result and then exercises SIGNING (EIP-712 + EIP-7702), driven over the RPC.
  */
 import { useEffect, useState } from "react";
 import { getPasskeyWallet } from "@/lib/passkey/wallet";
@@ -16,17 +13,21 @@ export default function WalletTestPage() {
   const [log, setLog] = useState<string[]>([]);
   const [address, setAddress] = useState<`0x${string}` | null>(null);
   const [busy, setBusy] = useState(false);
-  const [ready, setReady] = useState(false);
   const wallet = getPasskeyWallet();
 
-  // Pre-init the iframe + handshake on mount. The WebAuthn ceremony needs the
-  // RPC call to fire SYNCHRONOUSLY inside the click (no awaited init first), or
-  // the user's activation is lost → NotAllowedError. So we get init out of the way.
+  const add = (line: string) => setLog((l) => [...l, `${new Date().toLocaleTimeString()} · ${line}`]);
+
+  // Init the iframe + subscribe to its register/unlock/error events.
   useEffect(() => {
-    wallet.init().then(() => setReady(true)).catch(() => setReady(false));
+    void wallet.init();
+    const off = wallet.onEvent((e) => {
+      if (e.type === "registered") add(`✓ registered · credential ${e.credentialId.slice(0, 12)}…`);
+      else if (e.type === "unlocked") { setAddress(e.address); add(`✓ unlocked · ${e.address}`); }
+      else add(`✗ ${e.phase} failed · ${e.message}`);
+    });
+    return off;
   }, [wallet]);
 
-  const add = (line: string) => setLog((l) => [...l, `${new Date().toLocaleTimeString()} · ${line}`]);
   const run = async (label: string, fn: () => Promise<void>) => {
     if (busy) return;
     setBusy(true);
@@ -44,22 +45,12 @@ export default function WalletTestPage() {
     <main style={{ maxWidth: 760, margin: "40px auto", padding: 24, fontFamily: "system-ui" }}>
       <h1 style={{ fontSize: 20, fontWeight: 700 }}>Passkey wallet — isolated test</h1>
       <p style={{ color: "#667", fontSize: 13, marginTop: 4 }}>
-        WebAuthn PRF → secp256k1, key held in the <code>/wallet-iframe</code> frame. Proves the wallet
-        signs EIP-712 + EIP-7702 before we wire it into the demo. Needs a platform passkey (Touch ID etc.).
+        WebAuthn PRF → secp256k1, key held in the <code>/wallet-iframe</code> frame. Use the
+        <strong> wallet frame (bottom-right)</strong> to <em>Create</em> then <em>Unlock</em> — the ceremony
+        runs there so it keeps activation. Then sign below. Needs a platform passkey (Touch ID etc.).
       </p>
 
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 16 }}>
-        <button disabled={busy || !ready} onClick={() => run("Register new passkey", async () => {
-          const { credentialId } = await wallet.register();
-          add(`✓ registered · credential ${credentialId.slice(0, 12)}…`);
-        })} style={btn}>1 · Register passkey</button>
-
-        <button disabled={busy || !ready} onClick={() => run("Unlock wallet", async () => {
-          const addr = await wallet.unlock();
-          setAddress(addr);
-          add(`✓ unlocked · address ${addr}`);
-        })} style={btn}>2 · Unlock</button>
-
         <button disabled={busy || !address} onClick={() => run("Sign EIP-712 typed data", async () => {
           const client = wallet.getWalletClient();
           const signature = await client.signTypedData({
@@ -70,7 +61,7 @@ export default function WalletTestPage() {
             message: { msg: "passkey wallet works", at: BigInt(Date.now()) },
           });
           add(`✓ EIP-712 signature ${signature.slice(0, 22)}…`);
-        })} style={btn}>3 · Sign typed data</button>
+        })} style={btn}>Sign typed data</button>
 
         <button disabled={busy || !address} onClick={() => run("Sign EIP-7702 authorization", async () => {
           const auth = await wallet.signAuthorization({
@@ -79,7 +70,7 @@ export default function WalletTestPage() {
             nonce: 0,
           });
           add(`✓ 7702 auth · addr ${auth.address.slice(0, 10)}… yParity ${auth.yParity} r ${auth.r.slice(0, 10)}…`);
-        })} style={btn}>4 · Sign 7702 auth</button>
+        })} style={btn}>Sign 7702 auth</button>
       </div>
 
       {address && (
@@ -89,7 +80,7 @@ export default function WalletTestPage() {
       )}
 
       <pre style={{ marginTop: 16, background: "#0b0f14", color: "#cfe", padding: 14, borderRadius: 8, fontSize: 12, minHeight: 160, whiteSpace: "pre-wrap" }}>
-        {log.join("\n") || "logs will appear here…"}
+        {log.join("\n") || "use the wallet frame (bottom-right) to create + unlock, then sign here…"}
       </pre>
     </main>
   );
