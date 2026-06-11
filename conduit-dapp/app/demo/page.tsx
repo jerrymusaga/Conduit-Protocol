@@ -41,7 +41,7 @@ import {
   grantSwapAllowlist,
   buildAllowlistSwapCommission,
   settleSwap,
-  scoutToken,
+  veniceScout,
   tradeAllowlist,
   isTradeIntent,
   parseTradeIntent,
@@ -1139,26 +1139,30 @@ export default function DemoPage() {
     //    use it; otherwise the Scout picks the best from the SIGNED set. A
     //    sequential A2A handoff either way. (Legit run only — the rogue ignores it.)
     const choice = swapTokenChoiceRef.current;
-    const scout = scoutToken(prompt, swap.allowlist);
-    const picked = choice && choice !== "scout"
+    const userPicked = choice && choice !== "scout"
       ? swap.allowlist.find((e) => e.token.toLowerCase() === choice.toLowerCase())
       : undefined;
-    const entry = picked ?? scout.entry;
-    const rationale = picked
-      ? `You chose ${picked.symbol} — from your approved set.`
-      : scout.rationale;
+    // Venice-powered scout (live data) unless the user picked a token themselves.
+    if (!rogue && !userPicked) append("Coordinator → Yield Scout › analyzing your approved assets with live market data…");
+    const scout = userPicked ? null : await veniceScout(prompt, swap.allowlist);
+    const entry = userPicked ?? scout!.entry;
+    const rationale = userPicked
+      ? `You chose ${userPicked.name} (${userPicked.symbol}) — from your approved set.`
+      : scout!.rationale;
     if (!rogue) {
       const scoutCid = crypto.randomUUID();
       setCards((cs) => [
         ...cs,
         {
-          correlationId: scoutCid, service: "scout", label: "Token Scout", agent: "scout",
+          correlationId: scoutCid, service: "scout", label: "Yield Scout", agent: "scout",
           priceUsdc: "—", rationale, stage: "settled" as CardStage,
-          source: `picked ${entry.symbol} from {${swap.allowlist.map((e) => e.symbol).join(", ")}}`,
+          source: userPicked
+            ? "your choice"
+            : scout!.live ? "venice · live market scout" : "scout · from your approved set",
         },
       ]);
-      append(`Coordinator → Scout › ${rationale}`);
-      append(`Scout → Trader › swap into ${entry.symbol}`);
+      append(`Coordinator → Yield Scout › picked ${entry.name} (${entry.symbol}) · ${rationale}`);
+      append(`Yield Scout → Trader › swap into ${entry.name}`);
     }
 
     // What the Trader actually attempts: legit = the scout's pick; off-list rogue =

@@ -656,6 +656,34 @@ export function scoutToken(prompt: string, allowlist: AllowlistEntry[]): { entry
   return { entry: pick, rationale };
 }
 
+/** The Venice-powered Scout: real reasoning over the SIGNED set with live data,
+ *  falling back to the deterministic pick if Venice is unavailable. The choice is
+ *  always constrained to the allowlist — the scout can't reach beyond it. */
+export async function veniceScout(
+  goal: string,
+  allowlist: AllowlistEntry[]
+): Promise<{ entry: AllowlistEntry; rationale: string; live: boolean }> {
+  try {
+    const res = await fetch("/api/scout", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ goal, tokens: allowlist.map((e) => ({ name: e.name, symbol: e.symbol, note: e.note })) }),
+    });
+    if (res.ok) {
+      const j = (await res.json()) as { pick?: { symbol?: string; reason?: string } | null };
+      const sym = j.pick?.symbol;
+      const entry = sym ? allowlist.find((e) => e.symbol.toLowerCase() === sym.toLowerCase()) : undefined;
+      if (entry) {
+        return { entry, rationale: j.pick?.reason || `${entry.name} — the Scout's pick from your approved set.`, live: true };
+      }
+    }
+  } catch {
+    /* fall through to the deterministic scout */
+  }
+  const det = scoutToken(goal, allowlist);
+  return { entry: det.entry, rationale: det.rationale, live: false };
+}
+
 // --- prompt understanding ---------------------------------------------------
 
 /** Does the prompt ask the agent to make a trade / move funds into a position? */

@@ -32,10 +32,12 @@ function bearer(extra?: Record<string, string>): Record<string, string> {
 export async function veniceChat(
   system: string,
   user: string,
-  opts: { maxTokens?: number; reasoningEffort?: "low" | "medium" | "high"; model?: string } = {}
+  opts: { maxTokens?: number; reasoningEffort?: "low" | "medium" | "high"; model?: string; webSearch?: "on" | "auto" } = {}
 ): Promise<string | null> {
   if (!veniceEnabled()) return null;
   try {
+    const venice_parameters: Record<string, unknown> = { strip_thinking_response: true };
+    if (opts.webSearch) venice_parameters.enable_web_search = opts.webSearch;
     const body: Record<string, unknown> = {
       model: opts.model ?? CHAT_MODEL,
       messages: [
@@ -43,7 +45,7 @@ export async function veniceChat(
         { role: "user", content: user },
       ],
       max_completion_tokens: opts.maxTokens ?? 900,
-      venice_parameters: { strip_thinking_response: true },
+      venice_parameters,
     };
     if (opts.reasoningEffort) body.reasoning = { effort: opts.reasoningEffort };
     const res = await fetch(`${VENICE_BASE}/chat/completions`, {
