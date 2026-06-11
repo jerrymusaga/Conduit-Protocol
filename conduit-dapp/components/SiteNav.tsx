@@ -4,7 +4,7 @@ import Link from "next/link";
 const links = [
   { href: "#how", label: "How it works" },
   { href: "#safety", label: "Safety" },
-  { href: "#built", label: "Built on" },
+  { href: "#build", label: "For developers" },
   { href: "#proof", label: "Proof" },
 ];
 
@@ -43,8 +43,8 @@ export function SiteNav() {
             <Link href="/docs" className="hidden text-sm text-conduit-muted transition-colors hover:text-white md:block">
               Docs
             </Link>
-            <Link href="/demo" className="btn-primary text-sm">
-              Launch demo
+            <Link href="/app" className="btn-primary text-sm">
+              Launch ConduitPay
             </Link>
           </div>
         </nav>
