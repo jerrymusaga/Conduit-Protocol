@@ -29,6 +29,8 @@ export interface SubscriptionRequirements {
   periodSeconds: number;
   /** Exact charge per period, in token base units (string). */
   amountPerPeriod: string;
+  /** Optional seller-offered cadence menu — the buyer may pick + sign one. */
+  tiers?: { periodSeconds: number; amountPerPeriod: string; label: string }[];
 }
 
 /** Fetch the seller's service catalog. */

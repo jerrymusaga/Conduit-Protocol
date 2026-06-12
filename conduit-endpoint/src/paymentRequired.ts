@@ -47,6 +47,16 @@ export function buildPaymentRequired(
                   periodSeconds: service.subscription.periodSeconds,
                   // For a subscription the price is the EXACT per-period charge.
                   amountPerPeriod: service.priceBaseUnits.toString(),
+                  // Seller-sanctioned cadence menu the buyer may pick + sign one of.
+                  ...(service.subscription.tiers
+                    ? {
+                        tiers: service.subscription.tiers.map((t) => ({
+                          periodSeconds: t.periodSeconds,
+                          amountPerPeriod: t.amountBaseUnits,
+                          label: t.label,
+                        })),
+                      }
+                    : {}),
                 }
               : undefined,
           // Everything the buyer's wallet needs to construct a valid,
