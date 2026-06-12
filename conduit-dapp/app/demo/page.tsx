@@ -2914,12 +2914,26 @@ function fmtCountdown(sec: number): string {
 }
 
 function errMsg(e: unknown): string {
-  if (e && typeof e === "object") {
-    const o = e as Record<string, unknown>;
+  // Walk the whole error + cause chain so an opaque viem wrapper (e.g. "An unknown
+  // RPC error occurred") doesn't hide the real reason buried in a nested cause.
+  const found: string[] = [];
+  let cur: unknown = e;
+  for (let depth = 0; cur && typeof cur === "object" && depth < 6; depth++) {
+    const o = cur as Record<string, unknown>;
+    for (const k of ["shortMessage", "details", "message"] as const) {
+      const v = o[k];
+      if (typeof v === "string" && v.trim()) found.push(v.trim());
+    }
     const data = o.data as Record<string, unknown> | undefined;
-    const cause = o.cause as Record<string, unknown> | undefined;
-    const candidates = [o.shortMessage, data?.message, cause?.shortMessage, cause?.message, o.message];
-    for (const c of candidates) if (typeof c === "string" && c) return c;
+    if (typeof data?.message === "string" && data.message.trim()) found.push(data.message.trim());
+    if (typeof o.name === "string" && o.name && o.name !== "Error") {
+      found.push(`(${o.name}${o.code != null ? ` ${String(o.code)}` : ""})`);
+    }
+    cur = o.cause;
   }
+  const generic = /^an?\s+(unknown|internal)\s+(rpc\s+)?error/i;
+  const specific = found.find((m) => !generic.test(m));
+  if (specific) return specific;
+  if (found.length) return found.join(" · ");
   return e instanceof Error ? e.message : String(e);
 }
