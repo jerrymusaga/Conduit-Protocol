@@ -1,6 +1,6 @@
 # Conduit
 
-Conduit is an open x402 facilitator and a family of on-chain caveat enforcers that
+Conduit is an x402 facilitator and a family of on-chain caveat enforcers that
 give an autonomous agent a budget it physically cannot misuse — even if the agent
 is fully compromised.
 
@@ -103,6 +103,24 @@ signed in.
 | YieldAllowlistEnforcer | `0xDf4179e3b5A5B5D8Bfbd3fAe076D127bd96F3fa4` |
 | DelegationManager (MetaMask v1.3.0) | `0xdb9B1e94B5b69Df7e401DDbedE43491141047dB3` |
 | USDC | `0x036CbD53842c5426634e7929541eC2318f3dCF7e` |
+
+## Deployed addresses (Base mainnet)
+
+The full enforcer family is deployed and verified on Base mainnet.
+
+| Contract | Address |
+|---|---|
+| X402ReceiptEnforcer | `0xF3D95eD5949970F483b11867b3b6509422a617AA` |
+| X402SubscriptionEnforcer | `0x177e5DC050Da4aCE6655B721E3a24B2A553B5F9F` |
+| SwapBoundsEnforcer | `0x62DabA9aAD63B914Cba295B08a65263eEc401EE3` |
+| SwapAllowlistEnforcer | `0x150933Eb33176B763c79609FF771d14D8Dc665c5` |
+| ApproveBoundsEnforcer | `0x388084511a9a1891021ea6989b8A756D1561e0aA` |
+| YieldAllowlistEnforcer | `0xcBc69E09A6dfeCd503881DcAd595166f81836029` |
+| DelegationManager (MetaMask v1.3.0) | `0xdb9B1e94B5b69Df7e401DDbedE43491141047dB3` |
+| USDC | `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` |
+
+The marketplace agents are also registered on the Base mainnet ERC-8004 Identity
+Registry (`0x8004A169FB4a3325136EB29fA0ceB6D2e539a432`), agent IDs 55116–55127.
 
 ## Build and test
 

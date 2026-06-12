@@ -69,6 +69,14 @@ export function ConduitPaySignIn() {
               </li>
             ))}
           </ul>
+          <div className="mt-7">
+            <p className="text-[11px] uppercase tracking-wide text-conduit-muted/60">Inside</p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {["Pay", "Subscriptions", "Yield", "Portfolio"].map((p) => (
+                <span key={p} className="rounded-md border border-conduit-border bg-white/[0.03] px-2.5 py-1 text-[12px] text-conduit-muted">{p}</span>
+              ))}
+            </div>
+          </div>
         </div>
 
         {/* Right — sign-in card */}

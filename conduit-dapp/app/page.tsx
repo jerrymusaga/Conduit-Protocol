@@ -121,6 +121,33 @@ export default function Landing() {
 
       <div className="beam mx-auto max-w-5xl" />
 
+      {/* ===================== PRODUCTS ===================== */}
+      <section id="products" className="scroll-mt-24 px-6 py-28">
+        <div className="mx-auto max-w-6xl">
+          <div className="max-w-2xl">
+            <span className="eyebrow">Inside ConduitPay</span>
+            <h2 className="mt-6 text-3xl font-semibold tracking-tight sm:text-4xl">
+              Four things you can do — each <span className="text-gradient">bounded on-chain.</span>
+            </h2>
+          </div>
+          <div className="mt-14 grid gap-5 md:grid-cols-2 lg:grid-cols-4">
+            {[
+              { name: "Pay", body: "Hand an agent team a budget and let a coordinator hire + pay each one through erc7710 — every payment locked to one exact request. Or run a bounded swap into a token set you signed." },
+              { name: "Subscriptions", body: "Fixed-price, one-merchant, once-per-period charges with on-chain double-charge protection. Every charge delivers a live intelligence report — and hands off into a matching action." },
+              { name: "Yield", body: "Deposit USDC into the best APY across a vetted set of lending venues you signed. A scout picks the venue; a hijacked agent still can't supply anywhere you didn't approve." },
+              { name: "Portfolio", body: "Every active permission with its decoded on-chain caveat, and a gasless kill switch — revoke any grant, or the whole tree, without holding ETH." },
+            ].map((c, i) => (
+              <div key={c.name} className="panel panel-hover reveal p-6" style={{ animationDelay: `${i * 90}ms` }}>
+                <h3 className="text-lg font-semibold text-white">{c.name}</h3>
+                <p className="mt-3 text-[14px] leading-relaxed text-conduit-muted">{c.body}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <div className="beam mx-auto max-w-5xl" />
+
       {/* ===================== SAFETY ===================== */}
       <section id="safety" className="scroll-mt-24 px-6 py-28">
         <div className="mx-auto max-w-6xl">
@@ -191,7 +218,7 @@ export default function Landing() {
                 swap allowlists, approvals, subscriptions. No enforcer to write or audit.
               </p>
               <div className="mt-7 flex flex-wrap gap-2">
-                {["X402Receipt", "X402Subscription", "SwapAllowlist", "SwapBounds", "ApproveBounds"].map((c) => (
+                {["X402Receipt", "X402Subscription", "SwapAllowlist", "YieldAllowlist", "SwapBounds", "ApproveBounds"].map((c) => (
                   <span key={c} className="mono rounded-md border border-conduit-border px-2.5 py-1 text-[12px] text-conduit-muted">{c}</span>
                 ))}
               </div>
@@ -234,7 +261,7 @@ export default function Landing() {
           <h2 className="mt-6 text-3xl font-semibold tracking-tight sm:text-4xl">Every claim is verifiable on-chain.</h2>
           <div className="mt-12 grid gap-5 sm:grid-cols-3">
             {[
-              ["5 enforcers deployed", "Receipt · Subscription · SwapAllowlist · SwapBounds · ApproveBounds"],
+              ["6 enforcers deployed", "Receipt · Subscription · SwapAllowlist · YieldAllowlist · SwapBounds · ApproveBounds"],
               ["All-or-nothing", "N payments settle in one redeemDelegations, or none do"],
               ["Compromise-proof", "Rogue redirect / overspend / off-list all revert on-chain"],
             ].map(([t, b], i) => (

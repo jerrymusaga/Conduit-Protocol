@@ -117,6 +117,14 @@ POST {facilitator}/settle   → { jobId, status, transaction }`}</Code>
           {/* API */}
           <Section id="api" title="Facilitator API">
             <p>The facilitator is a small HTTP surface (x402 V2 shape + Conduit extensions).</p>
+            <div className="rounded-lg border border-conduit-border/60 bg-black/30 p-3">
+              <p className="text-[12px] uppercase tracking-wide text-conduit-muted/60">Conduit facilitator base URL</p>
+              <p className="mt-1 break-all font-mono text-sm text-conduit-cyan">{config.facilitatorUrl}</p>
+              <p className="mt-1 text-[12px] text-conduit-muted">
+                Every <Mono>{`{facilitator}`}</Mono> below is this base URL. Probe it live:{" "}
+                <Mono>GET {config.facilitatorUrl}/supported</Mono>.
+              </p>
+            </div>
             <Endpoint method="GET" path="/supported">
               Advertises the <Mono>erc7710</Mono> capability + the{" "}
               <Mono>conduit</Mono> block: <Mono>receiptEnforcer</Mono>,{" "}
@@ -231,6 +239,36 @@ const caveats = [
               <i>two</i> bounded user roots: the subscription root + a small gas-fee budget
               root. Both bounded, both user-approved. See <Mono>lib/subscription.ts</Mono>.
             </p>
+
+            <p className="pt-2">
+              <b className="text-white">Lifecycle.</b> Subscribe once (one signature) → the
+              agent charges once per period → each charge buys a real deliverable → cancel
+              any time. The period is tracked <i>on-chain</i> by the enforcer, so
+              double-charge protection and the &ldquo;next charge in…&rdquo; countdown are
+              both derived from the same on-chain truth — not a server clock.
+            </p>
+            <Endpoint method="DELIVERABLE" path="charge → product">
+              A subscription isn&rsquo;t just a recurring transfer — each settled charge
+              <i> delivers</i>. Conduit&rsquo;s demo products (Market Pulse, AI Alpha Daily,
+              DeFi Yield Weekly) each return a live Venice-generated report for the period
+              the charge paid for, attached to the on-chain receipt. The payment and the
+              product settle together: no charge, no deliverable.
+            </Endpoint>
+            <Endpoint method="REVOKE" path="gasless cancel (no ETH)">
+              Cancelling is <Mono>disableDelegation(subscriptionRoot)</Mono>. Conduit runs it{" "}
+              <b className="text-white">gaslessly</b> — the relayer executes it from the
+              user&rsquo;s account, bounded by MetaMask&rsquo;s AllowedTargets + AllowedMethods
+              enforcers and reimbursed by a small USDC fee — so a fresh account with no ETH
+              can still kill a subscription. Falls back to a direct tx if needed.
+            </Endpoint>
+            <Endpoint method="LOOP" path="intel → action">
+              Subscriptions are <b className="text-white">intel</b>; Pay is{" "}
+              <b className="text-white">action</b>. A deliverable carries an{" "}
+              <i>&ldquo;Act on this in Pay →&rdquo;</i> handoff that deep-links into a matching
+              bounded action — a token-intel report into a <Mono>SwapAllowlist</Mono> swap, a
+              yield report into a <Mono>YieldAllowlist</Mono> deposit. The report tells you
+              what to do; the enforcer guarantees the agent can only do <i>that</i>.
+            </Endpoint>
           </Section>
 
           {/* ENFORCERS */}
@@ -270,18 +308,29 @@ const caveats = [
               <i>from the signed set</i> — choosing a token never gives reach beyond it.
             </Endpoint>
             <Endpoint method="ENFORCER" path="ApproveBoundsEnforcer">
-              Bounds the ERC-20 <Mono>approve</Mono> a swap needs (token + spender +
-              cap), so the router allowance can ride the <i>same</i> 1Shot batch as the
-              swap — gas paid in USDC, the user never needs ETH, no standing approval.
+              Bounds the ERC-20 <Mono>approve</Mono> a swap or deposit needs (token +
+              spender + cap), so the allowance can ride the <i>same</i> 1Shot batch as the
+              action — gas paid in USDC, the user never needs ETH, no standing approval.
+            </Endpoint>
+            <p className="pt-2">
+              <b className="text-white">Beyond trading — yield.</b> The same pattern binds a
+              lending-pool deposit, so an agent can move funds into yield within a venue set
+              it cannot escape.
+            </p>
+            <Endpoint method="ENFORCER" path="YieldAllowlistEnforcer">
+              One bounded Aave-V3 <Mono>supply</Mono>: the user signs a <i>set</i> of yield
+              venues (<Mono>asset · maxIn · recipient · N · [pool·minAmount]×N</Mono>). A
+              scout agent picks the best APY <i>from the signed set</i>; a hijacked agent
+              can’t supply into a venue you didn’t approve, overspend, supply a different
+              asset, or redirect the position. Emits <Mono>YieldAllowed</Mono>.
             </Endpoint>
             <Callout>
-              All five <Mono>are CaveatEnforcer</Mono> — Conduit-custom caveats on the{" "}
+              All six <Mono>are CaveatEnforcer</Mono> — Conduit-custom caveats on the{" "}
               <b className="text-white">MetaMask Delegation Framework</b>’s extension point
               (override <Mono>beforeHook</Mono>), enforced by the unmodified
-              DelegationManager on every hop. <b className="text-white">Roadmap:</b> a
-              <Mono>YieldGuardEnforcer</Mono> (allowed protocols/methods +{" "}
-              <Mono>withdraw ≤ balance − baseline</Mono>) — harvest the yield, never the
-              principal. Same architecture, different caveat.
+              DelegationManager on every hop. The allowlist enforcers (swap + yield) are
+              what make “pick the best token/APY” safe: the agent can only ever choose from
+              the set you signed.
             </Callout>
           </Section>
 
@@ -336,14 +385,16 @@ const caveats = [
           {/* ADDRESSES */}
           <Section id="addresses" title="Addresses">
             <p className="text-sm text-conduit-muted">
-              {baseSepolia ? "Base Sepolia (testnet)" : `Chain ${config.chainId}`}. Mainnet
-              addresses are published before the mainnet launch.
+              {baseSepolia ? "Base Sepolia (testnet)." : "Base mainnet (live)."} The full
+              enforcer family is deployed and verified on both networks; these addresses
+              reflect the chain this app is configured for.
             </p>
             <div className="space-y-2">
               <Addr label="X402ReceiptEnforcer" addr={config.receiptEnforcer} />
               <Addr label="X402SubscriptionEnforcer" addr={config.subscriptionEnforcer} />
               <Addr label="SwapBoundsEnforcer" addr={config.swapBoundsEnforcer} />
               <Addr label="SwapAllowlistEnforcer" addr={config.swapAllowlistEnforcer} />
+              <Addr label="YieldAllowlistEnforcer" addr={config.yieldAllowlistEnforcer} />
               <Addr label="ApproveBoundsEnforcer" addr={config.approveBoundsEnforcer} />
               <Addr label="DelegationManager" addr={config.delegationManager} />
               <Addr label="IdEnforcer" addr={config.idEnforcer} />
