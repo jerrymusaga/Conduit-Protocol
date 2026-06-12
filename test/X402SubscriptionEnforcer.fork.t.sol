@@ -20,7 +20,12 @@ import { BaseSepoliaConstants } from "./helpers/Constants.sol";
  *             --match-contract X402SubscriptionEnforcerForkTest -vvv
  */
 interface IDelegationManager {
-    struct Caveat { address enforcer; bytes terms; bytes args; }
+    struct Caveat {
+        address enforcer;
+        bytes terms;
+        bytes args;
+    }
+
     struct Delegation {
         address delegate;
         address delegator;
@@ -54,14 +59,14 @@ contract X402SubscriptionEnforcerForkTest is Test {
 
     bytes32 internal constant SUB_ID = keccak256("conduit-sub-fork-001");
     uint128 internal constant AMOUNT = 5_000; // fixed price per period
-    uint32  internal constant PERIOD = 3600;  // 1 hour
+    uint32 internal constant PERIOD = 3600; // 1 hour
     bytes32 internal constant ZERO_MODE = bytes32(0);
 
     function setUp() public {
-        (userEoa, userPk)            = makeAddrAndKey("user");
+        (userEoa, userPk) = makeAddrAndKey("user");
         (coordinator, coordinatorPk) = makeAddrAndKey("coordinator");
-        (specialist, )               = makeAddrAndKey("specialist");
-        merchant                     = makeAddr("merchant");
+        (specialist,) = makeAddrAndKey("specialist");
+        merchant = makeAddr("merchant");
 
         enforcer = new X402SubscriptionEnforcer();
         userSmartAccount = address(new MinimalAccount(userEoa, BaseSepoliaConstants.DELEGATION_MANAGER));
@@ -145,9 +150,9 @@ contract X402SubscriptionEnforcerForkTest is Test {
         pure
         returns (bytes memory)
     {
-        bytes32 digest = keccak256(abi.encodePacked(
-            "\x19\x01", BaseSepoliaConstants.DOMAIN_SEPARATOR, dm.getDelegationHash(d)
-        ));
+        bytes32 digest = keccak256(
+            abi.encodePacked("\x19\x01", BaseSepoliaConstants.DOMAIN_SEPARATOR, dm.getDelegationHash(d))
+        );
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(pk, digest);
         return abi.encodePacked(r, s, v);
     }

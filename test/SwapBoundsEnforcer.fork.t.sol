@@ -24,7 +24,12 @@ import { MinimalAccount } from "./helpers/MinimalAccount.sol";
  */
 
 interface IDelegationManager {
-    struct Caveat { address enforcer; bytes terms; bytes args; }
+    struct Caveat {
+        address enforcer;
+        bytes terms;
+        bytes args;
+    }
+
     struct Delegation {
         address delegate;
         address delegator;
@@ -50,14 +55,14 @@ interface IERC20 {
 contract SwapBoundsEnforcerForkTest is Test {
     // Base mainnet (8453).
     address internal constant DELEGATION_MANAGER = 0xdb9B1e94B5b69Df7e401DDbedE43491141047dB3;
-    address internal constant UNISWAP_ROUTER      = 0x2626664c2603336E57B271c5C0b26F421741e481; // SwapRouter02
-    address internal constant USDC                = 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913;
-    address internal constant WETH                = 0x4200000000000000000000000000000000000006;
-    bytes32 internal constant ROOT_AUTHORITY      = bytes32(type(uint256).max);
-    bytes32 internal constant ZERO_MODE           = bytes32(0);
+    address internal constant UNISWAP_ROUTER = 0x2626664c2603336E57B271c5C0b26F421741e481; // SwapRouter02
+    address internal constant USDC = 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913;
+    address internal constant WETH = 0x4200000000000000000000000000000000000006;
+    bytes32 internal constant ROOT_AUTHORITY = bytes32(type(uint256).max);
+    bytes32 internal constant ZERO_MODE = bytes32(0);
 
     uint128 internal constant AMOUNT_IN = 20_000_000; // 20 USDC
-    uint24  internal constant POOL_FEE  = 500;        // 0.05% USDC/WETH pool
+    uint24 internal constant POOL_FEE = 500; // 0.05% USDC/WETH pool
 
     address internal userEoa;
     uint256 internal userPk;
@@ -75,22 +80,24 @@ contract SwapBoundsEnforcerForkTest is Test {
         // Skip cleanly when no Base mainnet fork is configured.
         if (block.chainid != 8453) return;
 
-        (userEoa, userPk)            = makeAddrAndKey("user");
+        (userEoa, userPk) = makeAddrAndKey("user");
         (coordinator, coordinatorPk) = makeAddrAndKey("coordinator");
-        (trader, )                   = makeAddrAndKey("trader");
-        attacker                     = makeAddr("attacker");
+        (trader,) = makeAddrAndKey("trader");
+        attacker = makeAddr("attacker");
 
         enforcer = new SwapBoundsEnforcer();
         approveEnforcer = new ApproveBoundsEnforcer();
         userAccount = address(new MinimalAccount(userEoa, DELEGATION_MANAGER));
 
-        domainSeparator = keccak256(abi.encode(
-            keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
-            keccak256(bytes("DelegationManager")),
-            keccak256(bytes("1")),
-            block.chainid,
-            DELEGATION_MANAGER
-        ));
+        domainSeparator = keccak256(
+            abi.encode(
+                keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
+                keccak256(bytes("DelegationManager")),
+                keccak256(bytes("1")),
+                block.chainid,
+                DELEGATION_MANAGER
+            )
+        );
 
         deal(USDC, userAccount, 1_000_000_000); // 1,000 USDC
         // The account approves Uniswap for USDC (Uniswap pulls via transferFrom).
@@ -120,11 +127,7 @@ contract SwapBoundsEnforcerForkTest is Test {
     }
 
     /// root (user → coordinator, open) + child (coordinator → trader, SwapBounds).
-    function _chain(address recipient)
-        internal
-        view
-        returns (bytes memory permissionContext)
-    {
+    function _chain(address recipient) internal view returns (bytes memory permissionContext) {
         IDelegationManager dm = IDelegationManager(DELEGATION_MANAGER);
 
         IDelegationManager.Caveat[] memory none = new IDelegationManager.Caveat[](0);
@@ -140,11 +143,8 @@ contract SwapBoundsEnforcerForkTest is Test {
         bytes32 rootHash = dm.getDelegationHash(root);
 
         IDelegationManager.Caveat[] memory childCaveats = new IDelegationManager.Caveat[](1);
-        childCaveats[0] = IDelegationManager.Caveat({
-            enforcer: address(enforcer),
-            terms: _swapTerms(recipient),
-            args: ""
-        });
+        childCaveats[0] =
+            IDelegationManager.Caveat({ enforcer: address(enforcer), terms: _swapTerms(recipient), args: "" });
         IDelegationManager.Delegation memory child = IDelegationManager.Delegation({
             delegate: trader,
             delegator: coordinator,
@@ -172,15 +172,23 @@ contract SwapBoundsEnforcerForkTest is Test {
             args: ""
         });
         IDelegationManager.Delegation memory root = IDelegationManager.Delegation({
-            delegate: coordinator, delegator: userAccount, authority: ROOT_AUTHORITY,
-            caveats: rootCaveats, salt: 2, signature: hex""
+            delegate: coordinator,
+            delegator: userAccount,
+            authority: ROOT_AUTHORITY,
+            caveats: rootCaveats,
+            salt: 2,
+            signature: hex""
         });
         root.signature = _sign(dm, root, userPk);
 
         IDelegationManager.Caveat[] memory none = new IDelegationManager.Caveat[](0);
         IDelegationManager.Delegation memory child = IDelegationManager.Delegation({
-            delegate: trader, delegator: coordinator, authority: dm.getDelegationHash(root),
-            caveats: none, salt: 3, signature: hex""
+            delegate: trader,
+            delegator: coordinator,
+            authority: dm.getDelegationHash(root),
+            caveats: none,
+            salt: 3,
+            signature: hex""
         });
         child.signature = _sign(dm, child, coordinatorPk);
 
@@ -209,8 +217,7 @@ contract SwapBoundsEnforcerForkTest is Test {
         modes[1] = ZERO_MODE;
         bytes[] memory execs = new bytes[](2);
         execs[0] = abi.encodePacked(
-            USDC, uint256(0),
-            abi.encodeWithSignature("approve(address,uint256)", UNISWAP_ROUTER, uint256(AMOUNT_IN))
+            USDC, uint256(0), abi.encodeWithSignature("approve(address,uint256)", UNISWAP_ROUTER, uint256(AMOUNT_IN))
         );
         execs[1] = _swapExec(userAccount, 1);
 
@@ -271,11 +278,11 @@ contract SwapBoundsEnforcerForkTest is Test {
         // Terms pin the recipient to the user; the rogue swap routes WETH to the
         // attacker → the enforcer reverts before any Uniswap call happens.
         bytes[] memory ctx = new bytes[](1);
-        ctx[0] = _chain(userAccount);          // bounds say recipient = userAccount
+        ctx[0] = _chain(userAccount); // bounds say recipient = userAccount
         bytes32[] memory modes = new bytes32[](1);
         modes[0] = ZERO_MODE;
         bytes[] memory execs = new bytes[](1);
-        execs[0] = _swapExec(attacker, 1);     // but the call pays the attacker
+        execs[0] = _swapExec(attacker, 1); // but the call pays the attacker
 
         vm.prank(trader);
         vm.expectRevert(); // DM bubbles "SwapBounds:wrong-recipient"

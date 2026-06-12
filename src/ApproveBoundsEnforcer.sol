@@ -57,16 +57,10 @@ contract ApproveBoundsEnforcer is CaveatEnforcer {
         bytes32 _delegationHash,
         address _delegator,
         address // _redeemer -- unconstrained at this hop
-    )
-        public
-        override
-        onlySingleCallTypeMode(_mode)
-        onlyDefaultExecutionMode(_mode)
-    {
+    ) public override onlySingleCallTypeMode(_mode) onlyDefaultExecutionMode(_mode) {
         (address token, address spender, uint256 maxAmount) = getTermsInfo(_terms);
 
-        (address target, uint256 value, bytes calldata callData) =
-            _executionCallData.decodeSingle();
+        (address target, uint256 value, bytes calldata callData) = _executionCallData.decodeSingle();
 
         require(callData.length == APPROVE_CALLDATA_LENGTH, "ApproveBounds:invalid-calldata-length");
         require(target == token, "ApproveBounds:wrong-token");
@@ -87,8 +81,8 @@ contract ApproveBoundsEnforcer is CaveatEnforcer {
         returns (address token, address spender, uint256 maxAmount)
     {
         require(_terms.length == TERMS_LENGTH, "ApproveBounds:invalid-terms-length");
-        token     = address(bytes20(_terms[0:20]));
-        spender   = address(bytes20(_terms[20:40]));
+        token = address(bytes20(_terms[0:20]));
+        spender = address(bytes20(_terms[20:40]));
         maxAmount = uint256(uint128(bytes16(_terms[40:56])));
     }
 }

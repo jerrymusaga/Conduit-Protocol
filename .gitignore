@@ -29,3 +29,5 @@ conduit-endpoint/node_modules
 conduit-endpoint/.env
 
 CONDUIT-HANDOFF.md
+# stray Next build artifacts in the (non-Next) endpoint service
+conduit-endpoint/.next/

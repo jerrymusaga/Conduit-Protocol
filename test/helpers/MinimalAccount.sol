@@ -21,20 +21,18 @@ contract MinimalAccount {
     address public immutable DELEGATION_MANAGER;
 
     bytes4 private constant EIP1271_MAGIC = 0x1626ba7e;
-    bytes4 private constant EIP1271_FAIL  = 0xffffffff;
+    bytes4 private constant EIP1271_FAIL = 0xffffffff;
 
     constructor(address _owner, address _dm) {
         OWNER = _owner;
         DELEGATION_MANAGER = _dm;
     }
 
-    function isValidSignature(bytes32 hash, bytes calldata signature)
-        external view returns (bytes4)
-    {
+    function isValidSignature(bytes32 hash, bytes calldata signature) external view returns (bytes4) {
         if (signature.length != 65) return EIP1271_FAIL;
         bytes32 r;
         bytes32 s;
-        uint8   v;
+        uint8 v;
         assembly {
             r := calldataload(signature.offset)
             s := calldataload(add(signature.offset, 32))
@@ -47,8 +45,13 @@ contract MinimalAccount {
 
     /// @notice ERC-7579 single-call execution. Packed as (address target,
     ///         uint256 value, bytes callData).
-    function executeFromExecutor(bytes32 /*mode*/, bytes calldata executionCallData)
-        external returns (bytes[] memory results)
+    function executeFromExecutor(
+        bytes32,
+        /*mode*/
+        bytes calldata executionCallData
+    )
+        external
+        returns (bytes[] memory results)
     {
         require(msg.sender == DELEGATION_MANAGER, "MinimalAccount: only DM");
         require(executionCallData.length >= 52, "MinimalAccount: invalid exec data");
@@ -57,16 +60,16 @@ contract MinimalAccount {
         uint256 value;
         assembly {
             target := shr(96, calldataload(executionCallData.offset))
-            value  := calldataload(add(executionCallData.offset, 20))
+            value := calldataload(add(executionCallData.offset, 20))
         }
         bytes calldata callData = executionCallData[52:];
 
-        (bool ok, bytes memory ret) = target.call{value: value}(callData);
+        (bool ok, bytes memory ret) = target.call{ value: value }(callData);
         require(ok, "MinimalAccount: exec failed");
 
         results = new bytes[](1);
         results[0] = ret;
     }
 
-    receive() external payable {}
+    receive() external payable { }
 }

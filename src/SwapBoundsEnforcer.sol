@@ -21,10 +21,7 @@ interface ISwapRouter02 {
         uint160 sqrtPriceLimitX96;
     }
 
-    function exactInputSingle(ExactInputSingleParams calldata params)
-        external
-        payable
-        returns (uint256 amountOut);
+    function exactInputSingle(ExactInputSingleParams calldata params) external payable returns (uint256 amountOut);
 }
 
 /**
@@ -111,12 +108,7 @@ contract SwapBoundsEnforcer is CaveatEnforcer {
         bytes32 _delegationHash,
         address _delegator,
         address // _redeemer -- unconstrained at this hop
-    )
-        public
-        override
-        onlySingleCallTypeMode(_mode)
-        onlyDefaultExecutionMode(_mode)
-    {
+    ) public override onlySingleCallTypeMode(_mode) onlyDefaultExecutionMode(_mode) {
         (
             address router,
             address tokenIn,
@@ -126,36 +118,25 @@ contract SwapBoundsEnforcer is CaveatEnforcer {
             address recipient
         ) = getTermsInfo(_terms);
 
-        (address target, uint256 value, bytes calldata callData) =
-            _executionCallData.decodeSingle();
+        (address target, uint256 value, bytes calldata callData) = _executionCallData.decodeSingle();
 
         // Length-check FIRST (post-audit ordering, mirrors X402ReceiptEnforcer).
-        require(
-            callData.length == SWAP_CALLDATA_LENGTH,
-            "SwapBounds:invalid-calldata-length"
-        );
+        require(callData.length == SWAP_CALLDATA_LENGTH, "SwapBounds:invalid-calldata-length");
 
         require(target == router, "SwapBounds:wrong-router");
         require(value == 0, "SwapBounds:no-native-value-allowed");
-        require(
-            bytes4(callData[0:4]) == ISwapRouter02.exactInputSingle.selector,
-            "SwapBounds:not-swap-selector"
-        );
+        require(bytes4(callData[0:4]) == ISwapRouter02.exactInputSingle.selector, "SwapBounds:not-swap-selector");
 
         // Decode the inlined ExactInputSingleParams tuple. The length check
         // guarantees exactly 7 words (224 bytes) of args after the selector.
         (
             address callTokenIn,
-            address callTokenOut,
-            , // uint24 fee -- agent's choice of pool tier
+            address callTokenOut,, // uint24 fee -- agent's choice of pool tier
             address callRecipient,
             uint256 amountIn,
             uint256 callMinOut,
             // uint160 sqrtPriceLimitX96 -- agent's choice
-        ) = abi.decode(
-            callData[4:],
-            (address, address, uint24, address, uint256, uint256, uint160)
-        );
+        ) = abi.decode(callData[4:], (address, address, uint24, address, uint256, uint256, uint160));
 
         require(callTokenIn == tokenIn, "SwapBounds:wrong-token-in");
         require(callTokenOut == tokenOut, "SwapBounds:wrong-token-out");
@@ -196,11 +177,11 @@ contract SwapBoundsEnforcer is CaveatEnforcer {
     {
         require(_terms.length == TERMS_LENGTH, "SwapBounds:invalid-terms-length");
 
-        router       = address(bytes20(_terms[0:20]));
-        tokenIn      = address(bytes20(_terms[20:40]));
-        tokenOut     = address(bytes20(_terms[40:60]));
-        maxAmountIn  = uint256(uint128(bytes16(_terms[60:76])));
+        router = address(bytes20(_terms[0:20]));
+        tokenIn = address(bytes20(_terms[20:40]));
+        tokenOut = address(bytes20(_terms[40:60]));
+        maxAmountIn = uint256(uint128(bytes16(_terms[60:76])));
         minAmountOut = uint256(uint128(bytes16(_terms[76:92])));
-        recipient    = address(bytes20(_terms[92:112]));
+        recipient = address(bytes20(_terms[92:112]));
     }
 }

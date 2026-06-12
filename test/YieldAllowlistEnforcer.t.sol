@@ -15,17 +15,17 @@ import { ModeCode } from "@delegator/utils/Types.sol";
 contract YieldAllowlistEnforcerTest is Test {
     YieldAllowlistEnforcer internal enforcer;
 
-    address internal usdc      = makeAddr("USDC");
-    address internal aave      = makeAddr("aaveV3Pool");   // allowed venue #1
-    address internal seamless  = makeAddr("seamlessPool"); // allowed venue #2
-    address internal rugPool   = makeAddr("rugPool");      // NOT allowed
-    address internal user      = makeAddr("user");
-    address internal attacker  = makeAddr("attacker");
+    address internal usdc = makeAddr("USDC");
+    address internal aave = makeAddr("aaveV3Pool"); // allowed venue #1
+    address internal seamless = makeAddr("seamlessPool"); // allowed venue #2
+    address internal rugPool = makeAddr("rugPool"); // NOT allowed
+    address internal user = makeAddr("user");
+    address internal attacker = makeAddr("attacker");
     address internal delegator = makeAddr("delegator");
 
-    uint128 internal constant MAX_IN      = 50_000_000; // 50 USDC
-    uint128 internal constant AAVE_FLOOR  = 1_000_000;  // 1 USDC min into Aave
-    uint128 internal constant SEAM_FLOOR  = 0;          // no floor for Seamless
+    uint128 internal constant MAX_IN = 50_000_000; // 50 USDC
+    uint128 internal constant AAVE_FLOOR = 1_000_000; // 1 USDC min into Aave
+    uint128 internal constant SEAM_FLOOR = 0; // no floor for Seamless
 
     ModeCode internal constant SINGLE_DEFAULT = ModeCode.wrap(bytes32(0));
     bytes32 internal constant DHASH = keccak256("yield-allow");
@@ -36,11 +36,7 @@ contract YieldAllowlistEnforcerTest is Test {
 
     // asset · maxIn · recipient · N · [pool·minAmount]×N
     function _terms() internal view returns (bytes memory) {
-        return abi.encodePacked(
-            usdc, MAX_IN, user, uint8(2),
-            aave, AAVE_FLOOR,
-            seamless, SEAM_FLOOR
-        );
+        return abi.encodePacked(usdc, MAX_IN, user, uint8(2), aave, AAVE_FLOOR, seamless, SEAM_FLOOR);
     }
 
     function _supply(address asset, uint256 amount, address onBehalfOf) internal pure returns (bytes memory) {

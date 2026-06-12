@@ -42,6 +42,7 @@ interface IDelegationManager {
         bytes terms;
         bytes args;
     }
+
     struct Delegation {
         address delegate;
         address delegator;
@@ -83,17 +84,14 @@ contract AtomicBatchBudgetForkTest is Test {
     function setUp() public {
         (userEoa, userPk) = makeAddrAndKey("user");
         (coordinator, coordinatorPk) = makeAddrAndKey("coordinator");
-        (relayer, ) = makeAddrAndKey("relayer");
+        (relayer,) = makeAddrAndKey("relayer");
         sellers[0] = makeAddr("seller0");
         sellers[1] = makeAddr("seller1");
         sellers[2] = makeAddr("seller2");
 
         enforcer = new X402ReceiptEnforcer();
 
-        userSmartAccount = address(new MinimalAccount(
-            userEoa,
-            BaseSepoliaConstants.DELEGATION_MANAGER
-        ));
+        userSmartAccount = address(new MinimalAccount(userEoa, BaseSepoliaConstants.DELEGATION_MANAGER));
 
         // Fund the smart account with USDC via storage-write cheat (1 USDC).
         deal(BaseSepoliaConstants.USDC, userSmartAccount, 1_000_000);
@@ -105,14 +103,9 @@ contract AtomicBatchBudgetForkTest is Test {
 
         // Budget = exactly the plan total (3 × PRICE). The third payment lands
         // right at the cap, so the whole plan should settle.
-        (IDelegationManager.Delegation memory root, bytes32 rootHash) =
-            _buildRoot(dm, uint256(PRICE) * 3);
+        (IDelegationManager.Delegation memory root, bytes32 rootHash) = _buildRoot(dm, uint256(PRICE) * 3);
 
-        (
-            bytes[] memory contexts,
-            bytes32[] memory modes,
-            bytes[] memory execs
-        ) = _buildBatch(dm, root, rootHash, 3);
+        (bytes[] memory contexts, bytes32[] memory modes, bytes[] memory execs) = _buildBatch(dm, root, rootHash, 3);
 
         uint256 userBefore = IUSDC(BaseSepoliaConstants.USDC).balanceOf(userSmartAccount);
 
@@ -122,9 +115,7 @@ contract AtomicBatchBudgetForkTest is Test {
         // Every seller paid, and exactly the plan total left the user.
         for (uint256 i = 0; i < 3; i++) {
             assertEq(
-                IUSDC(BaseSepoliaConstants.USDC).balanceOf(sellers[i]),
-                PRICE,
-                "seller should be paid in the batch"
+                IUSDC(BaseSepoliaConstants.USDC).balanceOf(sellers[i]), PRICE, "seller should be paid in the batch"
             );
         }
         assertEq(
@@ -146,14 +137,9 @@ contract AtomicBatchBudgetForkTest is Test {
 
         // Budget covers only 2 of the 3 agents. The third trips
         // ERC20PeriodTransferEnforcer:transfer-amount-exceeded.
-        (IDelegationManager.Delegation memory root, bytes32 rootHash) =
-            _buildRoot(dm, uint256(PRICE) * 2);
+        (IDelegationManager.Delegation memory root, bytes32 rootHash) = _buildRoot(dm, uint256(PRICE) * 2);
 
-        (
-            bytes[] memory contexts,
-            bytes32[] memory modes,
-            bytes[] memory execs
-        ) = _buildBatch(dm, root, rootHash, 3);
+        (bytes[] memory contexts, bytes32[] memory modes, bytes[] memory execs) = _buildBatch(dm, root, rootHash, 3);
 
         uint256 userBefore = IUSDC(BaseSepoliaConstants.USDC).balanceOf(userSmartAccount);
 
@@ -170,9 +156,7 @@ contract AtomicBatchBudgetForkTest is Test {
         );
         for (uint256 i = 0; i < 3; i++) {
             assertEq(
-                IUSDC(BaseSepoliaConstants.USDC).balanceOf(sellers[i]),
-                0,
-                "atomic revert: no seller should be paid"
+                IUSDC(BaseSepoliaConstants.USDC).balanceOf(sellers[i]), 0, "atomic revert: no seller should be paid"
             );
         }
 
@@ -217,18 +201,14 @@ contract AtomicBatchBudgetForkTest is Test {
     /// @dev One intent-bound payment leg: coordinator -> relayer, carrying
     ///      IdEnforcer (one-shot) + X402ReceiptEnforcer (binds token/seller/
     ///      amount/intent). Mirrors the production redelegation exactly.
-    function _buildChild(
-        IDelegationManager dm,
-        bytes32 rootHash,
-        uint256 idx,
-        address seller,
-        bytes32 intent
-    ) internal view returns (IDelegationManager.Delegation memory child) {
+    function _buildChild(IDelegationManager dm, bytes32 rootHash, uint256 idx, address seller, bytes32 intent)
+        internal
+        view
+        returns (IDelegationManager.Delegation memory child)
+    {
         IDelegationManager.Caveat[] memory childCaveats = new IDelegationManager.Caveat[](2);
         childCaveats[0] = IDelegationManager.Caveat({
-            enforcer: BaseSepoliaConstants.ID_ENFORCER,
-            terms: abi.encode(uint256(intent)),
-            args: ""
+            enforcer: BaseSepoliaConstants.ID_ENFORCER, terms: abi.encode(uint256(intent)), args: ""
         });
         childCaveats[1] = IDelegationManager.Caveat({
             enforcer: address(enforcer),
@@ -249,12 +229,7 @@ contract AtomicBatchBudgetForkTest is Test {
 
     /// @dev Assemble the batch: N permission contexts (each [child, root]), N
     ///      modes, N USDC.transfer executions — the shape redeemDelegations takes.
-    function _buildBatch(
-        IDelegationManager dm,
-        IDelegationManager.Delegation memory root,
-        bytes32 rootHash,
-        uint256 n
-    )
+    function _buildBatch(IDelegationManager dm, IDelegationManager.Delegation memory root, bytes32 rootHash, uint256 n)
         internal
         view
         returns (bytes[] memory contexts, bytes32[] memory modes, bytes[] memory execs)
@@ -265,38 +240,29 @@ contract AtomicBatchBudgetForkTest is Test {
 
         for (uint256 i = 0; i < n; i++) {
             bytes32 intent = keccak256(abi.encodePacked("conduit-atomic-batch", i));
-            IDelegationManager.Delegation memory child =
-                _buildChild(dm, rootHash, i, sellers[i], intent);
+            IDelegationManager.Delegation memory child = _buildChild(dm, rootHash, i, sellers[i], intent);
 
-            IDelegationManager.Delegation[] memory chain =
-                new IDelegationManager.Delegation[](2);
+            IDelegationManager.Delegation[] memory chain = new IDelegationManager.Delegation[](2);
             chain[0] = child; // chain MUST be [leaf, ..., root]
             chain[1] = root;
 
             contexts[i] = abi.encode(chain);
             modes[i] = ZERO_MODE;
             execs[i] = abi.encodePacked(
-                BaseSepoliaConstants.USDC,
-                uint256(0),
-                IERC20.transfer.selector,
-                abi.encode(sellers[i], uint256(PRICE))
+                BaseSepoliaConstants.USDC, uint256(0), IERC20.transfer.selector, abi.encode(sellers[i], uint256(PRICE))
             );
         }
     }
 
     // ---- signing --------------------------------------------------------
 
-    function _signDelegation(
-        IDelegationManager dm,
-        IDelegationManager.Delegation memory d,
-        uint256 pk
-    ) internal pure returns (bytes memory) {
+    function _signDelegation(IDelegationManager dm, IDelegationManager.Delegation memory d, uint256 pk)
+        internal
+        pure
+        returns (bytes memory)
+    {
         bytes32 structHash = dm.getDelegationHash(d);
-        bytes32 digest = keccak256(abi.encodePacked(
-            "\x19\x01",
-            BaseSepoliaConstants.DOMAIN_SEPARATOR,
-            structHash
-        ));
+        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", BaseSepoliaConstants.DOMAIN_SEPARATOR, structHash));
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(pk, digest);
         return abi.encodePacked(r, s, v);
     }
