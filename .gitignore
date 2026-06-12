@@ -31,3 +31,6 @@ conduit-endpoint/.env
 CONDUIT-HANDOFF.md
 # stray Next build artifacts in the (non-Next) endpoint service
 conduit-endpoint/.next/
+
+# Pitch + demo working materials (not part of the shipped product)
+pitch-demo/
