@@ -11,7 +11,8 @@
  */
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useAccount, useWalletClient } from "wagmi";
-import { usePrivy, useSign7702Authorization } from "@privy-io/react-auth";
+import { usePrivy, useSign7702Authorization, useWallets, getEmbeddedConnectedWallet } from "@privy-io/react-auth";
+import { useSetActiveWallet } from "@privy-io/wagmi";
 import type { WalletClient } from "viem";
 import { config } from "./config";
 import { getPasskeyWallet } from "./passkey/wallet";
@@ -46,7 +47,23 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   const { address: wagmiAddress, isConnected: wagmiConnected, chainId: wagmiChainId } = useAccount();
   const { data: wagmiWalletClient } = useWalletClient({ chainId: config.chainId });
   const { signAuthorization: privySignAuth } = useSign7702Authorization();
-  const { logout } = usePrivy();
+  const { logout, authenticated } = usePrivy();
+  const { wallets } = useWallets();
+  const { setActiveWallet } = useSetActiveWallet();
+
+  // Bind a restored/authenticated Privy session's wallet to wagmi HERE (not just in
+  // the feature pages) so the gated /app route connects too. Without this, a stale
+  // Privy session shows `authenticated` but wagmi stays disconnected → the gate
+  // sticks on the sign-in screen and login() no-ops ("already logged in"). Prefer
+  // the embedded wallet, then any EVM wallet (e.g. MetaMask).
+  useEffect(() => {
+    if (provider !== "privy" || !authenticated || wallets.length === 0) return;
+    if (wagmiConnected && wagmiAddress) return; // already bound
+    const embedded = getEmbeddedConnectedWallet(wallets);
+    const evm = wallets.find((w) => w.chainId?.startsWith("eip155:"));
+    const target = embedded ?? evm ?? wallets[0];
+    if (target) void setActiveWallet(target).catch(() => {});
+  }, [provider, authenticated, wallets, wagmiConnected, wagmiAddress, setActiveWallet]);
 
   const passkeyWallet = getPasskeyWallet();
 

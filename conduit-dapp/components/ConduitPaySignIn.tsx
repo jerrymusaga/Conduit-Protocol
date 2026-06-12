@@ -6,12 +6,21 @@
  * the non-custodial showcase (Chrome/Android, PRF security keys, macOS 15+).
  */
 import { useEffect, useRef, useState } from "react";
-import { useLogin } from "@privy-io/react-auth";
+import { useLogin, usePrivy } from "@privy-io/react-auth";
 import { useActiveWallet } from "@/lib/activeWallet";
 
 export function ConduitPaySignIn() {
   const { setProvider, passkeyWallet } = useActiveWallet();
   const { login } = useLogin();
+  // A restored Privy session can leave you `authenticated` but with no wallet bound
+  // to wagmi (so the gate sticks here). In that case login() no-ops ("already logged
+  // in") — connect/create a wallet instead, and always offer a clean sign-out.
+  const { authenticated, connectOrCreateWallet, logout } = usePrivy();
+  const startPrivy = () => {
+    setProvider("privy");
+    if (authenticated) connectOrCreateWallet();
+    else login();
+  };
   const [mode, setMode] = useState<"choose" | "passkey">("choose");
   const [note, setNote] = useState<string>("");
   const frameRef = useRef<HTMLDivElement>(null);
@@ -92,13 +101,13 @@ export function ConduitPaySignIn() {
           {mode === "choose" ? (
             <div className="mt-6 space-y-3">
               <button
-                onClick={() => { setProvider("privy"); login(); }}
+                onClick={startPrivy}
                 className="group flex w-full items-center gap-3 rounded-xl border border-conduit-cyan/40 bg-conduit-cyan/[0.07] px-4 py-3.5 text-left transition-colors hover:bg-conduit-cyan/[0.12]"
               >
                 <span className="grid h-9 w-9 place-items-center rounded-lg bg-conduit-cyan/15 text-conduit-cyan">✉</span>
                 <span>
-                  <span className="block text-sm font-medium text-white">Email or wallet</span>
-                  <span className="block text-[11px] text-conduit-muted">Email, MetaMask, or injected · works everywhere</span>
+                  <span className="block text-sm font-medium text-white">{authenticated ? "Connect your wallet" : "Email or wallet"}</span>
+                  <span className="block text-[11px] text-conduit-muted">{authenticated ? "You're signed in — connect a wallet to continue" : "Email, MetaMask, or injected · works everywhere"}</span>
                 </span>
               </button>
               <button
@@ -133,6 +142,12 @@ export function ConduitPaySignIn() {
             </div>
           )}
 
+          {authenticated && (
+            <p className="mt-4 text-[11px] text-conduit-muted">
+              Signed in but stuck here?{" "}
+              <button onClick={() => void logout()} className="text-conduit-cyan hover:underline">Sign out and start over</button>.
+            </p>
+          )}
           <p className="mt-6 border-t border-conduit-border/60 pt-4 text-[11px] text-conduit-muted">
             Building with Conduit? See the <a href="/docs" className="text-conduit-cyan hover:underline">developer docs</a>.
           </p>
