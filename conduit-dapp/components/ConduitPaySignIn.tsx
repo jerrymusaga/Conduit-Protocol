@@ -97,7 +97,7 @@ export function ConduitPaySignIn() {
             <span className="text-lg font-semibold tracking-tight text-white">ConduitPay</span>
           </div>
           <h2 className="mt-1 text-lg font-semibold tracking-tight text-white md:mt-0">Sign in</h2>
-          <p className="mt-1 text-[13px] text-conduit-muted">Choose how you want to hold your account.</p>
+          <p className="mt-1 text-[13px] text-conduit-muted">Choose how you&apos;d like to sign in.</p>
 
           {mode === "choose" ? (
             <div className="mt-6 space-y-3">
@@ -108,7 +108,7 @@ export function ConduitPaySignIn() {
                 <span className="grid h-9 w-9 place-items-center rounded-lg bg-conduit-cyan/15 text-conduit-cyan">✉</span>
                 <span>
                   <span className="block text-sm font-medium text-white">{authenticated ? "Connect your wallet" : "Email or wallet"}</span>
-                  <span className="block text-[11px] text-conduit-muted">{authenticated ? "You're signed in — connect a wallet to continue" : "Email, MetaMask, or injected · works everywhere"}</span>
+                  <span className="block text-[11px] text-conduit-muted">{authenticated ? "You're signed in — connect a wallet to continue" : "Sign in with email, or a wallet like MetaMask"}</span>
                 </span>
               </button>
               <button
