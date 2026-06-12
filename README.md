@@ -1,95 +1,186 @@
 # Conduit
 
-Conduit is an x402 facilitator and a family of on-chain caveat enforcers that
-give an autonomous agent a budget it physically cannot misuse — even if the agent
+Conduit is an open x402 facilitator and a family of on-chain caveat enforcers that
+give an autonomous agent a budget it physically cannot misuse — even when the agent
 is fully compromised.
 
 It implements the x402 `erc7710` settlement method on MetaMask Smart Accounts,
-adds custom caveats that bind each agent action to exactly what the user
-authorized, and settles through 1Shot's Permissionless Relayer so the user pays
-gas in USDC and never needs ETH.
+adds custom `CaveatEnforcer` contracts that bind every agent action to exactly what
+the user authorized, and settles through the 1Shot Permissionless Relayer so the
+user pays gas in USDC and never holds ETH.
 
 The product is the facilitator plus the enforcer set. The dapp (ConduitPay) and the
-resource server (endpoint) are a working harness that demonstrates the primitives
-end to end.
+resource server are a working harness that exercises the primitives end to end on
+Base mainnet.
 
 ## The core idea
 
-A delegation is signed once. From that single signature, narrow agents can act
-repeatedly, but only within bounds the user pinned on-chain at signing time. The
-enforcer runs inside the Delegation Manager's `redeemDelegations` call, before the
-action executes, and reverts the whole redemption if the action steps outside the
-authorized envelope.
+A delegation is signed once. From that single signature, narrow agents act
+repeatedly, but only within bounds the user pinned on-chain at signing time. Each
+enforcer's `beforeHook` runs inside the Delegation Manager's `redeemDelegations`
+call, before the guarded execution, and reverts the entire redemption if the
+attempted action steps outside the authorized envelope.
 
 The guarantee is structural, not advisory. A hijacked agent cannot pay the wrong
-recipient, overspend a cap, swap into a token you did not approve, deposit into a
-venue you did not approve, accept a worse fill than your floor, or redirect any
+recipient, overspend a cap, swap into a token outside the signed set, deposit into
+a venue outside the signed set, accept a worse fill than the floor, or redirect any
 proceeds. Every such attempt reverts on-chain and moves no funds.
+
+## Architecture
+
+```
+User account (EOA → MetaMask Smart Account via EIP-7702)
+  │  signs ONE bounded root delegation (or grants it via ERC-7715)
+  ▼
+Coordinator (ephemeral in-session EOA)
+  │  redelegates — may NARROW caveats, never widen
+  ▼
+Task agents  ──►  Conduit Facilitator  ──►  1Shot Permissionless Relayer
+  (Venice)        /supported /verify /settle    redeemDelegations, gas in USDC, 7702
+                  Ed25519 webhook status         │
+                                                 ▼
+                          MetaMask DelegationManager (unmodified)
+                          + Conduit CaveatEnforcer.beforeHook  → revert if off-policy
+```
+
+```
+src/                    Foundry contracts — the CaveatEnforcer family
+test/                   Unit + fork tests for every enforcer (solc 0.8.23, via-IR)
+script/                 Deploy scripts (per-enforcer + a one-shot DeployMainnet)
+conduit-facilitator/    Express + viem facilitator (oneshot-pl relay backend)
+conduit-endpoint/       x402 resource server (services catalog, 402 envelopes)
+conduit-dapp/           Next.js app — ConduitPay (Pay, Yield, Subscriptions, Portfolio)
+```
+
+## Accounts and signers
+
+Conduit needs the user's account to be a smart account so a delegation can be
+redeemed against it. It reaches that state with **EIP-7702**: the EOA is designated
+to MetaMask's `EIP7702StatelessDeleGatorImpl`
+(`0x63c0c19a282a1B52b07dD5a65b58948A07DAE32B`, same address on Base Sepolia and
+mainnet), which makes the EOA execute as a MetaMask Smart Account while keeping its
+address and ECDSA key. The 7702 authorization is either signed by the dapp and
+bundled into the first `redeemDelegations` (embedded/passkey signers) or performed
+natively by MetaMask during an ERC-7715 grant.
+
+Three signer backends sit behind one interface — `useActiveWallet()`
+(`conduit-dapp/lib/activeWallet.tsx`) — exposing `address`, `walletClient`,
+`signAuthorization` (EIP-7702), and `signOut`, so every feature is signer-agnostic:
+
+- **MetaMask extension** — granted via **ERC-7715 Advanced Permissions**
+  (`wallet_requestExecutionPermissions`, `@metamask/smart-accounts-kit`). MetaMask
+  signs a bounded `erc20-token-periodic` permission and performs the 7702 upgrade in
+  its own UI. MetaMask deliberately blocks dapp-initiated raw delegation signatures
+  for its accounts (anti-phishing), so ERC-7715 is the sanctioned path; Conduit uses
+  it for the budget root and adds the custom caveat on the coordinator's leaf.
+- **Privy embedded wallet** — email/social login mints an embedded EOA; the dapp
+  signs the root delegation (`signTypedData_v4` of the DelegationManager EIP-712
+  `Delegation`) and the 7702 authorization directly.
+- **Passkey wallet (WebAuthn-PRF)** — a non-custodial secp256k1 wallet whose key is
+  derived from the passkey's PRF extension and held inside an isolated, origin-locked
+  iframe (`conduit-dapp/app/wallet-iframe`, `conduit-dapp/lib/passkey/*`). The key
+  never touches the app context or any server; the iframe signs `signTypedData` and
+  `signAuthorization` (7702) on request. Verified on Chrome/Android with PRF.
+
+## The delegation model
+
+- A **root** delegation is `delegate=coordinator, delegator=user, authority=ROOT
+  (0xff…ff), caveats=[enforcer], salt`, signed under the DelegationManager EIP-712
+  domain (`name="DelegationManager", version="1"`).
+- A **leaf** is `delegate=relayer, delegator=coordinator, authority=hash(root)`,
+  signed by the coordinator's in-memory key. The chain submitted to
+  `redeemDelegations` is ordered `[leaf, …, root]`. v1.3.0 returns no data.
+- The DelegationManager walks the caveat chain on redemption; a child can only
+  **narrow** the parent's caveats, never widen them — so the user's root bounds hold
+  no matter what the agents do.
+
+Caveat terms are byte-packed (matching the contracts and fork tests). Examples:
+
+```
+X402ReceiptEnforcer     intentId(32) ++ token(20) ++ payTo(20) ++ maxAmount(16) ++ flags(1)
+ERC20PeriodTransfer     token(20) ++ periodAmount(32) ++ periodDuration(32) ++ startTime(32)
+SwapAllowlistEnforcer   router(20) ++ tokenIn(20) ++ maxIn(16) ++ recipient(20) ++ N(1)
+                          ++ N×[ tokenOut(20) ++ minOut(16) ]
+YieldAllowlistEnforcer  asset(20) ++ maxIn(16) ++ recipient(20) ++ N(1)
+                          ++ N×[ pool(20) ++ minAmount(16) ]
+X402SubscriptionEnforcer subscriptionId(32) ++ token(20) ++ recipient(20)
+                          ++ amountPerPeriod(16) ++ periodDuration(4) ++ reserved(2)
+```
+
+## Settlement (1Shot, gas in USDC)
+
+The facilitator's `oneshot-pl` backend settles through 1Shot's Permissionless
+Relayer JSON-RPC:
+
+- `relayer_send7710Transaction` submits the redemption. The payment carries `works[]`
+  (the `[approve, action]` legs, e.g. `[USDC.approve(router), router.exactInputSingle]`
+  or `[USDC.approve(pool), pool.supply]`) plus a `feeChain` — a bounded USDC fee leg
+  that reimburses the relayer's gas in stablecoin. N agent payments plus the fee
+  settle in **one** `redeemDelegations` batch (all-or-nothing: an over-budget leg
+  reverts the whole transaction and spends nothing).
+- The **EIP-7702 authorization** is passed in `authorizationList`, so the account
+  upgrade is bundled into the same transaction through the relayer.
+- `relayer_estimate7710Transaction` returns an exact, batch-aware fee quote used to
+  size the fee leg.
+- Settlement status is driven by 1Shot's **Ed25519-signed webhooks** (verified
+  against the relayer's JWKS by `keyId`), with `relayer_getStatus` polling as a
+  fallback. The facilitator forwards a clean `conduit.settlement` event to the seller.
+
+The relayer's per-chain capabilities (`targetAddress` = the redeemer the work
+delegation must name, `feeCollector` = where the fee leg pays) are fetched and warmed
+at startup; the dapp reads them from the 402 envelope.
 
 ## Enforcer family
 
-Each enforcer guards one kind of action and is independently deployable and tested.
+Every enforcer is a `CaveatEnforcer` (single-call, default-exec mode), independently
+deployed, verified, and unit-tested.
 
 | Enforcer | Guards | Pins on-chain |
 |---|---|---|
-| `X402ReceiptEnforcer` | One x402 payment | token, recipient, max amount, one-shot intent hash |
-| `X402SubscriptionEnforcer` | A recurring charge | exact amount, merchant, one charge per period |
-| `SwapBoundsEnforcer` | One Uniswap v3 swap | router, fixed pair, input cap, slippage floor, recipient |
-| `SwapAllowlistEnforcer` | A swap into a chosen set | a signed set of output tokens, each with its own floor |
-| `ApproveBoundsEnforcer` | One ERC-20 approval | token, single spender, capped amount |
-| `YieldAllowlistEnforcer` | One lending-pool deposit | a signed set of venues, one asset, cap, recipient |
+| `X402ReceiptEnforcer` | one x402 payment | token, recipient, max amount, one-shot intent (paired with `IdEnforcer`) |
+| `X402SubscriptionEnforcer` | a recurring charge | exact amount, merchant, one charge per period (on-chain period tracking) |
+| `SwapBoundsEnforcer` | one Uniswap v3 swap | router, fixed pair, input cap, slippage floor, recipient |
+| `SwapAllowlistEnforcer` | a swap into a chosen set | a signed set of output tokens, each with its own floor |
+| `ApproveBoundsEnforcer` | one ERC-20 approval | token, single spender, capped amount (rides the same 1Shot batch) |
+| `YieldAllowlistEnforcer` | one Aave-V3 `supply` | a signed set of venues, one asset, cap, `onBehalfOf` = user |
 
-The two allowlist enforcers are what make agent autonomy safe: the user signs a set
-(of tokens, or of yield venues), and a scout agent picks the best member of that set
-with live data — but the set the agent may choose from is exactly the set the user
-signed. Resolving "the best token" or "the best APY" off-chain never grants reach
-beyond the allowlist.
+The two allowlist enforcers make agent autonomy safe: the user signs a *set* (of
+tokens, or of yield venues, each with its own floor); a Venice scout reasons over
+live data and picks the best member; the agent executes into it without the user
+re-signing. The set the agent may choose from is exactly the set the user signed —
+resolving "the best token" or "the best APY" never grants reach beyond the allowlist.
 
-## Repository layout
+## Gasless revocation
 
-```
-src/                    Foundry contracts — the enforcer family
-test/                   Unit and fork tests for every enforcer
-script/                 Deploy scripts (one per enforcer)
-conduit-facilitator/    Express + viem facilitator: /supported, /verify, /settle
-conduit-endpoint/       x402 resource server that drives the facilitator
-conduit-dapp/           Next.js app — ConduitPay (Pay, Subscriptions, Portfolio)
-```
-
-## How a bounded action settles
-
-1. The user signs a root delegation carrying the relevant enforcer (the bounds).
-2. A coordinator redelegates to a narrow task agent. It may narrow the bounds but
-   the Delegation Manager's caveat-chain walking means it can never widen them.
-3. The agent assembles the execution and submits it to the facilitator.
-4. The facilitator settles via `redeemDelegations` through the 1Shot relayer.
-   Approvals, the action, and a small USDC gas-fee leg ride one atomic batch.
-5. The enforcer's `beforeHook` runs first. If the action is in bounds it emits a
-   receipt event; otherwise it reverts and the whole batch is rolled back.
-
-Because the batch is atomic, a single over-budget or out-of-bounds leg reverts the
-entire transaction and spends nothing — there is no partial or wasted spend.
+Revocation is `DelegationManager.disableDelegation(root)`, gated `onlyDeleGator` so
+only the user's account can send it; disabling a root cascades to every child
+redelegation at once. Conduit runs it **gaslessly**: the relayer executes it from
+the user's account, bounded by MetaMask's `AllowedTargetsEnforcer`
+(`0x7F20f61b1f09b08D970938F6fa563634d65c4EeB`) + `AllowedMethodsEnforcer`
+(`0x2c21fD0Cb9DC8445CB3fb0DC5E7Bb0Aca01842B5`) so the relayer may only call
+`disableDelegation` and nothing else, reimbursed by a small USDC fee leg. A direct
+on-chain transaction is the automatic fallback. So a fresh account with no ETH can
+still kill its permissions.
 
 ## ConduitPay (the dapp)
 
-ConduitPay is a gated product surface over the primitives:
+A gated product surface over the primitives, with one signer abstraction:
 
-- Pay — a bounded swap. The user picks which curated tokens enter their signed set;
-  a Venice-powered scout picks the best one for the goal and a trader executes the
-  swap, all inside the signed allowlist.
-- Yield — a bounded lending deposit. The user picks which curated Aave-V3 venues
-  enter their signed set; a yield scout picks the best USDC supply APY and a
-  depositor supplies into it, with the interest-bearing position credited to the
-  user.
-- Subscriptions — recurring, per-period charges bound by the subscription enforcer.
-  Each charge delivers a live intelligence report, and a deliverable can hand off
-  directly into a matching Pay or Yield action, closing the intel-to-action loop.
-- Portfolio — every active permission with its decoded on-chain caveat, and a
-  gasless kill switch (revoke without holding ETH).
+- **Pay** — hire and pay an agent team (coordinator discovers specialists on the
+  ERC-8004 Identity Registry, pays each via erc7710 redelegation, all in one atomic
+  1Shot batch), or run a bounded swap into a user-selected token set.
+- **Yield** — deposit USDC into the best APY across a user-selected set of Aave-V3
+  venues (Aave, Seamless, ZeroLend on Base), via a gasless `[approve, supply]` batch.
+- **Subscriptions** — fixed-price, one-merchant, once-per-period charges; each charge
+  delivers a live Venice report, and a deliverable hands off into a matching Pay or
+  Yield action (intel → action).
+- **Portfolio** — every active permission with its decoded on-chain caveat and a
+  gasless kill switch.
 
-Sign-in is via passkey (WebAuthn-PRF embedded wallet) or Privy. Both expose one
-signer surface, so every feature works identically regardless of how the user
-signed in.
+Signer support per flow: the **MetaMask extension** drives Pay (and Subscriptions)
+via ERC-7715 Advanced Permissions; **Privy embedded** and **passkey** wallets drive
+every flow (including swap/yield, whose allowlist enforcers are custom caveats on the
+user-signed root). All are MetaMask Smart Accounts via the 7702 DeleGator.
 
 ## Deployed addresses (Base Sepolia)
 
@@ -102,6 +193,7 @@ signed in.
 | ApproveBoundsEnforcer | `0xA86e7b31fA6a77186F09F36C06b2E7c5D3132795` |
 | YieldAllowlistEnforcer | `0xDf4179e3b5A5B5D8Bfbd3fAe076D127bd96F3fa4` |
 | DelegationManager (MetaMask v1.3.0) | `0xdb9B1e94B5b69Df7e401DDbedE43491141047dB3` |
+| EIP7702StatelessDeleGatorImpl | `0x63c0c19a282a1B52b07dD5a65b58948A07DAE32B` |
 | USDC | `0x036CbD53842c5426634e7929541eC2318f3dCF7e` |
 
 ## Deployed addresses (Base mainnet)
@@ -117,22 +209,23 @@ The full enforcer family is deployed and verified on Base mainnet.
 | ApproveBoundsEnforcer | `0x388084511a9a1891021ea6989b8A756D1561e0aA` |
 | YieldAllowlistEnforcer | `0xcBc69E09A6dfeCd503881DcAd595166f81836029` |
 | DelegationManager (MetaMask v1.3.0) | `0xdb9B1e94B5b69Df7e401DDbedE43491141047dB3` |
+| EIP7702StatelessDeleGatorImpl | `0x63c0c19a282a1B52b07dD5a65b58948A07DAE32B` |
 | USDC | `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` |
 
-The marketplace agents are also registered on the Base mainnet ERC-8004 Identity
-Registry (`0x8004A169FB4a3325136EB29fA0ceB6D2e539a432`), agent IDs 55116–55127.
+The marketplace agents are registered on the Base mainnet ERC-8004 Identity Registry
+(`0x8004A169FB4a3325136EB29fA0ceB6D2e539a432`), agent IDs 55116–55127. Aave-V3 yield
+venues: Aave (`0xA238Dd80C259a72e81d7e4664a9801593F98d1c5`), Seamless
+(`0x8F44Fd754285aa6A2b8B9B97739B79746e0475a7`), ZeroLend
+(`0x766f21277087E18967c1b10bF602d8Fe56d0c671`).
 
 ## Build and test
 
-Contracts (Foundry):
+Contracts (Foundry, solc 0.8.23, via-IR):
 
 ```
 forge build
-forge test
+forge test          # unit suites run offline; *.fork.t.sol need an RPC fork URL
 ```
-
-Fork tests require an RPC fork URL and are skipped without one. All unit tests run
-offline.
 
 Dapp (Next.js):
 
@@ -143,40 +236,47 @@ npm run build
 npm run dev
 ```
 
-## Deploying an enforcer
+## Deploying enforcers
 
-Each enforcer has a deploy script under `script/`. To deploy and verify on Base
-Sepolia:
+Per-enforcer scripts under `script/`, or the whole family in one broadcast with
+`script/DeployMainnet.s.sol`:
 
 ```
 source .env
-forge script script/DeployYieldAllowlist.s.sol:DeployYieldAllowlist \
-  --rpc-url base_sepolia --broadcast --verify -vvv
+forge script script/DeployMainnet.s.sol:DeployMainnet \
+  --rpc-url base --broadcast --slow --verify -vvv
 ```
 
-For Base mainnet, use `--rpc-url base`. After deploying, set the corresponding
-`NEXT_PUBLIC_*` address in the dapp environment (see `conduit-dapp/lib/config.ts`
-for the full list of overridable addresses per chain).
-
-Required environment variables: `DEPLOYER_PRIVATE_KEY`, `BASE_SEPOLIA_RPC_URL` or
-`BASE_RPC_URL`, and `BASESCAN_API_KEY` for verification.
+Use `--slow` — a 7702-delegated deployer hits the relayer's in-flight transaction
+limit otherwise. After deploying, set the corresponding `NEXT_PUBLIC_*` addresses in
+the dapp (see `conduit-dapp/lib/config.ts` for the per-chain list). Required env:
+`DEPLOYER_PRIVATE_KEY`, `BASE_RPC_URL` / `BASE_SEPOLIA_RPC_URL`, `BASESCAN_API_KEY`.
 
 ## Conventions
 
-- Contracts are pinned to MetaMask delegation-framework v1.3.0, erc7579
-  implementation v0.0.2, account-abstraction v0.7.0, Solidity 0.8.23.
-- `redeemDelegations` returns no data in v1.3.0; the chain order is
-  `[leaf, ..., root]` with the root authority set to all-`0xff`.
-- The facilitator selects its relay backend:
-   `oneshot-pl`.
+- Pinned: delegation-framework v1.3.0, erc7579-implementation v0.0.2,
+  account-abstraction v0.7.0, solc 0.8.23.
+- `redeemDelegations` returns no data in v1.3.0; chain order `[leaf, …, root]`;
+  `ROOT_AUTHORITY = bytes32(uint256.max)`.
+- Length-check calldata before field checks in every enforcer (post-audit ordering).
+- The facilitator's relay backend is `oneshot-pl` (1Shot Permissionless Relayer); the
+  relayer URL is derived per chain (`.dev` testnet, `.com` mainnet) unless overridden.
 
 ## Security model
 
-The blast radius of any compromise is bounded by which key leaks and by the caveats
-on the delegation that key can redeem. A leaked task-agent key can only ever do the
-one bounded thing its delegation permits; a leaked coordinator key can only narrow,
-never widen. The root delegation can be revoked at any time — gaslessly — which
-cascades to every task agent derived from it.
+Blast radius is bounded by which key leaks and by the caveats on the delegation that
+key can redeem. A leaked task-agent key can only ever perform the one bounded action
+its leaf permits; a leaked coordinator key can only narrow, never widen, the user's
+root; the root is revocable at any time — gaslessly — cascading to every child. The
+custom-enforcer flows (swap, yield, subscription) keep the safety-critical bound on
+the user-signed root, so even the coordinator cannot widen them.
+
+Honest scope: EIP-3009 (`transferWithAuthorization`) is not ERC-7710 — Conduit
+settles via `redeemDelegations` precisely so the caveat family is enforceable on
+chain. MetaMask's ERC-7715 catalog covers token-spending permissions, so the
+extension drives the budget/subscription flows; custom-enforcer execution (swap,
+yield) is signed by an embedded or passkey wallet over the same MetaMask Smart
+Account.
 
 ## License
 
