@@ -126,7 +126,7 @@ export const SERVICES: Service[] = [
   // one so the cadence + the on-chain "already-charged-this-period" guard show
   // fast. subscriptionId is deterministic from the id.
   svc("pulse-feed", "Market Pulse", "subscription", "feed", "venice:chat", "0.01",
-    "A live market pulse — the single most important move right now (demo cadence: 60s).",
+    "A live market pulse — the single most important move right now.",
     subTerms("pulse-feed", 60)),
   svc("daily-digest", "AI Alpha Daily", "subscription", "feed", "venice:chat+search", "0.10",
     "Your daily AI + crypto alpha — three concrete, web-researched takeaways, every day.",
