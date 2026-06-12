@@ -77,7 +77,7 @@ export const AGENTS: Agent[] = [
 
   // SUBSCRIPTION (recurring, X402SubscriptionEnforcer) — varied periods.
   a("pulse-feed", "Market Pulse", "feed", "venice:chat", "0.01", "subscription",
-    "A live market pulse — the single most important move right now (demo cadence: 60s).", sub("pulse-feed", 60)),
+    "A live market pulse — the single most important move right now.", sub("pulse-feed", 60)),
   a("daily-digest", "AI Alpha Daily", "feed", "venice:chat+search", "0.10", "subscription",
     "Your daily AI + crypto alpha — three concrete takeaways, every day.", sub("daily-digest", 86_400)),
   a("weekly-trends", "DeFi Yield Weekly", "feed", "venice:chat+search", "0.50", "subscription",

@@ -71,6 +71,16 @@ interface ChargeCard {
 
 const now = () => new Date().toLocaleTimeString("en-US", { hour12: false });
 
+/** Per-product visual identity for the subscription cards — a gradient avatar +
+ *  glyph so each feed reads as a distinct "product", plus what it delivers. */
+const PRODUCT_VISUAL: Record<string, { glyph: string; grad: string; ring: string }> = {
+  "pulse-feed":    { glyph: "📈", grad: "from-conduit-cyan/30 to-conduit-cyan/[0.04]",   ring: "ring-conduit-cyan/30" },
+  "daily-digest":  { glyph: "🧠", grad: "from-conduit-violet/30 to-conduit-violet/[0.04]", ring: "ring-conduit-violet/30" },
+  "weekly-trends": { glyph: "🌾", grad: "from-emerald-400/30 to-emerald-400/[0.04]",      ring: "ring-emerald-400/30" },
+};
+const productVisual = (id: string) =>
+  PRODUCT_VISUAL[id] ?? { glyph: "✦", grad: "from-conduit-border/40 to-transparent", ring: "ring-conduit-border" };
+
 export default function SubscriptionPage() {
   // Privy (auth) + wagmi (wallet client) — same wiring as /demo.
   const { ready, authenticated, logout } = usePrivy();
@@ -575,26 +585,39 @@ export default function SubscriptionPage() {
                 <p className="text-[11px] uppercase tracking-wide text-conduit-muted/70">
                   Choose a service
                 </p>
-                <div className="mt-2 grid gap-2 sm:grid-cols-3">
+                <div className="mt-2 grid gap-2">
                   {subServices.map((s) => {
                     const sel = s.id === service?.id;
                     const agent = subAgents.find((a) => a.id === s.id);
+                    const vis = productVisual(s.id);
                     return (
                       <button
                         key={s.id}
                         onClick={() => selectService(s)}
                         disabled={busy || subscribed}
-                        className={`rounded-lg border p-2.5 text-left transition disabled:cursor-not-allowed ${
+                        className={`flex w-full gap-3 rounded-xl border p-3 text-left transition disabled:cursor-not-allowed ${
                           sel ? "border-conduit-cyan/60 bg-conduit-cyan/10" : "border-conduit-border/60 hover:border-conduit-cyan/40"
                         } ${subscribed && !sel ? "opacity-40" : ""}`}
                       >
-                        <p className="text-[12px] font-semibold text-white">{sel ? "● " : ""}{s.label}</p>
-                        <p className="mono mt-0.5 text-[10px] text-conduit-muted">
-                          {s.priceUsdc} USDC · every {fmtPeriod(agent?.subscription?.periodSeconds)}
-                        </p>
-                        {agent?.agentId && (
-                          <p className="mono mt-0.5 text-[9.5px] text-conduit-cyan/80">on-chain · agent #{agent.agentId}</p>
-                        )}
+                        {/* avatar */}
+                        <span className={`grid h-11 w-11 shrink-0 place-items-center rounded-lg bg-gradient-to-br text-xl ring-1 ${vis.grad} ${vis.ring}`}>
+                          {vis.glyph}
+                        </span>
+                        {/* details */}
+                        <span className="min-w-0 flex-1">
+                          <span className="flex items-center justify-between gap-2">
+                            <span className="truncate text-[13px] font-semibold text-white">{sel ? "● " : ""}{s.label}</span>
+                            <span className="mono shrink-0 text-[11px] text-white">{s.priceUsdc} USDC</span>
+                          </span>
+                          <span className="mt-0.5 block text-[11.5px] leading-snug text-conduit-muted line-clamp-2">{s.description}</span>
+                          <span className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                            <span className="mono rounded bg-conduit-violet/15 px-1.5 py-0.5 text-[9.5px] text-conduit-violet">✦ {agent?.veniceEndpoint ?? "venice"}</span>
+                            <span className="mono rounded border border-conduit-border px-1.5 py-0.5 text-[9.5px] text-conduit-muted">once {fmtCadence(agent?.subscription?.periodSeconds)}</span>
+                            {agent?.agentId && (
+                              <span className="mono rounded border border-conduit-cyan/30 px-1.5 py-0.5 text-[9.5px] text-conduit-cyan/80">agent #{agent.agentId}</span>
+                            )}
+                          </span>
+                        </span>
                       </button>
                     );
                   })}
@@ -921,7 +944,9 @@ function SubscriptionHero({ subscribed }: { subscribed: boolean }) {
           ))}
         </div>
       </div>
-      <div className="grid gap-0 border-t border-conduit-border/60 md:grid-cols-2">
+      {/* Card-on-file vs Conduit comparison — desktop only; on mobile it's a long
+          scroll between the user and the services, so we hide it there. */}
+      <div className="hidden border-t border-conduit-border/60 md:grid md:grid-cols-2">
         {/* Traditional */}
         <div className="border-b border-conduit-border/60 p-6 md:border-b-0 md:border-r">
           <p className="mono text-[11px] uppercase tracking-wide text-conduit-muted/70">
@@ -1163,17 +1188,6 @@ function Arrow() {
 function shorten(addr: string | null): string {
   if (!addr) return "—";
   return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
-}
-
-/** Human-friendly billing period: 60→"minute", 3600→"hour", 86400→"day",
- *  604800→"week", 2592000→"month"; odd values fall back to a compact duration. */
-function fmtPeriod(s?: number): string {
-  if (!s) return "—";
-  const named: Record<number, string> = { 60: "minute", 3600: "hour", 86_400: "day", 604_800: "week", 2_592_000: "month" };
-  if (named[s]) return named[s];
-  if (s < 3600) return `${Math.round(s / 60)}m`;
-  if (s < 86_400) return `${Math.round(s / 3600)}h`;
-  return `${Math.round(s / 86_400)}d`;
 }
 
 /** A clean cadence phrase: 60→"a minute", 86400→"a day", 604800→"a week";
