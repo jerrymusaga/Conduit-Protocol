@@ -107,37 +107,49 @@ function bigintReviver(_k: string, v: unknown) {
   return v;
 }
 
-export function saveSubSession(s: PersistedSubSession): void {
+function readAll(): PersistedSubSession[] {
   try {
-    localStorage.setItem(SUB_SESSION_KEY, JSON.stringify(s, bigintReplacer));
+    const raw = localStorage.getItem(SUB_SESSION_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw, bigintReviver);
+    return Array.isArray(parsed) ? (parsed as PersistedSubSession[]) : [parsed as PersistedSubSession];
+  } catch {
+    return [];
+  }
+}
+
+function writeAll(list: PersistedSubSession[]): void {
+  try {
+    localStorage.setItem(SUB_SESSION_KEY, JSON.stringify(list, bigintReplacer));
   } catch {
     /* storage unavailable — non-fatal */
   }
 }
 
-export function loadSubSession(user: Hex): PersistedSubSession | null {
-  try {
-    const raw = localStorage.getItem(SUB_SESSION_KEY);
-    if (!raw) return null;
-    const s = JSON.parse(raw, bigintReviver) as PersistedSubSession;
-    if (s.user?.toLowerCase() !== user.toLowerCase()) return null;
-    // Drop an expired subscription so we don't restore a dead one.
-    if (s.grant?.expiry && s.grant.expiry > 0 && Math.floor(Date.now() / 1000) >= s.grant.expiry) {
-      clearSubSession();
-      return null;
-    }
-    return s;
-  } catch {
-    return null;
-  }
+/** Add/replace a subscription session (keyed by its root delegation hash), so
+ *  several concurrent subscriptions can each be restored + charged later. */
+export function saveSubSession(s: PersistedSubSession): void {
+  const list = readAll().filter((x) => x.grant?.delegationHash !== s.grant?.delegationHash);
+  list.push(s);
+  writeAll(list);
 }
 
-export function clearSubSession(): void {
-  try {
-    localStorage.removeItem(SUB_SESSION_KEY);
-  } catch {
-    /* non-fatal */
-  }
+/** Every active (non-expired) subscription session for this user, newest last. */
+export function loadSubSessions(user: Hex): PersistedSubSession[] {
+  const now = Math.floor(Date.now() / 1000);
+  const kept = readAll().filter(
+    (s) =>
+      s.user?.toLowerCase() === user.toLowerCase() &&
+      !(s.grant?.expiry && s.grant.expiry > 0 && now >= s.grant.expiry)
+  );
+  // Prune expired/foreign entries we just dropped.
+  if (kept.length !== readAll().length) writeAll(kept);
+  return kept;
+}
+
+/** Remove one subscription session (on cancel) by its root delegation hash. */
+export function removeSubSession(delegationHash: Hex): void {
+  writeAll(readAll().filter((s) => s.grant?.delegationHash !== delegationHash));
 }
 
 /**

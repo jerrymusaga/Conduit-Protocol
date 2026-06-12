@@ -32,8 +32,9 @@ import {
   readSubscriptionState,
   termsFromRequirements,
   saveSubSession,
-  loadSubSession,
-  clearSubSession,
+  loadSubSessions,
+  removeSubSession,
+  type PersistedSubSession,
   type SubscriptionGrant,
   type SubscriptionState,
 } from "@/lib/subscription";
@@ -130,6 +131,11 @@ export default function SubscriptionPage() {
   // Grant / charge state.
   const coordinatorRef = useRef<Coordinator | null>(null);
   const [grant, setGrant] = useState<SubscriptionGrant | null>(null);
+  // Every active subscription this wallet holds (restored from localStorage), so
+  // several can run concurrently and each can be switched to + charged.
+  const [sessions, setSessions] = useState<PersistedSubSession[]>([]);
+  // "new subscription" mode: show the service picker even while others are active.
+  const [picking, setPicking] = useState(false);
   const [authorization, setAuthorization] = useState<Eip7702Authorization | null>(null);
   const [subState, setSubState] = useState<SubscriptionState | null>(null);
   const [charges, setCharges] = useState<ChargeCard[]>([]);
@@ -205,15 +211,12 @@ export default function SubscriptionPage() {
   // /portfolio's "open subscriptions") lands on the LIVE subscription you can
   // charge — not a fresh "choose a service" screen. Fail-safe: any error falls
   // back to the normal flow.
-  const restoredRef = useRef(false);
-  useEffect(() => {
-    if (restoredRef.current || grant || cancelled || !address || subServices.length === 0) return;
-    const sess = loadSubSession(address);
-    if (!sess) return;
-    const svc = subServices.find((s) => s.id === sess.serviceId);
-    if (!svc) return;
-    restoredRef.current = true;
-    (async () => {
+  // Load one restored subscription as the CURRENT one (so it can be charged):
+  // re-fetch its 402 + rebuild its ephemeral coordinator from the stored key.
+  const loadSession = useCallback(
+    async (sess: PersistedSubSession): Promise<boolean> => {
+      const svc = subServices.find((s) => s.id === sess.serviceId);
+      if (!svc) return false;
       try {
         const requirements = await fetch402(svc.resource);
         const coord = privateKeyToAccount(sess.coordinatorKey);
@@ -221,12 +224,30 @@ export default function SubscriptionPage() {
         setService(svc);
         setReq(requirements);
         setGrant(sess.grant);
-        append(`Restored your active subscription · ${svc.label} — ready to charge`);
+        setCancelled(false);
+        setPicking(false);
+        return true;
       } catch {
-        restoredRef.current = false; // restore failed → normal fresh flow
+        return false;
       }
-    })();
-  }, [address, subServices, grant, cancelled, append]);
+    },
+    [subServices]
+  );
+
+  // On mount, restore EVERY active subscription this wallet holds and auto-open the
+  // most recent so you can charge it. Fail-safe: errors fall back to the fresh flow.
+  const restoredRef = useRef(false);
+  useEffect(() => {
+    if (restoredRef.current || !address || subServices.length === 0) return;
+    restoredRef.current = true;
+    const all = loadSubSessions(address);
+    setSessions(all);
+    if (!grant && !cancelled && all.length > 0) {
+      void loadSession(all[all.length - 1]).then((ok) => {
+        if (ok) append(`Restored ${all.length} active subscription${all.length > 1 ? "s" : ""} — ready to charge`);
+      });
+    }
+  }, [address, subServices, grant, cancelled, loadSession, append]);
 
   // 1s tick: drives the countdown + the period-rollover unlock.
   useEffect(() => {
@@ -330,12 +351,20 @@ export default function SubscriptionPage() {
       log: append,
     });
     if (r.ok) {
-      void markGrantRevoked(grant.delegationHash, address); // reflect in /portfolio
-      clearSubSession(); // the subscription is dead — don't restore it
-      setCancelled(true);
-      setGrant(null);
+      const cancelledHash = grant.delegationHash;
+      void markGrantRevoked(cancelledHash, address); // reflect in /portfolio
+      removeSubSession(cancelledHash); // this one is dead — don't restore it
+      const rest = sessions.filter((s) => s.grant.delegationHash !== cancelledHash);
+      setSessions(rest);
       setSubState(null);
       coordinatorRef.current = null;
+      // Switch to another active subscription if one remains; else clear to picker.
+      if (rest.length > 0) {
+        void loadSession(rest[rest.length - 1]);
+      } else {
+        setCancelled(true);
+        setGrant(null);
+      }
       append(`Subscription cancelled ${r.viaGasless ? "gaslessly" : "on-chain"} ✓ · every future charge against this grant now reverts on-chain`);
       showToast("success", "Subscription cancelled ✓");
     } else {
@@ -345,14 +374,18 @@ export default function SubscriptionPage() {
     setBusy(false);
   };
 
-  // Pick a different subscription to opt into (only before subscribing).
+  // Pick a service to subscribe to — allowed even while other subscriptions are
+  // active (you no longer have to cancel to switch). Enters "new subscription" mode.
   const selectService = async (svc: CatalogService) => {
-    if (busy || subscribed || svc.id === service?.id) return;
+    if (busy || (picking && svc.id === service?.id)) return;
     try {
       const requirements = await fetch402(svc.resource);
       setService(svc);
       setReq(requirements);
       setTierIdx(0); // reset to the seller default for the newly selected service
+      setGrant(null); // show the subscribe form for the new one (actives stay in the switcher)
+      setPicking(true);
+      setCancelled(false);
       append(`Selected ${svc.label} · charged once ${fmtCadence(requirements.subscription?.periodSeconds)}`);
     } catch (e) {
       append(`Could not load ${svc.label} · ${errMsg(e)}`);
@@ -418,9 +451,15 @@ export default function SubscriptionPage() {
       });
       setGrant(g);
       setCancelled(false);
+      setPicking(false);
       // Persist the session (grant + coordinator key) so the active subscription
-      // survives navigation/reload and can still be charged from /portfolio.
-      if (service) saveSubSession({ user: address, serviceId: service.id, coordinatorKey: coordinator.privateKey, grant: g });
+      // survives navigation/reload, can still be charged from /portfolio, and runs
+      // CONCURRENTLY with other active subscriptions.
+      if (service) {
+        const sess = { user: address, serviceId: service.id, coordinatorKey: coordinator.privateKey, grant: g };
+        saveSubSession(sess);
+        setSessions((prev) => [...prev.filter((s) => s.grant.delegationHash !== g.delegationHash), sess]);
+      }
       append("Subscription approved · your signature binds merchant + amount + cadence on-chain");
       showToast("success", "Subscribed ✓ — bound to one merchant, amount + cadence");
       // Register in the per-wallet grants index so /portfolio can list it.
@@ -627,25 +666,63 @@ export default function SubscriptionPage() {
               </div>
             )}
 
-            {/* Subscription marketplace — discovered on ERC-8004; pick one. */}
-            {subServices.length > 0 && (
+            {/* Active subscriptions switcher — run several concurrently; tap to
+                switch the one you're charging, or add another. */}
+            {sessions.length > 0 && (
+              <div className="mt-4">
+                <p className="text-[11px] uppercase tracking-wide text-conduit-muted/70">
+                  Your subscriptions <span className="text-conduit-muted/50">· {sessions.length} active</span>
+                </p>
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {sessions.map((sess) => {
+                    const svc = subServices.find((s) => s.id === sess.serviceId);
+                    const on = !picking && grant?.delegationHash === sess.grant.delegationHash;
+                    return (
+                      <button
+                        key={sess.grant.delegationHash}
+                        onClick={() => void loadSession(sess)}
+                        disabled={busy}
+                        className={`rounded-lg border px-2.5 py-1.5 text-[12px] transition disabled:opacity-40 ${
+                          on ? "border-conduit-cyan bg-conduit-cyan/10 text-white" : "border-conduit-border text-conduit-muted hover:border-conduit-cyan/40"
+                        }`}
+                      >
+                        {svc?.label ?? sess.serviceId}
+                      </button>
+                    );
+                  })}
+                  <button
+                    onClick={() => { setPicking(true); setGrant(null); setCancelled(false); }}
+                    disabled={busy}
+                    className={`rounded-lg border px-2.5 py-1.5 text-[12px] transition disabled:opacity-40 ${
+                      picking ? "border-conduit-cyan bg-conduit-cyan/10 text-white" : "border-dashed border-conduit-border text-conduit-muted hover:border-conduit-cyan/40"
+                    }`}
+                  >
+                    + Subscribe to another
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Subscription marketplace — discovered on ERC-8004; pick one. Shown
+                when adding a new subscription or when none are active yet. */}
+            {subServices.length > 0 && (picking || sessions.length === 0) && (
               <div className="mt-4">
                 <p className="text-[11px] uppercase tracking-wide text-conduit-muted/70">
                   Choose a service
                 </p>
                 <div className="mt-2 grid gap-2">
                   {subServices.map((s) => {
-                    const sel = s.id === service?.id;
+                    const sel = s.id === service?.id && picking;
                     const agent = subAgents.find((a) => a.id === s.id);
                     const vis = productVisual(s.id);
                     return (
                       <button
                         key={s.id}
                         onClick={() => selectService(s)}
-                        disabled={busy || subscribed}
+                        disabled={busy}
                         className={`flex w-full gap-3 rounded-xl border p-3 text-left transition disabled:cursor-not-allowed ${
                           sel ? "border-conduit-cyan/60 bg-conduit-cyan/10" : "border-conduit-border/60 hover:border-conduit-cyan/40"
-                        } ${subscribed && !sel ? "opacity-40" : ""}`}
+                        }`}
                       >
                         {/* avatar — Venice-generated product cover */}
                         {vis.img ? (
@@ -680,7 +757,6 @@ export default function SubscriptionPage() {
                     );
                   })}
                 </div>
-                {subscribed && <p className="mt-1.5 text-[10px] text-conduit-muted/60">Cancel to switch subscriptions.</p>}
               </div>
             )}
 
