@@ -378,11 +378,20 @@ export async function veniceYieldScout(goal: string, venues: VenueEntry[]): Prom
 // --- prompt understanding ------------------------------------------------------
 
 /** Does the prompt ask the agent to DEPOSIT funds into a lending venue (supply
- *  for yield), as opposed to a token swap? Deposit-specific verbs only — generic
- *  "yield"/"stake" stays with the swap path (e.g. swap into staked-ETH), so this
- *  never clobbers the existing trade flow. Routing checks this BEFORE trade. */
+ *  for yield), as opposed to a token swap? Matches deposit verbs + lending/venue
+ *  language (incl. protocol names + "venue/APY"). Generic "yield"/"stake" alone
+ *  still stays with the swap path (e.g. "swap into staked-ETH"), so this never
+ *  clobbers the trade flow — but "yield venue(s)" is unambiguously a deposit.
+ *  Routing checks this BEFORE trade. */
 export function isYieldIntent(prompt: string): boolean {
-  return /\b(lend|lending|supply|deposit|aave|moonwell|seamless|morpho|park\s+(?:my\s+)?(?:usdc|funds|cash|stable))\b/i.test(prompt);
+  const p = prompt.toLowerCase();
+  // Deposit-specific / lending-venue signals.
+  if (/\b(lend|lending|supply|deposit|venue|venues|apy|apr|aave|moonwell|seamless|zerolend|morpho|park\s+(?:my\s+)?(?:usdc|funds|cash|stable))\b/.test(p)) {
+    return true;
+  }
+  // "yield" counts as a deposit signal only with lending/venue context (not a
+  // swap into a yield-bearing token).
+  return /\byield\b/.test(p) && /\b(venue|venues|pool|pools|lend|lending|deposit|supply|protocol|apy|apr)\b/.test(p);
 }
 
 /** Parse a yield prompt → deposit amount (USDC). Defaults to 20 USDC. */
