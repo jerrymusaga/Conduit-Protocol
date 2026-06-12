@@ -90,6 +90,12 @@ const BASE_VENUES: YieldVenue[] = [
     pool: "0x8F44Fd754285aa6A2b8B9B97739B79746e0475a7",
     note: "Seamless Protocol — Aave-V3 fork on Base, often a higher USDC supply APY",
   },
+  {
+    name: "ZeroLend",
+    protocol: "ZeroLend (Aave V3 fork)",
+    pool: "0x766f21277087E18967c1b10bF602d8Fe56d0c671",
+    note: "ZeroLend — Aave-V3 fork on Base, typically the highest USDC supply APY of the three",
+  },
 ];
 const YIELD_VENUES: Record<number, YieldVenue[]> = { 8453: BASE_VENUES, 84532: BASE_VENUES };
 
@@ -326,10 +332,12 @@ export interface ScoutedVenue {
 /** Deterministic venue pick: prefer a fork that historically out-yields the base
  *  market, else the deepest pool. Always constrained to the signed set. */
 export function scoutVenue(goal: string, venues: VenueEntry[]): { entry: VenueEntry; rationale: string } {
-  const wantsSafe = /(safe|secure|battle|blue.?chip|aave)/i.test(goal);
+  const wantsSafe = /(safe|secure|battle|blue.?chip)/i.test(goal) || /\baave\b/i.test(goal);
   const pick =
-    (wantsSafe && venues.find((v) => /aave/i.test(v.protocol))) ||
-    // default: the higher-APY fork if present, else the first
+    // Safety-leaning prompt → the deepest, most battle-tested pool (Aave proper).
+    (wantsSafe && venues.find((v) => /^aave/i.test(v.protocol))) ||
+    // Default (yield-leaning): prefer the highest-APY fork, ZeroLend first.
+    venues.find((v) => /zerolend/i.test(v.protocol)) ||
     venues.find((v) => /fork|seamless|moonwell|morpho/i.test(v.protocol)) ||
     venues[0];
   const rationale = wantsSafe
