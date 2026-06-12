@@ -19,6 +19,7 @@ import {
   type Coordinator,
   type GrantResult,
 } from "@/lib/grant";
+import { grantBudgetVia7715 } from "@/lib/erc7715";
 import {
   runCampaign,
   runCommissionAtomic,
@@ -34,7 +35,7 @@ import { buildOneshotPayment, type Eip7702Authorization } from "@/lib/payment";
 import { useActiveWallet } from "@/lib/activeWallet";
 import { useConduitEmbedded } from "@/lib/conduitEmbedded";
 import { buildGaslessRevoke, settleGaslessRevoke } from "@/lib/revoke";
-import { keccak256, parseUnits, formatUnits, type Hex } from "viem";
+import { keccak256, parseUnits, formatUnits, type Hex, type EIP1193Provider } from "viem";
 import { Erc7710Inspector, type InspectorBinding } from "@/components/Erc7710Inspector";
 import { Toast, type ToastState } from "@/components/Toast";
 import { useFacilitatorEvents } from "@/lib/useFacilitatorEvents";
@@ -794,12 +795,22 @@ export default function DemoPage() {
       return null;
     }
     const embeddedWallet = getEmbeddedConnectedWallet(wallets);
-    // An external EOA that isn't a smart account can't be 7702-upgraded from the
-    // dapp (and we can't bundle an auth for it) — so the redeem would fail.
-    // Guide the user instead of letting settle revert cryptically. (The passkey
-    // EOA IS designate-able, so it's exempt.)
-    if (hasCode === false && !embeddedWallet && !isPasskey) {
-      append("This MetaMask account isn't a Smart Account yet — enable MetaMask Smart Account in your wallet (Settings → enable smart account), or sign in with email, then Grant.");
+    // External MetaMask (the active wallet is NOT the Privy embedded one and not a
+    // passkey). MetaMask blocks dapp-signed raw delegations for its accounts, so we
+    // grant via its native ERC-7715 Advanced-Permissions flow instead — which also
+    // performs the 7702 upgrade. No dapp-side block needed for these.
+    const activeConnected = wallets.find(
+      (w) => w.address?.toLowerCase() === address.toLowerCase()
+    );
+    const isExternalMM =
+      !isPasskey &&
+      !!activeConnected &&
+      activeConnected.address.toLowerCase() !== embeddedWallet?.address?.toLowerCase();
+    // A non-smart-account EOA can't be 7702-upgraded from the dapp via the MANUAL
+    // path — but external MetaMask is handled by ERC-7715 (which upgrades it), so
+    // only block the manual case (no embedded, no passkey, not external MetaMask).
+    if (hasCode === false && !embeddedWallet && !isPasskey && !isExternalMM) {
+      append("This wallet isn't a Smart Account yet — sign in with email or a passkey, then Grant.");
       return null;
     }
     setBusy(true);
@@ -840,16 +851,35 @@ export default function DemoPage() {
         Math.floor(new Date(expiryAt).getTime() / 1000) - Math.floor(Date.now() / 1000)
       );
       append(`Requesting permission: up to ${amountInput} USDC, expires in ${fmtCountdown(expirySeconds)}…`);
-      const result = await grantBudget({
-        walletClient,
-        userAddress: address,
-        coordinator,
-        amountUsdc: amountInput,
-        // One budget for the grant's life: the spend window == the expiry, so
-        // there's no mid-grant reset (no confusing "per hour/day/week").
-        periodDuration: expirySeconds,
-        expirySeconds,
-      });
+      let result: GrantResult;
+      if (isExternalMM && activeConnected) {
+        // MetaMask Advanced Permissions (ERC-7715): MetaMask signs the bounded
+        // budget + upgrades the account to a Smart Account natively. erc20-token-
+        // periodic == our ERC20PeriodTransferEnforcer budget; the coordinator adds
+        // the X402Receipt caveat on its leaf, so the settle path is unchanged.
+        append("Requesting MetaMask Advanced Permissions (ERC-7715)… approve in MetaMask");
+        const provider = (await activeConnected.getEthereumProvider()) as unknown as EIP1193Provider;
+        result = await grantBudgetVia7715({
+          provider,
+          userAddress: address,
+          coordinator,
+          amountUsdc: amountInput,
+          periodDuration: expirySeconds,
+          expirySeconds,
+        });
+        append("MetaMask granted the permission ✓ (Smart Account via 7702)");
+      } else {
+        result = await grantBudget({
+          walletClient,
+          userAddress: address,
+          coordinator,
+          amountUsdc: amountInput,
+          // One budget for the grant's life: the spend window == the expiry, so
+          // there's no mid-grant reset (no confusing "per hour/day/week").
+          periodDuration: expirySeconds,
+          expirySeconds,
+        });
+      }
       setGrantResult(result);
       setAuthorization(signedAuth);
       setGranted(true);
