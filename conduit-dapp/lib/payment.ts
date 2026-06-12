@@ -59,9 +59,12 @@ export type Delegation = {
   signature: Hex;
 };
 
-/** Built-in IdEnforcer (one-shot) per chain — from delegation-deployments v1.3.0. */
+/** Built-in IdEnforcer (one-shot) per chain — from delegation-deployments v1.3.0.
+ *  Same CREATE2 address on Base Sepolia + Base mainnet (the framework is deployed
+ *  deterministically), so both chains share it. */
 const ID_ENFORCER: Record<number, Hex> = {
   84532: "0xC8B5D93463c893401094cc70e66A206fb5987997", // Base Sepolia
+  8453: "0xC8B5D93463c893401094cc70e66A206fb5987997", // Base mainnet
 };
 
 function idEnforcer(chainId: number): Hex {
