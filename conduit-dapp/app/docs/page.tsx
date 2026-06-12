@@ -269,6 +269,28 @@ const caveats = [
               yield report into a <Mono>YieldAllowlist</Mono> deposit. The report tells you
               what to do; the enforcer guarantees the agent can only do <i>that</i>.
             </Endpoint>
+
+            <Callout>
+              <b className="text-white">Gas, in USDC.</b> A subscription charges itself on a
+              schedule, unattended — so each future charge has to pay its own gas without you
+              there to approve it, and without you holding ETH. You sign one extra bounded root
+              at subscribe time: a small <b className="text-white">rolling gas allowance</b>{" "}
+              whose period matches the billing period, that each charge&rsquo;s 1Shot fee is
+              reimbursed from in USDC. It&rsquo;s an <i>allowance</i>, not a deposit — nothing is
+              escrowed.
+              <span className="mt-2 block">
+                <b className="text-white">Edge cases:</b>{" "}
+                <Mono>too much</Mono> — harmless; it&rsquo;s a cap, unused allowance is never
+                spent and resets each period.{" "}
+                <Mono>too little</Mono> — the dapp auto-sizes the allowance to at least the live
+                gas estimate, so a normal charge can&rsquo;t under-fund; if gas later spikes past
+                the cap, that period&rsquo;s charge simply reverts on-chain (no funds move, no
+                deliverable) and retries next period.{" "}
+                <Mono>exhausted mid-way</Mono> — can&rsquo;t deplete permanently: the allowance
+                refreshes every billing period, so it self-replenishes. A charge either fully
+                settles within budget or fully reverts — never a partial spend.
+              </span>
+            </Callout>
           </Section>
 
           {/* ENFORCERS */}
