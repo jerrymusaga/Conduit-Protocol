@@ -13,12 +13,13 @@ export function ConduitPaySignIn() {
   const { setProvider, passkeyWallet } = useActiveWallet();
   const { login } = useLogin();
   // A restored Privy session can leave you `authenticated` but with no wallet bound
-  // to wagmi (so the gate sticks here). In that case login() no-ops ("already logged
-  // in") — connect/create a wallet instead, and always offer a clean sign-out.
-  const { authenticated, connectOrCreateWallet, logout } = usePrivy();
+  // to wagmi (so the gate sticks here). login() no-ops then ("already logged in") and
+  // connectOrCreateWallet() rejects ("must be unauthenticated") — the right call for
+  // an authenticated session is connectWallet(); always offer a clean sign-out too.
+  const { authenticated, connectWallet, logout } = usePrivy();
   const startPrivy = () => {
     setProvider("privy");
-    if (authenticated) connectOrCreateWallet();
+    if (authenticated) connectWallet();
     else login();
   };
   const [mode, setMode] = useState<"choose" | "passkey">("choose");
