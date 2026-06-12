@@ -111,6 +111,11 @@ export const config = {
     defaults.swapAllowlistEnforcer) as `0x${string}`,
   uniswapRouter: (process.env.NEXT_PUBLIC_UNISWAP_ROUTER ?? defaults.uniswapRouter) as `0x${string}`,
   weth: (process.env.NEXT_PUBLIC_WETH ?? defaults.weth) as `0x${string}`,
+  // MetaMask framework enforcers (same CREATE2 address on Base mainnet + Sepolia,
+  // v1.3.0). Used to bound the GASLESS revoke: the relayer may only call
+  // DelegationManager.disableDelegation from the user's account, nothing else.
+  allowedTargetsEnforcer: "0x7F20f61b1f09b08D970938F6fa563634d65c4EeB" as `0x${string}`,
+  allowedMethodsEnforcer: "0x2c21fD0Cb9DC8445CB3fb0DC5E7Bb0Aca01842B5" as `0x${string}`,
   // Hard fallback so a bad/missing chainId can never produce an "undefined/tx" link.
   explorerUrl: defaults.explorerUrl ?? "https://sepolia.basescan.org",
   // Privy: app id is required (from dashboard.privy.io). Client ID optional.
