@@ -306,7 +306,7 @@ export default function SubscriptionPage() {
       const requirements = await fetch402(svc.resource);
       setService(svc);
       setReq(requirements);
-      append(`Selected ${svc.label} · every ${requirements.subscription?.periodSeconds ?? "?"}s`);
+      append(`Selected ${svc.label} · charged once ${fmtCadence(requirements.subscription?.periodSeconds)}`);
     } catch (e) {
       append(`Could not load ${svc.label} · ${errMsg(e)}`);
     }
@@ -354,7 +354,7 @@ export default function SubscriptionPage() {
         ? undefined
         : Math.max(nowSecs + 60, Math.floor(new Date(subExpiryAt).getTime() / 1000));
       append(
-        `Signing the subscription: ${service.priceUsdc} USDC → ${shorten(terms.recipient)} every ${terms.periodSeconds}s` +
+        `Signing the subscription: ${service.priceUsdc} USDC → ${shorten(terms.recipient)} once ${fmtCadence(terms.periodSeconds)}` +
           (expiry ? `, expires in ${fmtDuration(expiry - nowSecs)}` : ", no expiry") + "…"
       );
       // Size the gas-fee budget root to at least the live dynamic fee cap, so a
@@ -471,7 +471,7 @@ export default function SubscriptionPage() {
 
   // --- render --------------------------------------------------------------
 
-  const periodLabel = req?.subscription ? `${req.subscription.periodSeconds}s` : "—";
+  const periodLabel = req?.subscription ? fmtCadence(req.subscription.periodSeconds) : "—";
   // The most recent Venice deliverable a charge bought (newest-first list).
   const lastDeliverable = charges.find((c) => c.stage === "settled" && c.deliverable?.body)?.deliverable ?? null;
 
@@ -485,7 +485,7 @@ export default function SubscriptionPage() {
           terms: [
             { label: "amount", value: `${service.priceUsdc} USDC (exact)` },
             { label: "merchant", value: shorten(req.payTo) },
-            { label: "cadence", value: `1×/${req.subscription.periodSeconds}s` },
+            { label: "cadence", value: `once ${fmtCadence(req.subscription.periodSeconds)}` },
           ],
         }
       : null;
@@ -610,7 +610,7 @@ export default function SubscriptionPage() {
                   <p className="mt-0.5 text-[12px] text-conduit-muted">{service.description}</p>
                   <div className="mono mt-3 space-y-1 text-[12px]">
                     <Row k="charge" v={`${service.priceUsdc} USDC (exact)`} />
-                    <Row k="cadence" v={`once / ${periodLabel}`} />
+                    <Row k="cadence" v={`once ${periodLabel}`} />
                     <Row k="paid to" v={shorten(req.payTo)} />
                     <Row k="on-chain rule" v={shorten(req.subscription?.enforcer ?? null)} />
                   </div>
@@ -845,6 +845,8 @@ export default function SubscriptionPage() {
                       card={c}
                       priceUsdc={service?.priceUsdc ?? "—"}
                       binding={inspectorBinding}
+                      productName={service?.label}
+                      embedded={embedded}
                     />
                   ))}
                 </>
@@ -998,14 +1000,30 @@ function CountdownRing({ secsLeft, periodSecs, ready }: { secsLeft: number; peri
 
 // --- charge card -------------------------------------------------------------
 
+/** Classify a subscription deliverable → the matching Pay action, so the loop
+ *  closes: yield/DeFi intel hands off to a YIELD deposit; everything else (token /
+ *  market / alpha intel) hands off to a SWAP. Returns the Pay prompt to prefill. */
+function handoffIntent(productName?: string, headline?: string, body?: string): { label: string; intent: string } {
+  const hay = `${productName ?? ""} ${headline ?? ""} ${body ?? ""}`.toLowerCase();
+  const isYield = /\b(yield|defi|lend|lending|deposit|supply|apy|apr|aave|seamless|morpho|moonwell)\b/.test(hay);
+  if (isYield) {
+    return { label: "Deposit into the best yield →", intent: "Deposit 50 USDC into the best yield venue across my approved lending pools" };
+  }
+  return { label: "Act on this in Pay →", intent: "Swap 25 USDC into the best token from my approved set" };
+}
+
 function ChargeCardView({
   card,
   priceUsdc,
   binding,
+  productName,
+  embedded,
 }: {
   card: ChargeCard;
   priceUsdc: string;
   binding: InspectorBinding | null;
+  productName?: string;
+  embedded?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const blocked = card.stage === "blocked" || card.stage === "failed";
@@ -1089,6 +1107,19 @@ function ChargeCardView({
             )}
           </div>
           <div className="mt-1.5 whitespace-pre-line text-[12.5px] leading-relaxed text-conduit-muted">{card.deliverable.body}</div>
+          {/* Close the loop: this period's intel → a one-tap, bounded action in Pay. */}
+          {(() => {
+            const { label, intent } = handoffIntent(productName, card.deliverable?.headline, card.deliverable?.body);
+            const href = `${embedded ? "/app/pay" : "/demo"}?intent=${encodeURIComponent(intent)}`;
+            return (
+              <Link
+                href={href}
+                className="mono mt-2.5 inline-flex items-center gap-1 rounded-md border border-conduit-cyan/40 bg-conduit-cyan/10 px-2.5 py-1 text-[11px] text-conduit-cyan transition-colors hover:bg-conduit-cyan/20"
+              >
+                {label}
+              </Link>
+            );
+          })()}
         </div>
       )}
 
@@ -1134,14 +1165,23 @@ function shorten(addr: string | null): string {
   return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
 }
 
-/** Human-friendly billing period: 60→"60s", 86400→"day", 604800→"week". */
+/** Human-friendly billing period: 60→"minute", 3600→"hour", 86400→"day",
+ *  604800→"week", 2592000→"month"; odd values fall back to a compact duration. */
 function fmtPeriod(s?: number): string {
   if (!s) return "—";
-  if (s < 3600) return `${s}s`;
+  const named: Record<number, string> = { 60: "minute", 3600: "hour", 86_400: "day", 604_800: "week", 2_592_000: "month" };
+  if (named[s]) return named[s];
+  if (s < 3600) return `${Math.round(s / 60)}m`;
   if (s < 86_400) return `${Math.round(s / 3600)}h`;
-  if (s < 604_800) return "day";
-  if (s < 2_592_000) return "week";
-  return "month";
+  return `${Math.round(s / 86_400)}d`;
+}
+
+/** A clean cadence phrase: 60→"a minute", 86400→"a day", 604800→"a week";
+ *  odd values → "every 90s" — so "once {fmtCadence}" always reads naturally. */
+function fmtCadence(s?: number): string {
+  if (!s) return "—";
+  const named: Record<number, string> = { 60: "a minute", 3600: "an hour", 86_400: "a day", 604_800: "a week", 2_592_000: "a month" };
+  return named[s] ?? `every ${fmtDuration(s)}`;
 }
 function toLocalDatetime(ms: number): string {
   const off = new Date(ms).getTimezoneOffset() * 60_000;

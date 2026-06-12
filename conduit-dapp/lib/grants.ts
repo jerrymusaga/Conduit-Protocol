@@ -13,7 +13,7 @@
 import type { Hex } from "viem";
 import { config } from "./config";
 
-export type GrantKind = "budget" | "subscription" | "swap";
+export type GrantKind = "budget" | "subscription" | "swap" | "yield";
 
 export interface GrantRecord {
   id: string;

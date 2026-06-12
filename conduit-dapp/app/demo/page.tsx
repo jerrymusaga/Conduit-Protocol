@@ -52,6 +52,16 @@ import {
   type SwapAllowlistGrant,
   type AllowlistEntry,
 } from "@/lib/trade";
+import {
+  grantYieldAllowlist,
+  buildAllowlistSupplyCommission,
+  veniceYieldScout,
+  yieldAllowlist,
+  isYieldIntent,
+  parseYieldIntent,
+  type YieldGrant,
+  type YieldVenue,
+} from "@/lib/yield";
 import { config } from "@/lib/config";
 import { publicClient } from "@/lib/chain";
 import { readBudgetState, readUsdcBalance, type BudgetState } from "@/lib/onchain";
@@ -279,6 +289,13 @@ export default function DemoPage() {
 
   // Console state.
   const [prompt, setPrompt] = useState("");
+  // Subscription → Pay handoff: a deliverable's "Act on this in Pay →" deep-links
+  // here with ?intent=… (a token-swap or yield-deposit prompt). Prefill it.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const intent = new URLSearchParams(window.location.search).get("intent");
+    if (intent) setPrompt(intent);
+  }, []);
   // A2A coordination mode. Default = real agent-to-agent: one specialist
   // sub-agent (own on-chain key) per purchased service. `looped` (coordinator
   // pays directly, fewer hops) is a silent live-reliability fallback reachable
@@ -317,8 +334,20 @@ export default function DemoPage() {
   >(null);
   const [confirmAmount, setConfirmAmount] = useState(""); // editable swap amount (USDC)
   const [confirmToken, setConfirmToken] = useState("scout"); // "scout" | address
-  const swapConfirmResolve = useRef<((r: { ok: boolean; amount: string; token: string }) => void) | null>(null);
+  // Part A: the curated tokens the user has chosen to put INTO their signed set
+  // (a Set of lowercased addresses). The scout/pick can only ever choose from this.
+  const [confirmSet, setConfirmSet] = useState<Set<string>>(new Set());
+  const swapConfirmResolve = useRef<((r: { ok: boolean; amount: string; token: string; set: string[] }) => void) | null>(null);
   const [tradeResult, setTradeResult] = useState<TradeResult | null>(null);
+  // Yield deposits (isolated, deposit-intent prompts only): the YieldAllowlist
+  // grant + a venue-select confirm panel. Reuses the trade-result rendering.
+  const yieldGrantRef = useRef<YieldGrant | null>(null);
+  const [yieldConfirm, setYieldConfirm] = useState<
+    { maxUsdc: number; venues: { name: string; protocol: string; pool: string; note: string }[] } | null
+  >(null);
+  const [yieldAmount, setYieldAmount] = useState("");
+  const [yieldSet, setYieldSet] = useState<Set<string>>(new Set());
+  const yieldConfirmResolve = useRef<((r: { ok: boolean; amount: string; set: string[] }) => void) | null>(null);
   // Voice input: record the spoken prompt, transcribe via Venice STT.
   const [recording, setRecording] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
@@ -633,9 +662,11 @@ export default function DemoPage() {
     slippagePct: string;
     expiryText: string;
   }) =>
-    new Promise<{ ok: boolean; amount: string; token: string }>((resolve) => {
+    new Promise<{ ok: boolean; amount: string; token: string; set: string[] }>((resolve) => {
       setConfirmAmount(info.defaultAmount);
       setConfirmToken(info.defaultToken);
+      // Default the signed set to every curated token (the user can trim it).
+      setConfirmSet(new Set(info.allowlist.map((t) => t.address.toLowerCase())));
       swapConfirmResolve.current = resolve;
       setSwapConfirm({
         maxUsdc: info.maxUsdc, allowlist: info.allowlist, offListNote: info.offListNote,
@@ -644,8 +675,20 @@ export default function DemoPage() {
     });
   const resolveSwapConfirm = (ok: boolean) => {
     setSwapConfirm(null);
-    swapConfirmResolve.current?.({ ok, amount: confirmAmount, token: confirmToken });
+    swapConfirmResolve.current?.({ ok, amount: confirmAmount, token: confirmToken, set: Array.from(confirmSet) });
     swapConfirmResolve.current = null;
+  };
+  // Toggle a curated token in/out of the signed set; if the "buy" pick falls out
+  // of the set, fall back to letting the Scout choose.
+  const toggleConfirmSet = (addr: string) => {
+    const a = addr.toLowerCase();
+    setConfirmSet((prev) => {
+      const next = new Set(prev);
+      if (next.has(a)) next.delete(a);
+      else next.add(a);
+      if (confirmToken !== "scout" && confirmToken.toLowerCase() === a && !next.has(a)) setConfirmToken("scout");
+      return next;
+    });
   };
 
   // Sign a swap authorization for the current trade prompt (a curated token
@@ -706,9 +749,16 @@ export default function DemoPage() {
       const finalUsdc = (Number(amountIn) / 1e6).toFixed(2);
       swapTokenChoiceRef.current = res.token; // "scout" | chosen token address
 
-      append(`Coordinator › authorizing a bounded swap · ≤ ${finalUsdc} USDC, max ${(slippageBps / 100).toFixed(2)}% slippage, into your approved set…`);
+      // Part A: the user-selected subset of the curated catalog goes into the
+      // SIGNED set. Default (none deselected) = the full catalog. Never empty.
+      const chosen = res.set.length
+        ? allow.filter((t) => res.set.includes(t.address.toLowerCase()))
+        : allow;
+      const tokens = chosen.length ? chosen : allow;
+
+      append(`Coordinator › authorizing a bounded swap · ≤ ${finalUsdc} USDC, max ${(slippageBps / 100).toFixed(2)}% slippage, into your chosen set (${tokens.map((t) => t.symbol).join(", ")})…`);
       const swap = await grantSwapAllowlist({
-        walletClient, userAddress: address, coordinator, amountIn, slippageBps, expiry: expiryUnix,
+        walletClient, userAddress: address, coordinator, amountIn, slippageBps, expiry: expiryUnix, tokens,
       });
       swapGrantRef.current = swap;
       setSwapAuthorized(true);
@@ -1155,11 +1205,17 @@ export default function DemoPage() {
         void enrichReport(prompt, sections);
       }
 
+      // YIELD DEPOSIT — checked BEFORE trade (deposit-specific intent). A "deposit
+      // my USDC into the best yield"/"lend on Aave" prompt routes to the yield
+      // primitive (supply into a signed venue set), not a swap.
+      if (isYieldIntent(prompt) && coordinatorRef.current) {
+        await runYieldDeposit(coordinatorRef.current, commissionOk ? undefined : (authorization ?? undefined), activeGrant?.expiry);
+      }
       // TRADE — independent of the research outcome (its own authorization). So a
       // trade prompt runs even if research paused/failed. Sign the swap on the fly
       // if needed; bundle the 7702 auth into the trade when research DIDN'T run
       // (so the account still gets designated on the trade's first redemption).
-      if (isTradeIntent(prompt) && coordinatorRef.current) {
+      else if (isTradeIntent(prompt) && coordinatorRef.current) {
         let swap: SwapAllowlistGrant | null = swapGrantRef.current;
         if (!swap) {
           append("Coordinator › this is a trade — authorizing the bounded swap now (approve in your wallet)…");
@@ -1426,6 +1482,133 @@ export default function DemoPage() {
     return await fetchJob(jobId);
   };
 
+  // Show the yield pre-sign panel (editable amount + venue multi-select), resolve
+  // on approve/decline. Mirrors confirmSwap.
+  const confirmYield = (info: {
+    defaultAmount: string;
+    maxUsdc: number;
+    venues: { name: string; protocol: string; pool: string; note: string }[];
+  }) =>
+    new Promise<{ ok: boolean; amount: string; set: string[] }>((resolve) => {
+      setYieldAmount(info.defaultAmount);
+      setYieldSet(new Set(info.venues.map((v) => v.pool.toLowerCase())));
+      yieldConfirmResolve.current = resolve;
+      setYieldConfirm({ maxUsdc: info.maxUsdc, venues: info.venues });
+    });
+  const resolveYieldConfirm = (ok: boolean) => {
+    setYieldConfirm(null);
+    yieldConfirmResolve.current?.({ ok, amount: yieldAmount, set: Array.from(yieldSet) });
+    yieldConfirmResolve.current = null;
+  };
+  const toggleYieldSet = (pool: string) => {
+    const a = pool.toLowerCase();
+    setYieldSet((prev) => {
+      const next = new Set(prev);
+      if (next.has(a)) next.delete(a);
+      else next.add(a);
+      return next;
+    });
+  };
+
+  // Execute a bounded YIELD DEPOSIT: the user signs a venue allowlist (the curated
+  // Aave-V3 pools they pick), the Yield Scout reasons over the SIGNED set with live
+  // APY data and picks the best venue, and the Depositor supplies USDC into it via
+  // a gasless [approve, supply] 1Shot batch. A hijacked agent can't supply into a
+  // venue you didn't approve, overspend, supply the wrong asset, or redirect the
+  // aTokens — YieldAllowlistEnforcer rejects it on-chain. Sibling of runTrade.
+  const runYieldDeposit = async (
+    coordinator: Coordinator,
+    authorization?: Eip7702Authorization,
+    expiryUnix?: number,
+  ) => {
+    if (!walletClient || !address) return;
+    try {
+      const { amountInUsdc } = parseYieldIntent(prompt);
+      const all = yieldAllowlist();
+      const ceilingNum = Number(MAX_TRADE_USDC);
+      const balNum = usdcBalance != null ? Number(usdcBalance) / 1e6 : ceilingNum;
+      const maxUsdc = Math.max(0, Math.min(ceilingNum, balNum));
+      const defaultAmount = Math.min(amountInUsdc, maxUsdc || amountInUsdc).toString();
+
+      const res = await confirmYield({
+        defaultAmount,
+        maxUsdc: maxUsdc || ceilingNum,
+        venues: all.map((v) => ({ name: v.name, protocol: v.protocol, pool: v.pool, note: v.note })),
+      });
+      if (!res.ok) {
+        append("Coordinator › deposit declined — funds stay put.");
+        return;
+      }
+
+      let amountIn = parseUnits(Math.max(0, Number(res.amount) || 0).toFixed(6), 6);
+      const ceiling = parseUnits(MAX_TRADE_USDC, 6);
+      if (amountIn > ceiling) amountIn = ceiling;
+      const bal = usdcBalance ?? 0n;
+      if (bal > 0n && amountIn > bal) amountIn = bal;
+      if (amountIn === 0n) {
+        append("Coordinator › fund the account with USDC before depositing — nothing to supply.");
+        return;
+      }
+      const chosen = res.set.length ? all.filter((v) => res.set.includes(v.pool.toLowerCase())) : all;
+      const venues: YieldVenue[] = chosen.length ? chosen : all;
+      const finalUsdc = (Number(amountIn) / 1e6).toFixed(2);
+
+      append(`Coordinator › authorizing a bounded yield deposit · ≤ ${finalUsdc} USDC into your chosen venues (${venues.map((v) => v.name).join(", ")})…`);
+      const grant = await grantYieldAllowlist({
+        walletClient, userAddress: address, coordinator, amountIn, venues, expiry: expiryUnix,
+      });
+      yieldGrantRef.current = grant;
+      append(`Coordinator › yield authorization signed · asset + cap + recipient + ${grant.venues.length} approved venues bound on-chain`);
+      void registerGrant({
+        id: grant.delegationHash, user: address, kind: "yield",
+        label: `Bounded deposit · ${finalUsdc} USDC → {${grant.venues.map((v) => v.name).join(", ")}}`,
+        prompt, coordinator: coordinator.address, token: config.usdc,
+        amount: amountIn.toString(), expiry: grant.expiry,
+        enforcer: config.yieldAllowlistEnforcer, context: grant.context,
+      });
+
+      // The Yield Scout: reason over the SIGNED venue set with live APY data.
+      append("Coordinator → Yield Scout › find the best USDC supply APY in your approved venues…");
+      const scouted = await veniceYieldScout(prompt, grant.venues);
+      const apyText = scouted.apyBps != null ? ` (~${(scouted.apyBps / 100).toFixed(2)}% APY)` : "";
+      append(`Yield Scout › ${scouted.entry.name}${apyText} · ${scouted.rationale}${scouted.live ? "" : " (offline pick)"}`);
+
+      const base: TradeResult = {
+        stage: "settling", amountIn, minAmountOut: 0n,
+        tokenOutSymbol: `${scouted.entry.name} (${scouted.entry.protocol})${apyText}`,
+        slippageBps: 0,
+      };
+      setTradeResult(base);
+
+      append(`Coordinator → Depositor › supply ${finalUsdc} USDC into ${scouted.entry.name}, position credited to your account`);
+      const req = await fetch402("/services/researcher");
+      const built = await buildAllowlistSupplyCommission({
+        grant, coordinator, req, pool: scouted.entry.pool, amountIn, authorization,
+      });
+      const r = await settleSwap(built.paymentPayload, { agent: "Depositor" });
+      if (!r.ok) {
+        setTradeResult({ ...base, stage: "failed", reason: r.error });
+        append(`Depositor › deposit failed · ${r.error}`);
+        return;
+      }
+      setTradeResult({ ...base, stage: "settling", txHash: r.transaction ?? null });
+      if (r.jobId) {
+        const job = await pollTradeJob(r.jobId);
+        const ok = job?.status === "confirmed";
+        setTradeResult({
+          ...base,
+          stage: ok ? "settled" : job?.status === "failed" ? "failed" : "settling",
+          txHash: job?.transaction ?? r.transaction ?? null,
+          confirmedVia: job?.confirmedVia ?? null,
+          reason: job?.error ?? null,
+        });
+        if (ok) append(`Depositor › deposit settled ✓ · ${finalUsdc} USDC earning in ${scouted.entry.name} · receipt ${(job?.transaction ?? "").slice(0, 10)}…`);
+      }
+    } catch (e) {
+      append(`Coordinator › yield deposit failed · ${errMsg(e)}`);
+    }
+  };
+
   // The rogue Trader — a click away, like the other rogues. Reuses the signed
   // swap grant but crafts a bad swap (redirect proceeds, or buy an off-allowlist
   // rug token) → the SwapAllowlist enforcer rejects it on-chain.
@@ -1552,7 +1735,28 @@ export default function DemoPage() {
                   <span className="text-[11px] text-conduit-muted/60">max {swapConfirm.maxUsdc.toFixed(2)}</span>
                 </span>
               </label>
-              {/* token choice */}
+              {/* Part A: which curated tokens go INTO the signed set (multi-select) */}
+              <div>
+                <span className="text-[12px] text-conduit-muted">tokens in your signed set <span className="text-conduit-muted/50">— the agent can only ever buy these</span></span>
+                <div className="mt-1 flex flex-wrap gap-1.5">
+                  {swapConfirm.allowlist.map((t) => {
+                    const on = confirmSet.has(t.address.toLowerCase());
+                    return (
+                      <button
+                        key={t.address} type="button" onClick={() => toggleConfirmSet(t.address)}
+                        aria-pressed={on}
+                        className={`rounded-lg border px-2.5 py-1.5 text-[12px] transition-colors ${on ? "border-conduit-cyan bg-conduit-cyan/10 text-white" : "border-conduit-border text-conduit-muted/60 hover:border-conduit-cyan/40"}`}
+                      >
+                        <span className="mr-1">{on ? "✓" : "+"}</span>{t.name} <span className="text-conduit-muted/60">{t.symbol}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+                {confirmSet.size === 0 && (
+                  <p className="mt-1.5 text-[11px] text-conduit-magenta/90">Pick at least one token — or the full catalog is signed by default.</p>
+                )}
+              </div>
+              {/* token choice (constrained to the signed set) */}
               <div>
                 <span className="text-[12px] text-conduit-muted">buy</span>
                 <div className="mt-1 flex flex-wrap gap-1.5">
@@ -1562,7 +1766,7 @@ export default function DemoPage() {
                   >
                     Let the Scout pick
                   </button>
-                  {swapConfirm.allowlist.map((t) => (
+                  {swapConfirm.allowlist.filter((t) => confirmSet.size === 0 || confirmSet.has(t.address.toLowerCase())).map((t) => (
                     <button
                       key={t.address} type="button" onClick={() => setConfirmToken(t.address)}
                       className={`rounded-lg border px-2.5 py-1.5 text-[12px] transition-colors ${confirmToken === t.address ? "border-conduit-cyan bg-conduit-cyan/10 text-white" : "border-conduit-border text-conduit-muted hover:border-conduit-cyan/40"}`}
@@ -1579,7 +1783,7 @@ export default function DemoPage() {
               <div className="mono space-y-1.5 rounded-lg border border-conduit-border/60 bg-black/30 p-3 text-[12px]">
                 <div className="flex justify-between gap-3"><span className="text-conduit-muted">max slippage</span><span className="text-white">{swapConfirm.slippagePct}%</span></div>
                 <div className="flex justify-between gap-3"><span className="text-conduit-muted">proceeds to</span><span className="text-white">your account</span></div>
-                <div className="flex justify-between gap-3"><span className="text-conduit-muted">approved set</span><span className="text-white">{swapConfirm.allowlist.map((t) => t.name).join(", ")}</span></div>
+                <div className="flex justify-between gap-3"><span className="text-conduit-muted">approved set</span><span className="text-white">{swapConfirm.allowlist.filter((t) => confirmSet.size === 0 || confirmSet.has(t.address.toLowerCase())).map((t) => t.name).join(", ")}</span></div>
                 <div className="flex justify-between gap-3"><span className="text-conduit-muted">expires</span><span className="text-white">{swapConfirm.expiryText}</span></div>
               </div>
             </div>
@@ -1592,6 +1796,73 @@ export default function DemoPage() {
               </button>
               <button
                 onClick={() => resolveSwapConfirm(false)}
+                className="rounded-lg border border-conduit-border px-3 py-2 text-sm text-conduit-muted transition-colors hover:text-white"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Pre-sign YIELD-DEPOSIT confirmation — the venue set + cap the user is
+          authorizing, before the (opaque) wallet signature. */}
+      {yieldConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" role="dialog" aria-modal>
+          <div className="panel w-full max-w-md p-6">
+            <h3 className="text-base font-semibold text-white">Authorize this deposit?</h3>
+            <p className="mt-1 text-[12px] leading-relaxed text-conduit-muted">
+              Your signature binds these on-chain — the agent can supply only into the venues you pick, and the position is credited to <span className="text-white">you</span>.
+            </p>
+            <div className="mt-4 space-y-3">
+              {/* editable amount */}
+              <label className="block">
+                <span className="text-[12px] text-conduit-muted">deposit up to</span>
+                <span className="mt-1 flex items-center gap-2">
+                  <input
+                    type="number" min="0" step="0.01" max={yieldConfirm.maxUsdc} inputMode="decimal"
+                    value={yieldAmount}
+                    onChange={(e) => setYieldAmount(e.target.value)}
+                    className="mono w-32 rounded-lg border border-conduit-border bg-transparent px-2 py-1.5 text-white outline-none focus:border-conduit-cyan"
+                  />
+                  <span className="text-white">USDC</span>
+                  <span className="text-[11px] text-conduit-muted/60">max {yieldConfirm.maxUsdc.toFixed(2)}</span>
+                </span>
+              </label>
+              {/* venue multi-select (the signed set) */}
+              <div>
+                <span className="text-[12px] text-conduit-muted">venues in your signed set <span className="text-conduit-muted/50">— the Scout picks the best APY among these</span></span>
+                <div className="mt-1 flex flex-col gap-1.5">
+                  {yieldConfirm.venues.map((v) => {
+                    const on = yieldSet.has(v.pool.toLowerCase());
+                    return (
+                      <button
+                        key={v.pool} type="button" onClick={() => toggleYieldSet(v.pool)} aria-pressed={on}
+                        className={`flex items-start gap-2 rounded-lg border px-2.5 py-2 text-left text-[12px] transition-colors ${on ? "border-conduit-cyan bg-conduit-cyan/10 text-white" : "border-conduit-border text-conduit-muted/60 hover:border-conduit-cyan/40"}`}
+                      >
+                        <span className="mt-0.5">{on ? "✓" : "+"}</span>
+                        <span>
+                          <span className="text-white">{v.name}</span> <span className="text-conduit-muted/60">{v.protocol}</span>
+                          <span className="mt-0.5 block text-[11px] text-conduit-muted/70">{v.note}</span>
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+                {yieldSet.size === 0 && (
+                  <p className="mt-1.5 text-[11px] text-conduit-magenta/90">Pick at least one venue — or the full set is signed by default.</p>
+                )}
+              </div>
+            </div>
+            <p className="mono mt-2 text-[11px] leading-relaxed text-conduit-muted/70">
+              A hijacked agent can&apos;t supply into a venue you didn&apos;t approve, overspend this cap, supply a different asset, or redirect the position — YieldAllowlistEnforcer rejects it on-chain.
+            </p>
+            <div className="mt-4 flex gap-2">
+              <button onClick={() => resolveYieldConfirm(true)} className="btn-primary flex-1 justify-center text-sm">
+                Approve &amp; sign
+              </button>
+              <button
+                onClick={() => resolveYieldConfirm(false)}
                 className="rounded-lg border border-conduit-border px-3 py-2 text-sm text-conduit-muted transition-colors hover:text-white"
               >
                 Cancel
