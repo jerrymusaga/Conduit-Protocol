@@ -187,10 +187,12 @@ const caveats = [
             </Callout>
             <p className="text-sm text-conduit-muted">
               <b className="text-white">Roadmap — cross-chain:</b> 1Shot’s relayer also
-              supports multichain settlement (<Mono>send7710TransactionMultichain</Mono>),
-              so an agent’s stablecoin gas budget can live on one chain while the work
-              executes on another, atomically. Conduit’s relay seam is built for it;
-              shipping post-hackathon.
+              supports multichain settlement (<Mono>send7710TransactionMultichain</Mono>) —
+              one relayer call that fans out to several chains, each leg settled and gas
+              paid in USDC on its own chain. So a scout can pick the best venue across
+              chains and the deposit lands wherever wins, with the bounded allowlist
+              enforced per chain. Conduit’s relay seam is built for it; shipping
+              post-hackathon.
             </p>
             <p className="text-sm text-conduit-muted">
               In practice this is one call — Conduit’s client picks the right shape from
