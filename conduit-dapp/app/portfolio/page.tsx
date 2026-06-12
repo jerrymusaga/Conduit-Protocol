@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useAccount, useWalletClient } from "wagmi";
 import { useActiveWallet } from "@/lib/activeWallet";
 import { useConduitEmbedded } from "@/lib/conduitEmbedded";
@@ -16,6 +16,7 @@ import { useSetActiveWallet } from "@privy-io/wagmi";
 import { formatUnits, type Hex } from "viem";
 import { config } from "@/lib/config";
 import { publicClient } from "@/lib/chain";
+import { useFacilitatorEvents } from "@/lib/useFacilitatorEvents";
 import { listGrants, markGrantRevoked, type GrantRecord } from "@/lib/grants";
 import { gaslessRevoke } from "@/lib/revoke";
 import { readBudgetState, type BudgetState } from "@/lib/onchain";
@@ -151,6 +152,19 @@ export default function PortfolioPage() {
     }
   }, [address, readLive]);
 
+  // Live touch: subscribe to the facilitator's SSE feed (driven by 1Shot's signed
+  // settlement webhooks). When a settlement confirms, re-read on-chain grant state
+  // so the portfolio reflects the new spend/period immediately — the webhook is the
+  // trigger, the chain is still the source of truth.
+  const { events, connected: liveConnected } = useFacilitatorEvents(connected);
+  const seenSettled = useRef(new Set<string>());
+  useEffect(() => {
+    const fresh = events.filter((e) => e.stage === "settled" && !seenSettled.current.has(e.id));
+    if (fresh.length === 0) return;
+    fresh.forEach((e) => seenSettled.current.add(e.id));
+    void refresh();
+  }, [events, refresh]);
+
   useEffect(() => {
     if (connected) void refresh();
     else {
@@ -218,7 +232,13 @@ export default function PortfolioPage() {
         {/* header */}
         <div className="flex flex-wrap items-end justify-between gap-3">
           <div>
-            <h1 className="text-xl font-semibold tracking-tight text-white">Your agent permissions</h1>
+            <div className="flex items-center gap-2.5">
+              <h1 className="text-xl font-semibold tracking-tight text-white">Your agent permissions</h1>
+              <span className="mono flex items-center gap-1.5 text-[11px] text-conduit-muted" title="Settlements stream in from 1Shot's signed webhooks via the facilitator">
+                <span className="h-1.5 w-1.5 rounded-full" style={{ background: liveConnected ? "#00E5FF" : "#666" }} />
+                {liveConnected ? "live" : "connecting"}
+              </span>
+            </div>
             <p className="mt-1 max-w-2xl text-[13px] leading-relaxed text-conduit-muted">
               Every budget and subscription this wallet has granted, with live on-chain state.
               Each one is bounded and revocable — your kill switch is one tx away.
