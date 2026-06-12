@@ -306,7 +306,7 @@ export default function SubscriptionPage() {
       const requirements = await fetch402(svc.resource);
       setService(svc);
       setReq(requirements);
-      append(`Selected ${svc.label} · every ${requirements.subscription?.periodSeconds ?? "?"}s`);
+      append(`Selected ${svc.label} · charged once ${fmtCadence(requirements.subscription?.periodSeconds)}`);
     } catch (e) {
       append(`Could not load ${svc.label} · ${errMsg(e)}`);
     }
@@ -354,7 +354,7 @@ export default function SubscriptionPage() {
         ? undefined
         : Math.max(nowSecs + 60, Math.floor(new Date(subExpiryAt).getTime() / 1000));
       append(
-        `Signing the subscription: ${service.priceUsdc} USDC → ${shorten(terms.recipient)} every ${terms.periodSeconds}s` +
+        `Signing the subscription: ${service.priceUsdc} USDC → ${shorten(terms.recipient)} once ${fmtCadence(terms.periodSeconds)}` +
           (expiry ? `, expires in ${fmtDuration(expiry - nowSecs)}` : ", no expiry") + "…"
       );
       // Size the gas-fee budget root to at least the live dynamic fee cap, so a
@@ -471,7 +471,7 @@ export default function SubscriptionPage() {
 
   // --- render --------------------------------------------------------------
 
-  const periodLabel = req?.subscription ? `${req.subscription.periodSeconds}s` : "—";
+  const periodLabel = req?.subscription ? fmtCadence(req.subscription.periodSeconds) : "—";
   // The most recent Venice deliverable a charge bought (newest-first list).
   const lastDeliverable = charges.find((c) => c.stage === "settled" && c.deliverable?.body)?.deliverable ?? null;
 
@@ -485,7 +485,7 @@ export default function SubscriptionPage() {
           terms: [
             { label: "amount", value: `${service.priceUsdc} USDC (exact)` },
             { label: "merchant", value: shorten(req.payTo) },
-            { label: "cadence", value: `1×/${req.subscription.periodSeconds}s` },
+            { label: "cadence", value: `once ${fmtCadence(req.subscription.periodSeconds)}` },
           ],
         }
       : null;
@@ -610,7 +610,7 @@ export default function SubscriptionPage() {
                   <p className="mt-0.5 text-[12px] text-conduit-muted">{service.description}</p>
                   <div className="mono mt-3 space-y-1 text-[12px]">
                     <Row k="charge" v={`${service.priceUsdc} USDC (exact)`} />
-                    <Row k="cadence" v={`once / ${periodLabel}`} />
+                    <Row k="cadence" v={`once ${periodLabel}`} />
                     <Row k="paid to" v={shorten(req.payTo)} />
                     <Row k="on-chain rule" v={shorten(req.subscription?.enforcer ?? null)} />
                   </div>
@@ -1165,14 +1165,23 @@ function shorten(addr: string | null): string {
   return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
 }
 
-/** Human-friendly billing period: 60→"60s", 86400→"day", 604800→"week". */
+/** Human-friendly billing period: 60→"minute", 3600→"hour", 86400→"day",
+ *  604800→"week", 2592000→"month"; odd values fall back to a compact duration. */
 function fmtPeriod(s?: number): string {
   if (!s) return "—";
-  if (s < 3600) return `${s}s`;
+  const named: Record<number, string> = { 60: "minute", 3600: "hour", 86_400: "day", 604_800: "week", 2_592_000: "month" };
+  if (named[s]) return named[s];
+  if (s < 3600) return `${Math.round(s / 60)}m`;
   if (s < 86_400) return `${Math.round(s / 3600)}h`;
-  if (s < 604_800) return "day";
-  if (s < 2_592_000) return "week";
-  return "month";
+  return `${Math.round(s / 86_400)}d`;
+}
+
+/** A clean cadence phrase: 60→"a minute", 86400→"a day", 604800→"a week";
+ *  odd values → "every 90s" — so "once {fmtCadence}" always reads naturally. */
+function fmtCadence(s?: number): string {
+  if (!s) return "—";
+  const named: Record<number, string> = { 60: "a minute", 3600: "an hour", 86_400: "a day", 604_800: "a week", 2_592_000: "a month" };
+  return named[s] ?? `every ${fmtDuration(s)}`;
 }
 function toLocalDatetime(ms: number): string {
   const off = new Date(ms).getTimezoneOffset() * 60_000;
