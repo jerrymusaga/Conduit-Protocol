@@ -25,6 +25,7 @@ export type EnforcerKind =
   | "subscription"
   | "budget"
   | "swap"
+  | "yield"
   | "timestamp"
   | "id";
 
@@ -70,6 +71,11 @@ export const ENFORCER_INFO: Record<EnforcerKind, { label: string; what: string; 
     label: "Bounded swap",
     what: "Bounds one DEX swap — fixed pair, max input, a slippage floor, proceeds to you.",
     prevents: ["swapping to a different token", "overspending the input cap", "accepting a worse fill than the floor", "redirecting the proceeds"],
+  },
+  yield: {
+    label: "Bounded yield deposit",
+    what: "Bounds one lending-pool deposit — a signed set of venues, one asset, a max amount, position credited to you.",
+    prevents: ["supplying into a venue you didn't approve", "overspending the cap", "supplying a different asset", "redirecting the position"],
   },
   timestamp: {
     label: "Validity window",

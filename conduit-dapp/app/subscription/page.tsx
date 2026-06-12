@@ -845,6 +845,8 @@ export default function SubscriptionPage() {
                       card={c}
                       priceUsdc={service?.priceUsdc ?? "—"}
                       binding={inspectorBinding}
+                      productName={service?.label}
+                      embedded={embedded}
                     />
                   ))}
                 </>
@@ -998,14 +1000,30 @@ function CountdownRing({ secsLeft, periodSecs, ready }: { secsLeft: number; peri
 
 // --- charge card -------------------------------------------------------------
 
+/** Classify a subscription deliverable → the matching Pay action, so the loop
+ *  closes: yield/DeFi intel hands off to a YIELD deposit; everything else (token /
+ *  market / alpha intel) hands off to a SWAP. Returns the Pay prompt to prefill. */
+function handoffIntent(productName?: string, headline?: string, body?: string): { label: string; intent: string } {
+  const hay = `${productName ?? ""} ${headline ?? ""} ${body ?? ""}`.toLowerCase();
+  const isYield = /\b(yield|defi|lend|lending|deposit|supply|apy|apr|aave|seamless|morpho|moonwell)\b/.test(hay);
+  if (isYield) {
+    return { label: "Deposit into the best yield →", intent: "Deposit 50 USDC into the best yield venue across my approved lending pools" };
+  }
+  return { label: "Act on this in Pay →", intent: "Swap 25 USDC into the best token from my approved set" };
+}
+
 function ChargeCardView({
   card,
   priceUsdc,
   binding,
+  productName,
+  embedded,
 }: {
   card: ChargeCard;
   priceUsdc: string;
   binding: InspectorBinding | null;
+  productName?: string;
+  embedded?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const blocked = card.stage === "blocked" || card.stage === "failed";
@@ -1089,6 +1107,19 @@ function ChargeCardView({
             )}
           </div>
           <div className="mt-1.5 whitespace-pre-line text-[12.5px] leading-relaxed text-conduit-muted">{card.deliverable.body}</div>
+          {/* Close the loop: this period's intel → a one-tap, bounded action in Pay. */}
+          {(() => {
+            const { label, intent } = handoffIntent(productName, card.deliverable?.headline, card.deliverable?.body);
+            const href = `${embedded ? "/app/pay" : "/demo"}?intent=${encodeURIComponent(intent)}`;
+            return (
+              <Link
+                href={href}
+                className="mono mt-2.5 inline-flex items-center gap-1 rounded-md border border-conduit-cyan/40 bg-conduit-cyan/10 px-2.5 py-1 text-[11px] text-conduit-cyan transition-colors hover:bg-conduit-cyan/20"
+              >
+                {label}
+              </Link>
+            );
+          })()}
         </div>
       )}
 

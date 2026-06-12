@@ -33,6 +33,9 @@ interface ChainDefaults {
   /** SwapAllowlistEnforcer — bounds a swap to a SIGNED SET of output tokens
    *  (each with its own floor) so a scout can pick the best one safely. */
   swapAllowlistEnforcer: `0x${string}`;
+  /** YieldAllowlistEnforcer — bounds a deposit to a SIGNED SET of yield venues
+   *  (Aave-V3 pools, each with its own floor) so a scout can pick the best APY. */
+  yieldAllowlistEnforcer: `0x${string}`;
   /** Uniswap v3 SwapRouter02 — the swap venue the trading flow targets. */
   uniswapRouter: `0x${string}`;
   /** WETH (the demo's tokenOut for a USDC→WETH yield/trade). */
@@ -54,6 +57,7 @@ const CHAIN_DEFAULTS: Record<number, ChainDefaults> = {
     swapBoundsEnforcer: "0x1fd734c9c78e9c34238c2b5f4E936368727326f6",
     approveBoundsEnforcer: "0xA86e7b31fA6a77186F09F36C06b2E7c5D3132795",
     swapAllowlistEnforcer: "0xb95adacB74E981bcfB1e97B4d277E51A95753C8F",
+    yieldAllowlistEnforcer: "0xDf4179e3b5A5B5D8Bfbd3fAe076D127bd96F3fa4",
     uniswapRouter: "0x94cC0AaC535CCDB3C01d6787D6413C739ae12bc4",
     weth: "0x4200000000000000000000000000000000000006",
     explorerUrl: "https://sepolia.basescan.org",
@@ -72,6 +76,9 @@ const CHAIN_DEFAULTS: Record<number, ChainDefaults> = {
     swapBoundsEnforcer: "0x1fd734c9c78e9c34238c2b5f4E936368727326f6",
     approveBoundsEnforcer: "0xA86e7b31fA6a77186F09F36C06b2E7c5D3132795",
     swapAllowlistEnforcer: "0xb95adacB74E981bcfB1e97B4d277E51A95753C8F",
+    // Deploy YieldAllowlistEnforcer to mainnet before the mainnet run, then set
+    // NEXT_PUBLIC_YIELD_ALLOWLIST_ENFORCER. Placeholder = Sepolia addr until then.
+    yieldAllowlistEnforcer: "0xDf4179e3b5A5B5D8Bfbd3fAe076D127bd96F3fa4",
     uniswapRouter: "0x2626664c2603336E57B271c5C0b26F421741e481",
     weth: "0x4200000000000000000000000000000000000006",
     explorerUrl: "https://basescan.org",
@@ -109,6 +116,8 @@ export const config = {
     defaults.approveBoundsEnforcer) as `0x${string}`,
   swapAllowlistEnforcer: (process.env.NEXT_PUBLIC_SWAP_ALLOWLIST_ENFORCER ??
     defaults.swapAllowlistEnforcer) as `0x${string}`,
+  yieldAllowlistEnforcer: (process.env.NEXT_PUBLIC_YIELD_ALLOWLIST_ENFORCER ??
+    defaults.yieldAllowlistEnforcer) as `0x${string}`,
   uniswapRouter: (process.env.NEXT_PUBLIC_UNISWAP_ROUTER ?? defaults.uniswapRouter) as `0x${string}`,
   weth: (process.env.NEXT_PUBLIC_WETH ?? defaults.weth) as `0x${string}`,
   // MetaMask framework enforcers (same CREATE2 address on Base mainnet + Sepolia,

@@ -303,6 +303,7 @@ function GrantCard({
   const s = STATUS_STYLE[status];
   const isSub = g.kind === "subscription";
   const isSwap = g.kind === "swap";
+  const isYield = g.kind === "yield";
   const amountUsdc = g.amount ? formatUnits(BigInt(g.amount), 6) : "—";
   const expiryText = !g.expiry || g.expiry === 0 ? "no expiry" : nowSec >= g.expiry ? "expired" : `in ${fmtDur(g.expiry - nowSec)}`;
   const canRevoke = status === "active" && !!g.context;
@@ -311,13 +312,15 @@ function GrantCard({
     ? { cls: "bg-conduit-violet/15 text-conduit-violet", text: "subscription" }
     : isSwap
       ? { cls: "bg-conduit-magenta/15 text-conduit-magenta", text: "swap" }
-      : { cls: "bg-conduit-cyan/10 text-conduit-cyan", text: "budget" };
+      : isYield
+        ? { cls: "bg-conduit-cyan/15 text-conduit-cyan", text: "yield" }
+        : { cls: "bg-conduit-cyan/10 text-conduit-cyan", text: "budget" };
 
   // The exact on-chain caveat this permission carries — what it actually permits.
   const binding: InspectorBinding | null = g.enforcer
     ? {
         kind: g.kind,
-        enforcerName: isSub ? "X402SubscriptionEnforcer" : isSwap ? "SwapBoundsEnforcer" : "ERC20PeriodTransferEnforcer",
+        enforcerName: isSub ? "X402SubscriptionEnforcer" : isSwap ? "SwapBoundsEnforcer" : isYield ? "YieldAllowlistEnforcer" : "ERC20PeriodTransferEnforcer",
         enforcerAddr: g.enforcer,
         terms: isSub
           ? [
@@ -325,6 +328,13 @@ function GrantCard({
               { label: "merchant", value: shorten(g.merchant) },
               { label: "cadence", value: `1×/${fmtDur(g.periodSeconds ?? 0)}` },
             ]
+          : isYield
+            ? [
+                { label: "max in", value: `${amountUsdc} USDC` },
+                { label: "into", value: "your approved venues" },
+                { label: "position", value: "credited to you" },
+                { label: "expires", value: expiryText },
+              ]
           : isSwap
             ? [
                 { label: "max in", value: `${amountUsdc} USDC` },
