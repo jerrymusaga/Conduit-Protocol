@@ -30,10 +30,10 @@ import {
   buildSubscriptionPayment,
   readSubscriptionState,
   termsFromRequirements,
-  cancelSubscription,
   type SubscriptionGrant,
   type SubscriptionState,
 } from "@/lib/subscription";
+import { gaslessRevoke } from "@/lib/revoke";
 import { registerGrant, markGrantRevoked } from "@/lib/grants";
 import { useFacilitatorEvents } from "@/lib/useFacilitatorEvents";
 import { config } from "@/lib/config";
@@ -257,27 +257,30 @@ export default function SubscriptionPage() {
     }
   };
 
-  // Cancel = disableDelegation on the subscription root. A direct on-chain tx
-  // from the user's own account (only the delegator can revoke). Needs gas (ETH).
+  // Cancel = disableDelegation on the subscription root. GASLESS by default (the
+  // relayer disables it, gas in USDC, no ETH), with a direct-tx fallback.
   const cancel = async () => {
     if (busy || !grant || !walletClient || !address) return;
     setBusy(true);
-    append("Cancelling subscription · revoking the delegation on-chain (needs a little ETH for gas)…");
-    try {
-      const tx = await cancelSubscription({ walletClient, userAddress: address, grant });
-      append(`Revoke tx sent · ${shorten(tx)} — awaiting confirmation…`);
-      await publicClient.waitForTransactionReceipt({ hash: tx });
+    const r = await gaslessRevoke({
+      walletClient,
+      userAddress: address as Hex,
+      context: grant.context,
+      delegationManager: grant.delegationManager,
+      signAuthorization: activeWallet.signAuthorization,
+      log: append,
+    });
+    if (r.ok) {
       void markGrantRevoked(grant.delegationHash, address); // reflect in /portfolio
       setCancelled(true);
       setGrant(null);
       setSubState(null);
       coordinatorRef.current = null;
-      append("Subscription cancelled ✓ · every future charge against this grant now reverts on-chain");
-    } catch (e) {
-      append(`Cancel failed · ${errMsg(e)}`);
-    } finally {
-      setBusy(false);
+      append(`Subscription cancelled ${r.viaGasless ? "gaslessly" : "on-chain"} ✓ · every future charge against this grant now reverts on-chain`);
+    } else {
+      append(`Cancel failed · ${r.error}`);
     }
+    setBusy(false);
   };
 
   // Pick a different subscription to opt into (only before subscribing).

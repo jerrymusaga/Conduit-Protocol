@@ -17,7 +17,7 @@ import { formatUnits, type Hex } from "viem";
 import { config } from "@/lib/config";
 import { publicClient } from "@/lib/chain";
 import { listGrants, markGrantRevoked, type GrantRecord } from "@/lib/grants";
-import { revokeRootDelegation } from "@/lib/grant";
+import { gaslessRevoke } from "@/lib/revoke";
 import { readBudgetState, type BudgetState } from "@/lib/onchain";
 import { readSubscriptionState, type SubscriptionGrant, type SubscriptionState } from "@/lib/subscription";
 import { Erc7710Inspector, type InspectorBinding } from "@/components/Erc7710Inspector";
@@ -163,22 +163,23 @@ export default function PortfolioPage() {
     if (!walletClient || !address || !g.context) return;
     setBusyId(g.id);
     setNote(null);
-    try {
-      const tx = await revokeRootDelegation({
-        walletClient,
-        userAddress: address,
-        context: g.context as Hex,
-        delegationManager: config.delegationManager,
-      });
-      await publicClient.waitForTransactionReceipt({ hash: tx });
+    // Gasless (relayer disables the root, gas in USDC) with a direct-tx fallback.
+    const r = await gaslessRevoke({
+      walletClient,
+      userAddress: address as Hex,
+      context: g.context as Hex,
+      delegationManager: config.delegationManager,
+      signAuthorization: activeWallet.signAuthorization,
+      log: setNote,
+    });
+    if (r.ok) {
       await markGrantRevoked(g.id, address);
       setGrants((gs) => gs.map((x) => (x.id === g.id ? { ...x, revokedAt: Date.now() } : x)));
-      setNote(`Revoked on-chain ✓ · ${shorten(tx)} — every charge against this permission now reverts.`);
-    } catch (e) {
-      setNote(`Revoke failed · ${e instanceof Error ? e.message : String(e)} (needs a little ETH for gas)`);
-    } finally {
-      setBusyId(null);
+      setNote(`Revoked ${r.viaGasless ? "gaslessly" : "on-chain"} ✓ · ${shorten(r.tx ?? "")} — every charge against this permission now reverts.`);
+    } else {
+      setNote(`Revoke failed · ${r.error}`);
     }
+    setBusyId(null);
   };
 
   const active = grants.filter((g) => statusOf(g, live[g.id]) === "active").length;

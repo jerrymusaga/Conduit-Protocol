@@ -22,9 +22,10 @@ import { createExecution, signDelegation as signDelegationWithKey } from "@metam
 import { encodeFunctionData, encodePacked, keccak256, parseAbi, toFunctionSelector, toHex, type Hex, type WalletClient } from "viem";
 import { config } from "./config";
 import type { Coordinator } from "./grant";
-import { grantBudget } from "./grant";
+import { grantBudget, createCoordinatorAccount, revokeRootDelegation } from "./grant";
 import { buildBoundChain, feeCapAtoms, type Delegation, type Eip7702Authorization } from "./payment";
-import type { PaymentRequirements } from "./endpoint";
+import { fetch402, fetchJob, type PaymentRequirements } from "./endpoint";
+import { publicClient } from "./chain";
 import { settleSwap } from "./trade";
 
 const ROOT_AUTHORITY: Hex = `0x${"f".repeat(64)}` as Hex;
@@ -133,4 +134,71 @@ export async function settleGaslessRevoke(
   meta: { correlationId?: string; agent?: string } = {}
 ) {
   return settleSwap(paymentPayload, { agent: "revoke", ...meta });
+}
+
+/**
+ * One-call gasless revoke with everything handled: a free 402 for caps, a 7702
+ * designation if the account has no code yet, build + settle + confirm, and an
+ * automatic fallback to the DIRECT (ETH) revoke so the kill switch always works.
+ * Pass `signAuthorization` (from useActiveWallet) so an undesignated account can
+ * still go gasless.
+ */
+export async function gaslessRevoke(params: {
+  walletClient: WalletClient;
+  userAddress: Hex;
+  context: Hex;
+  delegationManager: Hex;
+  signAuthorization?: (a: { contractAddress: Hex; chainId: number; nonce: number }) => Promise<Eip7702Authorization>;
+  log?: (s: string) => void;
+}): Promise<{ ok: boolean; tx?: string | null; viaGasless?: boolean; error?: string }> {
+  const log = params.log ?? (() => {});
+  const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
+  try {
+    log("Revoking · the relayer disables the root for you — gas in USDC, no ETH…");
+    const req = await fetch402("/services/researcher");
+
+    // Designate the account (7702) if it has no code yet, so the relayer can
+    // execute disableDelegation from it.
+    let authorization: Eip7702Authorization | undefined;
+    if (params.signAuthorization) {
+      const code = await publicClient.getCode({ address: params.userAddress }).catch(() => undefined);
+      if (!code || code === "0x") {
+        const nonce = await publicClient.getTransactionCount({ address: params.userAddress });
+        authorization = await params.signAuthorization({ contractAddress: config.eip7702Impl, chainId: config.chainId, nonce });
+      }
+    }
+
+    const coordinator = createCoordinatorAccount();
+    const { paymentPayload } = await buildGaslessRevoke({
+      walletClient: params.walletClient, userAddress: params.userAddress, coordinator,
+      context: params.context, req, authorization,
+    });
+    const r = await settleGaslessRevoke(paymentPayload);
+    if (!r.ok) throw new Error(r.error ?? "gasless revoke rejected");
+
+    let tx = r.transaction ?? null;
+    if (r.jobId) {
+      const deadline = Date.now() + 150_000;
+      while (Date.now() < deadline) {
+        await new Promise((res) => setTimeout(res, 3000));
+        const job = await fetchJob(r.jobId);
+        if (!job) continue;
+        if (job.status === "failed") throw new Error(job.error ?? "revoke failed on-chain");
+        if (job.status === "confirmed") { tx = job.transaction ?? tx; break; }
+      }
+    }
+    return { ok: true, tx, viaGasless: true };
+  } catch (gaslessErr) {
+    log(`Gasless revoke unavailable (${msg(gaslessErr)}) — falling back to a direct tx (needs a little ETH)…`);
+    try {
+      const tx = await revokeRootDelegation({
+        walletClient: params.walletClient, userAddress: params.userAddress,
+        context: params.context, delegationManager: params.delegationManager,
+      });
+      await publicClient.waitForTransactionReceipt({ hash: tx });
+      return { ok: true, tx, viaGasless: false };
+    } catch (e) {
+      return { ok: false, error: msg(e) };
+    }
+  }
 }
