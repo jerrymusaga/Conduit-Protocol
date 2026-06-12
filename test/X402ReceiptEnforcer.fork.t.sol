@@ -33,6 +33,7 @@ interface IDelegationManager {
         bytes terms;
         bytes args;
     }
+
     struct Delegation {
         address delegate;
         address delegator;
@@ -68,22 +69,19 @@ contract X402ReceiptEnforcerForkTest is Test {
     X402ReceiptEnforcer internal enforcer;
 
     bytes32 internal constant INTENT_HASH = keccak256("conduit-fork-test-001");
-    uint128 internal constant MAX_AMOUNT  = 10_000;
+    uint128 internal constant MAX_AMOUNT = 10_000;
 
     bytes32 internal constant ZERO_MODE = bytes32(0);
 
     function setUp() public {
-        (userEoa, userPk)               = makeAddrAndKey("user");
-        (coordinator, coordinatorPk)    = makeAddrAndKey("coordinator");
-        (specialist, )                  = makeAddrAndKey("specialist");
-        payTo                           = makeAddr("payTo");
+        (userEoa, userPk) = makeAddrAndKey("user");
+        (coordinator, coordinatorPk) = makeAddrAndKey("coordinator");
+        (specialist,) = makeAddrAndKey("specialist");
+        payTo = makeAddr("payTo");
 
         enforcer = new X402ReceiptEnforcer();
 
-        userSmartAccount = address(new MinimalAccount(
-            userEoa,
-            BaseSepoliaConstants.DELEGATION_MANAGER
-        ));
+        userSmartAccount = address(new MinimalAccount(userEoa, BaseSepoliaConstants.DELEGATION_MANAGER));
 
         // Fund the smart account with USDC via storage-write cheat.
         deal(BaseSepoliaConstants.USDC, userSmartAccount, 1_000_000); // 1 USDC
@@ -93,14 +91,13 @@ contract X402ReceiptEnforcerForkTest is Test {
         IDelegationManager dm = IDelegationManager(BaseSepoliaConstants.DELEGATION_MANAGER);
 
         // ---------- 1. Root delegation ----------
-        IDelegationManager.Caveat[] memory rootCaveats =
-            new IDelegationManager.Caveat[](1);
+        IDelegationManager.Caveat[] memory rootCaveats = new IDelegationManager.Caveat[](1);
         rootCaveats[0] = IDelegationManager.Caveat({
             enforcer: BaseSepoliaConstants.ERC20_PERIOD_TRANSFER_ENFORCER,
             terms: abi.encodePacked(
                 BaseSepoliaConstants.USDC,
                 uint256(100_000), // 0.1 USDC per period
-                uint256(3600),    // 1 hour
+                uint256(3600), // 1 hour
                 uint256(block.timestamp)
             ),
             args: ""
@@ -118,26 +115,17 @@ contract X402ReceiptEnforcerForkTest is Test {
         bytes32 rootHash = dm.getDelegationHash(root);
 
         // ---------- 2. Child delegation with our enforcer ----------
-        IDelegationManager.Caveat[] memory childCaveats =
-            new IDelegationManager.Caveat[](2);
+        IDelegationManager.Caveat[] memory childCaveats = new IDelegationManager.Caveat[](2);
 
         // (a) Built-in IdEnforcer for one-shot replay protection
         childCaveats[0] = IDelegationManager.Caveat({
-            enforcer: BaseSepoliaConstants.ID_ENFORCER,
-            terms: abi.encode(uint256(INTENT_HASH)),
-            args: ""
+            enforcer: BaseSepoliaConstants.ID_ENFORCER, terms: abi.encode(uint256(INTENT_HASH)), args: ""
         });
 
         // (b) Our X402ReceiptEnforcer binding to the intent
         childCaveats[1] = IDelegationManager.Caveat({
             enforcer: address(enforcer),
-            terms: abi.encodePacked(
-                INTENT_HASH,
-                BaseSepoliaConstants.USDC,
-                payTo,
-                MAX_AMOUNT,
-                uint8(0)
-            ),
+            terms: abi.encodePacked(INTENT_HASH, BaseSepoliaConstants.USDC, payTo, MAX_AMOUNT, uint8(0)),
             args: ""
         });
 
@@ -155,8 +143,7 @@ contract X402ReceiptEnforcerForkTest is Test {
         // Chain MUST be [leaf, ..., root]; otherwise the DM rejects with
         // InvalidDelegate() because chain[0].delegate is checked against
         // msg.sender first.
-        IDelegationManager.Delegation[] memory chain =
-            new IDelegationManager.Delegation[](2);
+        IDelegationManager.Delegation[] memory chain = new IDelegationManager.Delegation[](2);
         chain[0] = child;
         chain[1] = root;
         bytes[] memory permissionContexts = new bytes[](1);
@@ -167,14 +154,11 @@ contract X402ReceiptEnforcerForkTest is Test {
 
         bytes[] memory executionCallDatas = new bytes[](1);
         executionCallDatas[0] = abi.encodePacked(
-            BaseSepoliaConstants.USDC,
-            uint256(0),
-            IERC20.transfer.selector,
-            abi.encode(payTo, uint256(MAX_AMOUNT))
+            BaseSepoliaConstants.USDC, uint256(0), IERC20.transfer.selector, abi.encode(payTo, uint256(MAX_AMOUNT))
         );
 
         // ---------- 4. Redeem ----------
-        uint256 userBalanceBefore  = IUSDC(BaseSepoliaConstants.USDC).balanceOf(userSmartAccount);
+        uint256 userBalanceBefore = IUSDC(BaseSepoliaConstants.USDC).balanceOf(userSmartAccount);
         uint256 payToBalanceBefore = IUSDC(BaseSepoliaConstants.USDC).balanceOf(payTo);
 
         vm.recordLogs();
@@ -186,7 +170,7 @@ contract X402ReceiptEnforcerForkTest is Test {
         // ---------- 5. Asserts ----------
 
         // (a) USDC moved
-        uint256 userBalanceAfter  = IUSDC(BaseSepoliaConstants.USDC).balanceOf(userSmartAccount);
+        uint256 userBalanceAfter = IUSDC(BaseSepoliaConstants.USDC).balanceOf(userSmartAccount);
         uint256 payToBalanceAfter = IUSDC(BaseSepoliaConstants.USDC).balanceOf(payTo);
         assertEq(userBalanceBefore - userBalanceAfter, MAX_AMOUNT, "user balance");
         assertEq(payToBalanceAfter - payToBalanceBefore, MAX_AMOUNT, "payTo balance");
@@ -197,25 +181,16 @@ contract X402ReceiptEnforcerForkTest is Test {
         //     NOT the root delegator (userSmartAccount). That's correct
         //     caveat-enforcer semantics. Receipts that need to record the
         //     root payer should surface it in the x402 intent payload.
-        bytes32 sig = keccak256(
-            "X402IntentSettled(address,address,address,bytes32,uint256,address,bytes32)"
-        );
+        bytes32 sig = keccak256("X402IntentSettled(address,address,address,bytes32,uint256,address,bytes32)");
         bool foundOurEvent = false;
         for (uint256 i = 0; i < entries.length; i++) {
             Vm.Log memory e = entries[i];
             if (
-                e.emitter == address(enforcer) &&
-                e.topics.length == 4 &&
-                e.topics[0] == sig &&
-                e.topics[3] == bytes32(uint256(uint160(payTo)))
+                e.emitter == address(enforcer) && e.topics.length == 4 && e.topics[0] == sig
+                    && e.topics[3] == bytes32(uint256(uint160(payTo)))
             ) {
-                (bytes32 intent, uint256 amt, address tok, ) =
-                    abi.decode(e.data, (bytes32, uint256, address, bytes32));
-                if (
-                    intent == INTENT_HASH &&
-                    amt == MAX_AMOUNT &&
-                    tok == BaseSepoliaConstants.USDC
-                ) {
+                (bytes32 intent, uint256 amt, address tok,) = abi.decode(e.data, (bytes32, uint256, address, bytes32));
+                if (intent == INTENT_HASH && amt == MAX_AMOUNT && tok == BaseSepoliaConstants.USDC) {
                     foundOurEvent = true;
                     break;
                 }
@@ -230,17 +205,13 @@ contract X402ReceiptEnforcerForkTest is Test {
 
     // ---- helpers --------------------------------------------------------
 
-    function _signDelegation(
-        IDelegationManager dm,
-        IDelegationManager.Delegation memory d,
-        uint256 pk
-    ) internal pure returns (bytes memory) {
+    function _signDelegation(IDelegationManager dm, IDelegationManager.Delegation memory d, uint256 pk)
+        internal
+        pure
+        returns (bytes memory)
+    {
         bytes32 structHash = dm.getDelegationHash(d);
-        bytes32 digest = keccak256(abi.encodePacked(
-            "\x19\x01",
-            BaseSepoliaConstants.DOMAIN_SEPARATOR,
-            structHash
-        ));
+        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", BaseSepoliaConstants.DOMAIN_SEPARATOR, structHash));
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(pk, digest);
         return abi.encodePacked(r, s, v);
     }

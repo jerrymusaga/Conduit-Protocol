@@ -17,18 +17,18 @@ import { ModeCode } from "@delegator/utils/Types.sol";
 contract SwapBoundsEnforcerTest is Test {
     SwapBoundsEnforcer internal enforcer;
 
-    address internal router    = makeAddr("uniswapRouter");
-    address internal tokenIn   = makeAddr("USDC");
-    address internal tokenOut  = makeAddr("WETH");
-    address internal user      = makeAddr("user");        // the pinned recipient
-    address internal attacker  = makeAddr("attacker");
+    address internal router = makeAddr("uniswapRouter");
+    address internal tokenIn = makeAddr("USDC");
+    address internal tokenOut = makeAddr("WETH");
+    address internal user = makeAddr("user"); // the pinned recipient
+    address internal attacker = makeAddr("attacker");
     address internal delegator = makeAddr("delegator");
 
-    uint128 internal constant MAX_IN   = 20_000_000;   // 20 USDC (6dp)
-    uint128 internal constant MIN_OUT  = 5_000_000_000_000_000; // 0.005 WETH (18dp)
+    uint128 internal constant MAX_IN = 20_000_000; // 20 USDC (6dp)
+    uint128 internal constant MIN_OUT = 5_000_000_000_000_000; // 0.005 WETH (18dp)
 
     ModeCode internal constant SINGLE_DEFAULT = ModeCode.wrap(bytes32(0));
-    bytes32  internal constant DHASH = keccak256("swap-delegation");
+    bytes32 internal constant DHASH = keccak256("swap-delegation");
 
     function setUp() public {
         enforcer = new SwapBoundsEnforcer();
@@ -53,19 +53,11 @@ contract SwapBoundsEnforcerTest is Test {
     }
 
     /// Pack a single-call execution: target(20) ++ value(32) ++ callData.
-    function _exec(address target, uint256 value, bytes memory callData)
-        internal
-        pure
-        returns (bytes memory)
-    {
+    function _exec(address target, uint256 value, bytes memory callData) internal pure returns (bytes memory) {
         return abi.encodePacked(target, value, callData);
     }
 
-    function _swapCalldata(ISwapRouter02.ExactInputSingleParams memory p)
-        internal
-        pure
-        returns (bytes memory)
-    {
+    function _swapCalldata(ISwapRouter02.ExactInputSingleParams memory p) internal pure returns (bytes memory) {
         return abi.encodeCall(ISwapRouter02.exactInputSingle, (p));
     }
 
@@ -118,8 +110,16 @@ contract SwapBoundsEnforcerTest is Test {
     function test_RevertsWrongSelector() public {
         // Same length (228) but a different selector.
         ISwapRouter02.ExactInputSingleParams memory p = _goodParams();
-        bytes memory wrong = abi.encodeWithSelector(bytes4(0xdeadbeef),
-            p.tokenIn, p.tokenOut, p.fee, p.recipient, p.amountIn, p.amountOutMinimum, p.sqrtPriceLimitX96);
+        bytes memory wrong = abi.encodeWithSelector(
+            bytes4(0xdeadbeef),
+            p.tokenIn,
+            p.tokenOut,
+            p.fee,
+            p.recipient,
+            p.amountIn,
+            p.amountOutMinimum,
+            p.sqrtPriceLimitX96
+        );
         vm.expectRevert(bytes("SwapBounds:not-swap-selector"));
         _run(_terms(), _exec(router, 0, wrong));
     }
@@ -172,7 +172,12 @@ contract SwapBoundsEnforcerTest is Test {
     }
 
     // ---- minimal log access (avoids importing Vm.Log type name clashes) ----
-    struct Vm_Log { bytes32[] topics; bytes data; address emitter; }
+    struct Vm_Log {
+        bytes32[] topics;
+        bytes data;
+        address emitter;
+    }
+
     function _logs() internal returns (Vm_Log[] memory out) {
         Vm.Log[] memory raw = vm.getRecordedLogs();
         out = new Vm_Log[](raw.length);

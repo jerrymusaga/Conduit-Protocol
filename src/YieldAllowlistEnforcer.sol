@@ -82,23 +82,17 @@ contract YieldAllowlistEnforcer is CaveatEnforcer {
         bytes32 _delegationHash,
         address _delegator,
         address // _redeemer -- unconstrained at this hop
-    )
-        public
-        override
-        onlySingleCallTypeMode(_mode)
-        onlyDefaultExecutionMode(_mode)
-    {
+    ) public override onlySingleCallTypeMode(_mode) onlyDefaultExecutionMode(_mode) {
         // --- header ---
         require(_terms.length >= HEADER_LENGTH, "YieldAllow:invalid-terms-length");
-        address asset       = address(bytes20(_terms[0:20]));
+        address asset = address(bytes20(_terms[0:20]));
         uint256 maxAmountIn = uint256(uint128(bytes16(_terms[20:36])));
-        address recipient   = address(bytes20(_terms[36:56]));
-        uint256 n           = uint8(_terms[56]);
+        address recipient = address(bytes20(_terms[36:56]));
+        uint256 n = uint8(_terms[56]);
         require(n > 0 && _terms.length == HEADER_LENGTH + n * ENTRY_LENGTH, "YieldAllow:invalid-terms-length");
 
         // --- decode the deposit ---
-        (address target, uint256 value, bytes calldata callData) =
-            _executionCallData.decodeSingle();
+        (address target, uint256 value, bytes calldata callData) = _executionCallData.decodeSingle();
         require(callData.length == SUPPLY_CALLDATA_LENGTH, "YieldAllow:invalid-calldata-length");
         require(value == 0, "YieldAllow:no-native-value-allowed");
         require(bytes4(callData[0:4]) == IAavePool.supply.selector, "YieldAllow:not-supply-selector");
@@ -128,9 +122,7 @@ contract YieldAllowlistEnforcer is CaveatEnforcer {
         require(found, "YieldAllow:venue-not-allowed");
         require(amount >= floor, "YieldAllow:amount-below-floor");
 
-        emit YieldAllowed(
-            msg.sender, _delegator, recipient, target, asset, amount, floor, _delegationHash
-        );
+        emit YieldAllowed(msg.sender, _delegator, recipient, target, asset, amount, floor, _delegationHash);
     }
 
     /// @notice Decode the bounds for off-chain introspection (a coordinator can
@@ -148,10 +140,10 @@ contract YieldAllowlistEnforcer is CaveatEnforcer {
         )
     {
         require(_terms.length >= HEADER_LENGTH, "YieldAllow:invalid-terms-length");
-        asset       = address(bytes20(_terms[0:20]));
+        asset = address(bytes20(_terms[0:20]));
         maxAmountIn = uint256(uint128(bytes16(_terms[20:36])));
-        recipient   = address(bytes20(_terms[36:56]));
-        uint256 n   = uint8(_terms[56]);
+        recipient = address(bytes20(_terms[36:56]));
+        uint256 n = uint8(_terms[56]);
         require(n > 0 && _terms.length == HEADER_LENGTH + n * ENTRY_LENGTH, "YieldAllow:invalid-terms-length");
 
         pools = new address[](n);

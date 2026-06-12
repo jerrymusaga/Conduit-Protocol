@@ -23,14 +23,14 @@ contract X402SubscriptionEnforcerTest is Test {
     X402SubscriptionEnforcer internal enforcer;
 
     bytes32 internal constant SUB_ID = keccak256("sub-x402-unit-test");
-    address internal constant TOKEN     = address(0xdead000000000000000000000000000000000001);
+    address internal constant TOKEN = address(0xdead000000000000000000000000000000000001);
     address internal constant RECIPIENT = address(0xbeeF000000000000000000000000000000000002);
     uint128 internal constant AMOUNT = 5_000; // fixed price per period
-    uint32  internal constant PERIOD = 86_400; // 1 day
+    uint32 internal constant PERIOD = 86_400; // 1 day
 
-    ModeCode internal constant ZERO_MODE  = ModeCode.wrap(bytes32(0));
+    ModeCode internal constant ZERO_MODE = ModeCode.wrap(bytes32(0));
     ModeCode internal constant BATCH_MODE = ModeCode.wrap(bytes32(uint256(1) << 248));
-    ModeCode internal constant TRY_MODE   = ModeCode.wrap(bytes32(uint256(1) << 240));
+    ModeCode internal constant TRY_MODE = ModeCode.wrap(bytes32(uint256(1) << 240));
 
     function setUp() public {
         enforcer = new X402SubscriptionEnforcer();
@@ -43,7 +43,7 @@ contract X402SubscriptionEnforcerTest is Test {
 
     function test_FirstCharge_Succeeds_AsPeriod1() public {
         bytes memory terms = _terms(SUB_ID, TOKEN, RECIPIENT, AMOUNT, PERIOD);
-        bytes memory exec  = _packTransfer(TOKEN, 0, RECIPIENT, AMOUNT);
+        bytes memory exec = _packTransfer(TOKEN, 0, RECIPIENT, AMOUNT);
         bytes32 dHash = keccak256("d");
 
         vm.expectEmit(true, true, true, true, address(enforcer));
@@ -55,7 +55,7 @@ contract X402SubscriptionEnforcerTest is Test {
 
     function test_DoubleCharge_SamePeriod_Reverts() public {
         bytes memory terms = _terms(SUB_ID, TOKEN, RECIPIENT, AMOUNT, PERIOD);
-        bytes memory exec  = _packTransfer(TOKEN, 0, RECIPIENT, AMOUNT);
+        bytes memory exec = _packTransfer(TOKEN, 0, RECIPIENT, AMOUNT);
         bytes32 dHash = keccak256("d");
 
         enforcer.beforeHook(terms, "", ZERO_MODE, exec, dHash, address(1), address(2));
@@ -66,7 +66,7 @@ contract X402SubscriptionEnforcerTest is Test {
 
     function test_Charge_NextPeriod_Succeeds() public {
         bytes memory terms = _terms(SUB_ID, TOKEN, RECIPIENT, AMOUNT, PERIOD);
-        bytes memory exec  = _packTransfer(TOKEN, 0, RECIPIENT, AMOUNT);
+        bytes memory exec = _packTransfer(TOKEN, 0, RECIPIENT, AMOUNT);
         bytes32 dHash = keccak256("d");
 
         enforcer.beforeHook(terms, "", ZERO_MODE, exec, dHash, address(1), address(2)); // period 1
@@ -81,14 +81,14 @@ contract X402SubscriptionEnforcerTest is Test {
 
     function test_OverAmount_Reverts() public {
         bytes memory terms = _terms(SUB_ID, TOKEN, RECIPIENT, AMOUNT, PERIOD);
-        bytes memory exec  = _packTransfer(TOKEN, 0, RECIPIENT, uint256(AMOUNT) + 1);
+        bytes memory exec = _packTransfer(TOKEN, 0, RECIPIENT, uint256(AMOUNT) + 1);
         vm.expectRevert(bytes("X402Sub:wrong-amount"));
         enforcer.beforeHook(terms, "", ZERO_MODE, exec, keccak256("d"), address(1), address(2));
     }
 
     function test_UnderAmount_Reverts() public {
         bytes memory terms = _terms(SUB_ID, TOKEN, RECIPIENT, AMOUNT, PERIOD);
-        bytes memory exec  = _packTransfer(TOKEN, 0, RECIPIENT, uint256(AMOUNT) - 1);
+        bytes memory exec = _packTransfer(TOKEN, 0, RECIPIENT, uint256(AMOUNT) - 1);
         vm.expectRevert(bytes("X402Sub:wrong-amount"));
         enforcer.beforeHook(terms, "", ZERO_MODE, exec, keccak256("d"), address(1), address(2));
     }
@@ -99,21 +99,21 @@ contract X402SubscriptionEnforcerTest is Test {
 
     function test_WrongRecipient_Reverts() public {
         bytes memory terms = _terms(SUB_ID, TOKEN, RECIPIENT, AMOUNT, PERIOD);
-        bytes memory exec  = _packTransfer(TOKEN, 0, address(0xBAD), AMOUNT);
+        bytes memory exec = _packTransfer(TOKEN, 0, address(0xBAD), AMOUNT);
         vm.expectRevert(bytes("X402Sub:wrong-recipient"));
         enforcer.beforeHook(terms, "", ZERO_MODE, exec, keccak256("d"), address(1), address(2));
     }
 
     function test_WrongToken_Reverts() public {
         bytes memory terms = _terms(SUB_ID, TOKEN, RECIPIENT, AMOUNT, PERIOD);
-        bytes memory exec  = _packTransfer(address(0xBAD), 0, RECIPIENT, AMOUNT);
+        bytes memory exec = _packTransfer(address(0xBAD), 0, RECIPIENT, AMOUNT);
         vm.expectRevert(bytes("X402Sub:wrong-token"));
         enforcer.beforeHook(terms, "", ZERO_MODE, exec, keccak256("d"), address(1), address(2));
     }
 
     function test_NativeValue_Reverts() public {
         bytes memory terms = _terms(SUB_ID, TOKEN, RECIPIENT, AMOUNT, PERIOD);
-        bytes memory exec  = _packTransfer(TOKEN, 1, RECIPIENT, AMOUNT);
+        bytes memory exec = _packTransfer(TOKEN, 1, RECIPIENT, AMOUNT);
         vm.expectRevert(bytes("X402Sub:no-native-value-allowed"));
         enforcer.beforeHook(terms, "", ZERO_MODE, exec, keccak256("d"), address(1), address(2));
     }
@@ -139,14 +139,14 @@ contract X402SubscriptionEnforcerTest is Test {
 
     function test_BatchMode_Reverts() public {
         bytes memory terms = _terms(SUB_ID, TOKEN, RECIPIENT, AMOUNT, PERIOD);
-        bytes memory exec  = _packTransfer(TOKEN, 0, RECIPIENT, AMOUNT);
+        bytes memory exec = _packTransfer(TOKEN, 0, RECIPIENT, AMOUNT);
         vm.expectRevert();
         enforcer.beforeHook(terms, "", BATCH_MODE, exec, keccak256("d"), address(1), address(2));
     }
 
     function test_TryExecMode_Reverts() public {
         bytes memory terms = _terms(SUB_ID, TOKEN, RECIPIENT, AMOUNT, PERIOD);
-        bytes memory exec  = _packTransfer(TOKEN, 0, RECIPIENT, AMOUNT);
+        bytes memory exec = _packTransfer(TOKEN, 0, RECIPIENT, AMOUNT);
         vm.expectRevert();
         enforcer.beforeHook(terms, "", TRY_MODE, exec, keccak256("d"), address(1), address(2));
     }
@@ -155,25 +155,20 @@ contract X402SubscriptionEnforcerTest is Test {
     // helpers
     // ----------------------------------------------------------------
 
-    function _terms(
-        bytes32 subId,
-        address token,
-        address recipient,
-        uint128 amountPerPeriod,
-        uint32 periodDuration
-    ) internal pure returns (bytes memory) {
+    function _terms(bytes32 subId, address token, address recipient, uint128 amountPerPeriod, uint32 periodDuration)
+        internal
+        pure
+        returns (bytes memory)
+    {
         // 32 + 20 + 20 + 16 + 4 + 2(reserved) = 94 bytes
-        return abi.encodePacked(
-            subId, token, recipient, amountPerPeriod, periodDuration, uint16(0)
-        );
+        return abi.encodePacked(subId, token, recipient, amountPerPeriod, periodDuration, uint16(0));
     }
 
-    function _packTransfer(
-        address token,
-        uint256 value,
-        address to,
-        uint256 amount
-    ) internal pure returns (bytes memory) {
+    function _packTransfer(address token, uint256 value, address to, uint256 amount)
+        internal
+        pure
+        returns (bytes memory)
+    {
         return abi.encodePacked(token, value, IERC20.transfer.selector, abi.encode(to, amount));
     }
 }

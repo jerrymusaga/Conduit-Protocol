@@ -24,17 +24,17 @@ contract X402ReceiptEnforcerTest is Test {
     // any 40-hex-digit literal, regardless of case). If you change these, run
     // the failing build once; the compiler tells you the correct casing.
     bytes32 internal constant INTENT_HASH = keccak256("intent-x402-unit-test");
-    address internal constant TOKEN     = address(0xdead000000000000000000000000000000000001);
+    address internal constant TOKEN = address(0xdead000000000000000000000000000000000001);
     address internal constant RECIPIENT = address(0xbeeF000000000000000000000000000000000002);
     uint128 internal constant MAX_AMOUNT = 10_000; // 0.01 USDC-ish
-    uint8   internal constant FLAGS = 0;
+    uint8 internal constant FLAGS = 0;
 
     // Default-exec, single-call mode (both high-order bytes zero per ERC-7579)
     ModeCode internal constant ZERO_MODE = ModeCode.wrap(bytes32(0));
     // Mode with non-zero call-type byte (any value but 0x00 in byte 0)
     ModeCode internal constant BATCH_MODE = ModeCode.wrap(bytes32(uint256(1) << 248));
     // Mode with non-zero exec-type byte (byte 1 == 0x01)
-    ModeCode internal constant TRY_MODE   = ModeCode.wrap(bytes32(uint256(1) << 240));
+    ModeCode internal constant TRY_MODE = ModeCode.wrap(bytes32(uint256(1) << 240));
 
     function setUp() public {
         enforcer = new X402ReceiptEnforcer();
@@ -46,14 +46,14 @@ contract X402ReceiptEnforcerTest is Test {
 
     function test_BeforeHook_EmitsX402IntentSettled_OnValidRedemption() public {
         bytes memory terms = _terms(INTENT_HASH, TOKEN, RECIPIENT, MAX_AMOUNT, FLAGS);
-        bytes memory exec  = _packTransfer(TOKEN, 0, RECIPIENT, uint256(MAX_AMOUNT));
-        bytes32 dHash      = keccak256("test-delegation-hash");
-        address delegator  = address(0xC0DE);
-        address redeemer   = address(0xC0FFEE);
+        bytes memory exec = _packTransfer(TOKEN, 0, RECIPIENT, uint256(MAX_AMOUNT));
+        bytes32 dHash = keccak256("test-delegation-hash");
+        address delegator = address(0xC0DE);
+        address redeemer = address(0xC0FFEE);
 
         vm.expectEmit(true, true, true, true, address(enforcer));
         emit X402ReceiptEnforcer.X402IntentSettled(
-            address(this),  // msg.sender in this call IS this contract
+            address(this), // msg.sender in this call IS this contract
             delegator,
             RECIPIENT,
             INTENT_HASH,
@@ -68,8 +68,8 @@ contract X402ReceiptEnforcerTest is Test {
     function test_BeforeHook_AcceptsAmountStrictlyBelowCap() public {
         bytes memory terms = _terms(INTENT_HASH, TOKEN, RECIPIENT, MAX_AMOUNT, FLAGS);
         // Use MAX_AMOUNT - 1 to exercise the `<=` boundary
-        bytes memory exec  = _packTransfer(TOKEN, 0, RECIPIENT, uint256(MAX_AMOUNT) - 1);
-        bytes32 dHash      = keccak256("h");
+        bytes memory exec = _packTransfer(TOKEN, 0, RECIPIENT, uint256(MAX_AMOUNT) - 1);
+        bytes32 dHash = keccak256("h");
 
         enforcer.beforeHook(terms, "", ZERO_MODE, exec, dHash, address(1), address(2));
     }
@@ -88,15 +88,15 @@ contract X402ReceiptEnforcerTest is Test {
     // ----------------------------------------------------------------
 
     function test_RevertsOn_TermsLengthShort() public {
-        bytes memory terms = new bytes(88);            // one byte short
-        bytes memory exec  = _packTransfer(TOKEN, 0, RECIPIENT, MAX_AMOUNT);
+        bytes memory terms = new bytes(88); // one byte short
+        bytes memory exec = _packTransfer(TOKEN, 0, RECIPIENT, MAX_AMOUNT);
         vm.expectRevert(bytes("X402Receipt:invalid-terms-length"));
         enforcer.beforeHook(terms, "", ZERO_MODE, exec, bytes32(0), address(0), address(0));
     }
 
     function test_RevertsOn_TermsLengthLong() public {
-        bytes memory terms = new bytes(90);            // one byte long
-        bytes memory exec  = _packTransfer(TOKEN, 0, RECIPIENT, MAX_AMOUNT);
+        bytes memory terms = new bytes(90); // one byte long
+        bytes memory exec = _packTransfer(TOKEN, 0, RECIPIENT, MAX_AMOUNT);
         vm.expectRevert(bytes("X402Receipt:invalid-terms-length"));
         enforcer.beforeHook(terms, "", ZERO_MODE, exec, bytes32(0), address(0), address(0));
     }
@@ -119,7 +119,7 @@ contract X402ReceiptEnforcerTest is Test {
         bytes memory terms = _terms(INTENT_HASH, TOKEN, RECIPIENT, MAX_AMOUNT, FLAGS);
         // EIP-55 checksummed.
         address wrongToken = address(0xBaDc0FFEEbADC0ffeebaDC0ffeebaDc0FfeEbADc);
-        bytes memory exec  = _packTransfer(wrongToken, 0, RECIPIENT, MAX_AMOUNT);
+        bytes memory exec = _packTransfer(wrongToken, 0, RECIPIENT, MAX_AMOUNT);
 
         vm.expectRevert(bytes("X402Receipt:wrong-token"));
         enforcer.beforeHook(terms, "", ZERO_MODE, exec, bytes32(0), address(0), address(0));
@@ -127,7 +127,7 @@ contract X402ReceiptEnforcerTest is Test {
 
     function test_RevertsOn_NonZeroNativeValue() public {
         bytes memory terms = _terms(INTENT_HASH, TOKEN, RECIPIENT, MAX_AMOUNT, FLAGS);
-        bytes memory exec  = _packTransfer(TOKEN, 1, RECIPIENT, MAX_AMOUNT);
+        bytes memory exec = _packTransfer(TOKEN, 1, RECIPIENT, MAX_AMOUNT);
 
         vm.expectRevert(bytes("X402Receipt:no-native-value-allowed"));
         enforcer.beforeHook(terms, "", ZERO_MODE, exec, bytes32(0), address(0), address(0));
@@ -138,10 +138,7 @@ contract X402ReceiptEnforcerTest is Test {
         // 4-byte selector for transferFrom, padded the same way as transfer
         bytes4 transferFrom = bytes4(keccak256("transferFrom(address,address,uint256)"));
         // Build a 68-byte calldata that uses the wrong selector
-        bytes memory wrongSelectorCalldata = abi.encodePacked(
-            transferFrom,
-            abi.encode(RECIPIENT, uint256(MAX_AMOUNT))
-        );
+        bytes memory wrongSelectorCalldata = abi.encodePacked(transferFrom, abi.encode(RECIPIENT, uint256(MAX_AMOUNT)));
         bytes memory exec = abi.encodePacked(TOKEN, uint256(0), wrongSelectorCalldata);
 
         vm.expectRevert(bytes("X402Receipt:not-transfer-selector"));
@@ -151,7 +148,7 @@ contract X402ReceiptEnforcerTest is Test {
     function test_RevertsOn_WrongRecipient() public {
         bytes memory terms = _terms(INTENT_HASH, TOKEN, RECIPIENT, MAX_AMOUNT, FLAGS);
         address attackerSink = address(0x1111111111111111111111111111111111111111);
-        bytes memory exec  = _packTransfer(TOKEN, 0, attackerSink, MAX_AMOUNT);
+        bytes memory exec = _packTransfer(TOKEN, 0, attackerSink, MAX_AMOUNT);
 
         vm.expectRevert(bytes("X402Receipt:wrong-recipient"));
         enforcer.beforeHook(terms, "", ZERO_MODE, exec, bytes32(0), address(0), address(0));
@@ -160,7 +157,7 @@ contract X402ReceiptEnforcerTest is Test {
     function test_RevertsOn_AmountExceedsCap() public {
         bytes memory terms = _terms(INTENT_HASH, TOKEN, RECIPIENT, MAX_AMOUNT, FLAGS);
         // One unit over cap
-        bytes memory exec  = _packTransfer(TOKEN, 0, RECIPIENT, uint256(MAX_AMOUNT) + 1);
+        bytes memory exec = _packTransfer(TOKEN, 0, RECIPIENT, uint256(MAX_AMOUNT) + 1);
 
         vm.expectRevert(bytes("X402Receipt:amount-exceeds-cap"));
         enforcer.beforeHook(terms, "", ZERO_MODE, exec, bytes32(0), address(0), address(0));
@@ -172,7 +169,7 @@ contract X402ReceiptEnforcerTest is Test {
 
     function test_RevertsOn_NonSingleCallTypeMode() public {
         bytes memory terms = _terms(INTENT_HASH, TOKEN, RECIPIENT, MAX_AMOUNT, FLAGS);
-        bytes memory exec  = _packTransfer(TOKEN, 0, RECIPIENT, MAX_AMOUNT);
+        bytes memory exec = _packTransfer(TOKEN, 0, RECIPIENT, MAX_AMOUNT);
 
         vm.expectRevert(bytes("CaveatEnforcer:invalid-call-type"));
         enforcer.beforeHook(terms, "", BATCH_MODE, exec, bytes32(0), address(0), address(0));
@@ -180,7 +177,7 @@ contract X402ReceiptEnforcerTest is Test {
 
     function test_RevertsOn_NonDefaultExecutionMode() public {
         bytes memory terms = _terms(INTENT_HASH, TOKEN, RECIPIENT, MAX_AMOUNT, FLAGS);
-        bytes memory exec  = _packTransfer(TOKEN, 0, RECIPIENT, MAX_AMOUNT);
+        bytes memory exec = _packTransfer(TOKEN, 0, RECIPIENT, MAX_AMOUNT);
 
         vm.expectRevert(bytes("CaveatEnforcer:invalid-execution-type"));
         enforcer.beforeHook(terms, "", TRY_MODE, exec, bytes32(0), address(0), address(0));
@@ -190,21 +187,15 @@ contract X402ReceiptEnforcerTest is Test {
     // Fuzz: any (intent, token, recipient, amount) within constraints
     //       should pass when the execution matches the terms exactly.
     // ----------------------------------------------------------------
-    function testFuzz_HappyPath(
-        bytes32 intent,
-        address token,
-        address recipient,
-        uint128 max,
-        uint128 amount
-    ) public {
+    function testFuzz_HappyPath(bytes32 intent, address token, address recipient, uint128 max, uint128 amount) public {
         // Constrain to satisfying execution
         vm.assume(token != address(0));
         vm.assume(recipient != address(0));
         vm.assume(amount <= max);
 
         bytes memory terms = _terms(intent, token, recipient, max, 0);
-        bytes memory exec  = _packTransfer(token, 0, recipient, uint256(amount));
-        bytes32 dHash      = keccak256(abi.encode(intent, max));
+        bytes memory exec = _packTransfer(token, 0, recipient, uint256(amount));
+        bytes32 dHash = keccak256(abi.encode(intent, max));
 
         enforcer.beforeHook(terms, "", ZERO_MODE, exec, dHash, address(1), address(2));
     }
@@ -213,29 +204,21 @@ contract X402ReceiptEnforcerTest is Test {
     // Helpers
     // ----------------------------------------------------------------
 
-    function _terms(
-        bytes32 intentHash,
-        address token,
-        address recipient,
-        uint128 maxAmount,
-        uint8 flags
-    ) internal pure returns (bytes memory) {
+    function _terms(bytes32 intentHash, address token, address recipient, uint128 maxAmount, uint8 flags)
+        internal
+        pure
+        returns (bytes memory)
+    {
         return abi.encodePacked(intentHash, token, recipient, maxAmount, flags);
     }
 
     /// @dev Build an ERC-7579 packed single-call execution that targets
     ///      `token` with `value` ETH and a transfer(to, amount) callData.
-    function _packTransfer(
-        address token,
-        uint256 value,
-        address to,
-        uint256 amount
-    ) internal pure returns (bytes memory) {
-        return abi.encodePacked(
-            token,
-            value,
-            IERC20.transfer.selector,
-            abi.encode(to, amount)
-        );
+    function _packTransfer(address token, uint256 value, address to, uint256 amount)
+        internal
+        pure
+        returns (bytes memory)
+    {
+        return abi.encodePacked(token, value, IERC20.transfer.selector, abi.encode(to, amount));
     }
 }

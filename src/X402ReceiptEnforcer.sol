@@ -93,36 +93,19 @@ contract X402ReceiptEnforcer is CaveatEnforcer {
         bytes32 _delegationHash,
         address _delegator,
         address // _redeemer -- intentionally unconstrained at this hop
-    )
-        public
-        override
-        onlySingleCallTypeMode(_mode)
-        onlyDefaultExecutionMode(_mode)
-    {
-        (
-            bytes32 intentHash,
-            address expectedToken,
-            address expectedRecipient,
-            uint256 maxAmount
-        ) = getTermsInfo(_terms);
+    ) public override onlySingleCallTypeMode(_mode) onlyDefaultExecutionMode(_mode) {
+        (bytes32 intentHash, address expectedToken, address expectedRecipient, uint256 maxAmount) = getTermsInfo(_terms);
 
-        (address target, uint256 value, bytes calldata callData) =
-            _executionCallData.decodeSingle();
+        (address target, uint256 value, bytes calldata callData) = _executionCallData.decodeSingle();
 
         // Length-check FIRST. The Consensys audit (October 2024) flagged the
         // inverse ordering as a bug in ERC721TransferEnforcer; we mirror the
         // post-audit pattern from ERC20TransferAmountEnforcer here.
-        require(
-            callData.length == TRANSFER_CALLDATA_LENGTH,
-            "X402Receipt:invalid-calldata-length"
-        );
+        require(callData.length == TRANSFER_CALLDATA_LENGTH, "X402Receipt:invalid-calldata-length");
 
         require(target == expectedToken, "X402Receipt:wrong-token");
         require(value == 0, "X402Receipt:no-native-value-allowed");
-        require(
-            bytes4(callData[0:4]) == IERC20.transfer.selector,
-            "X402Receipt:not-transfer-selector"
-        );
+        require(bytes4(callData[0:4]) == IERC20.transfer.selector, "X402Receipt:not-transfer-selector");
 
         // Decode (to, amount) from the transfer calldata.
         // abi.decode is safe here because the length check above guarantees
@@ -156,22 +139,17 @@ contract X402ReceiptEnforcer is CaveatEnforcer {
     function getTermsInfo(bytes calldata _terms)
         public
         pure
-        returns (
-            bytes32 intentHash,
-            address expectedToken,
-            address expectedRecipient,
-            uint256 maxAmount
-        )
+        returns (bytes32 intentHash, address expectedToken, address expectedRecipient, uint256 maxAmount)
     {
         require(_terms.length == TERMS_LENGTH, "X402Receipt:invalid-terms-length");
 
-        intentHash        = bytes32(_terms[0:32]);
-        expectedToken     = address(bytes20(_terms[32:52]));
+        intentHash = bytes32(_terms[0:32]);
+        expectedToken = address(bytes20(_terms[32:52]));
         expectedRecipient = address(bytes20(_terms[52:72]));
         // Pack maxAmount as uint128 (16 bytes). USDC has 6 decimals so
         // 2^128 wei-units is ~3.4e32 USDC -- more than enough headroom and
         // saves 16 bytes per delegation.
-        maxAmount         = uint256(uint128(bytes16(_terms[72:88])));
+        maxAmount = uint256(uint128(bytes16(_terms[72:88])));
 
         // Flags byte at _terms[88] is reserved for future use (e.g. requiring
         // on-chain x402 settlement event anchoring in afterHook). We don't

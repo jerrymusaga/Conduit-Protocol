@@ -17,9 +17,9 @@ interface IERC20Approve {
 contract ApproveBoundsEnforcerTest is Test {
     ApproveBoundsEnforcer internal enforcer;
 
-    address internal token    = makeAddr("USDC");
-    address internal router    = makeAddr("uniswapRouter");
-    address internal attacker  = makeAddr("attacker");
+    address internal token = makeAddr("USDC");
+    address internal router = makeAddr("uniswapRouter");
+    address internal attacker = makeAddr("attacker");
     address internal delegator = makeAddr("delegator");
 
     uint128 internal constant CAP = 20_000_000; // 20 USDC

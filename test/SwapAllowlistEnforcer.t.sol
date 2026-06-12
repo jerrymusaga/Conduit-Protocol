@@ -14,17 +14,17 @@ import { ModeCode } from "@delegator/utils/Types.sol";
 contract SwapAllowlistEnforcerTest is Test {
     SwapAllowlistEnforcer internal enforcer;
 
-    address internal router    = makeAddr("uniswapRouter");
-    address internal usdc      = makeAddr("USDC");
-    address internal weth      = makeAddr("WETH");   // allowed #1
-    address internal cbeth     = makeAddr("cbETH");  // allowed #2
-    address internal rug       = makeAddr("rugToken"); // NOT allowed
-    address internal user      = makeAddr("user");
-    address internal attacker  = makeAddr("attacker");
+    address internal router = makeAddr("uniswapRouter");
+    address internal usdc = makeAddr("USDC");
+    address internal weth = makeAddr("WETH"); // allowed #1
+    address internal cbeth = makeAddr("cbETH"); // allowed #2
+    address internal rug = makeAddr("rugToken"); // NOT allowed
+    address internal user = makeAddr("user");
+    address internal attacker = makeAddr("attacker");
     address internal delegator = makeAddr("delegator");
 
-    uint128 internal constant MAX_IN    = 20_000_000;            // 20 USDC
-    uint128 internal constant WETH_FLOOR = 5_000_000_000_000_000;  // 0.005 WETH
+    uint128 internal constant MAX_IN = 20_000_000; // 20 USDC
+    uint128 internal constant WETH_FLOOR = 5_000_000_000_000_000; // 0.005 WETH
     uint128 internal constant CBETH_FLOOR = 4_000_000_000_000_000; // 0.004 cbETH
 
     ModeCode internal constant SINGLE_DEFAULT = ModeCode.wrap(bytes32(0));
@@ -36,21 +36,30 @@ contract SwapAllowlistEnforcerTest is Test {
 
     // router · tokenIn · maxIn · recipient · N · [tokenOut·minOut]×N
     function _terms() internal view returns (bytes memory) {
-        return abi.encodePacked(
-            router, usdc, MAX_IN, user, uint8(2),
-            weth, WETH_FLOOR,
-            cbeth, CBETH_FLOOR
-        );
+        return abi.encodePacked(router, usdc, MAX_IN, user, uint8(2), weth, WETH_FLOOR, cbeth, CBETH_FLOOR);
     }
 
-    function _params(address tokenOut, uint256 minOut) internal view returns (ISwapRouter02.ExactInputSingleParams memory) {
+    function _params(address tokenOut, uint256 minOut)
+        internal
+        view
+        returns (ISwapRouter02.ExactInputSingleParams memory)
+    {
         return ISwapRouter02.ExactInputSingleParams({
-            tokenIn: usdc, tokenOut: tokenOut, fee: 500, recipient: user,
-            amountIn: MAX_IN, amountOutMinimum: minOut, sqrtPriceLimitX96: 0
+            tokenIn: usdc,
+            tokenOut: tokenOut,
+            fee: 500,
+            recipient: user,
+            amountIn: MAX_IN,
+            amountOutMinimum: minOut,
+            sqrtPriceLimitX96: 0
         });
     }
 
-    function _exec(address target, uint256 value, ISwapRouter02.ExactInputSingleParams memory p) internal pure returns (bytes memory) {
+    function _exec(address target, uint256 value, ISwapRouter02.ExactInputSingleParams memory p)
+        internal
+        pure
+        returns (bytes memory)
+    {
         return abi.encodePacked(target, value, abi.encodeCall(ISwapRouter02.exactInputSingle, (p)));
     }
 

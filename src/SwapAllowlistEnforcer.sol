@@ -59,24 +59,18 @@ contract SwapAllowlistEnforcer is CaveatEnforcer {
         bytes32 _delegationHash,
         address _delegator,
         address // _redeemer
-    )
-        public
-        override
-        onlySingleCallTypeMode(_mode)
-        onlyDefaultExecutionMode(_mode)
-    {
+    ) public override onlySingleCallTypeMode(_mode) onlyDefaultExecutionMode(_mode) {
         // --- header ---
         require(_terms.length >= HEADER_LENGTH, "SwapAllow:invalid-terms-length");
-        address router      = address(bytes20(_terms[0:20]));
-        address tokenIn     = address(bytes20(_terms[20:40]));
+        address router = address(bytes20(_terms[0:20]));
+        address tokenIn = address(bytes20(_terms[20:40]));
         uint256 maxAmountIn = uint256(uint128(bytes16(_terms[40:56])));
-        address recipient   = address(bytes20(_terms[56:76]));
-        uint256 n           = uint8(_terms[76]);
+        address recipient = address(bytes20(_terms[56:76]));
+        uint256 n = uint8(_terms[76]);
         require(n > 0 && _terms.length == HEADER_LENGTH + n * ENTRY_LENGTH, "SwapAllow:invalid-terms-length");
 
         // --- decode the swap ---
-        (address target, uint256 value, bytes calldata callData) =
-            _executionCallData.decodeSingle();
+        (address target, uint256 value, bytes calldata callData) = _executionCallData.decodeSingle();
         require(callData.length == SWAP_CALLDATA_LENGTH, "SwapAllow:invalid-calldata-length");
         require(target == router, "SwapAllow:wrong-router");
         require(value == 0, "SwapAllow:no-native-value-allowed");
@@ -84,8 +78,7 @@ contract SwapAllowlistEnforcer is CaveatEnforcer {
 
         (
             address callTokenIn,
-            address callTokenOut,
-            , // fee
+            address callTokenOut,, // fee
             address callRecipient,
             uint256 amountIn,
             uint256 callMinOut,
@@ -130,11 +123,11 @@ contract SwapAllowlistEnforcer is CaveatEnforcer {
         )
     {
         require(_terms.length >= HEADER_LENGTH, "SwapAllow:invalid-terms-length");
-        router      = address(bytes20(_terms[0:20]));
-        tokenIn     = address(bytes20(_terms[20:40]));
+        router = address(bytes20(_terms[0:20]));
+        tokenIn = address(bytes20(_terms[20:40]));
         maxAmountIn = uint256(uint128(bytes16(_terms[40:56])));
-        recipient   = address(bytes20(_terms[56:76]));
-        uint256 n   = uint8(_terms[76]);
+        recipient = address(bytes20(_terms[56:76]));
+        uint256 n = uint8(_terms[76]);
         require(n > 0 && _terms.length == HEADER_LENGTH + n * ENTRY_LENGTH, "SwapAllow:invalid-terms-length");
 
         tokensOut = new address[](n);

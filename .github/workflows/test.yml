@@ -25,18 +25,19 @@ jobs:
         with:
           version: nightly
 
-      - name: Install dependencies (pinned)
-        run: |
-          forge install foundry-rs/forge-std --no-commit --no-git
-          forge install MetaMask/delegation-framework@v1.3.0 --no-commit --no-git
-          forge install erc7579/erc7579-implementation@v0.0.2 --no-commit --no-git
-          forge install eth-infinitism/account-abstraction@v0.7.0 --no-commit --no-git
+      # Dependencies are git submodules pinned to exact commits (see .gitmodules);
+      # `submodules: recursive` above already checks them out at those commits, so
+      # no `forge install` (re-cloning over submodules was flaky — git exit 128).
+      - name: Verify submodule deps present
+        run: test -f lib/forge-std/src/Test.sol && test -d lib/delegation-framework/src && test -d lib/erc7579-implementation/src && test -d lib/account-abstraction/contracts
 
       - name: Build
         run: forge build --sizes
 
       - name: Unit tests
-        run: forge test --match-contract X402ReceiptEnforcerTest -vvv
+        # All unit suites (no RPC). Fork suites (…ForkTest) are excluded — they
+        # run in the fork-test job on workflow_dispatch with an RPC URL.
+        run: forge test --no-match-contract "ForkTest" -vvv
 
   # -------------------------------------------------------------------------
   # Fork integration test. Run on workflow_dispatch (manual) only — public
@@ -57,12 +58,11 @@ jobs:
         with:
           version: nightly
 
-      - name: Install dependencies (pinned)
-        run: |
-          forge install foundry-rs/forge-std --no-commit --no-git
-          forge install MetaMask/delegation-framework@v1.3.0 --no-commit --no-git
-          forge install erc7579/erc7579-implementation@v0.0.2 --no-commit --no-git
-          forge install eth-infinitism/account-abstraction@v0.7.0 --no-commit --no-git
+      # Dependencies are git submodules pinned to exact commits (see .gitmodules);
+      # `submodules: recursive` above already checks them out at those commits, so
+      # no `forge install` (re-cloning over submodules was flaky — git exit 128).
+      - name: Verify submodule deps present
+        run: test -f lib/forge-std/src/Test.sol && test -d lib/delegation-framework/src && test -d lib/erc7579-implementation/src && test -d lib/account-abstraction/contracts
 
       - name: Fork test
         env:

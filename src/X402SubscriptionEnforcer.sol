@@ -93,22 +93,11 @@ contract X402SubscriptionEnforcer is CaveatEnforcer {
         bytes32 _delegationHash,
         address _delegator,
         address // _redeemer — unconstrained at this hop
-    )
-        public
-        override
-        onlySingleCallTypeMode(_mode)
-        onlyDefaultExecutionMode(_mode)
-    {
-        (
-            bytes32 subscriptionId,
-            address token,
-            address recipient,
-            uint256 amountPerPeriod,
-            uint256 periodDuration
-        ) = getTermsInfo(_terms);
+    ) public override onlySingleCallTypeMode(_mode) onlyDefaultExecutionMode(_mode) {
+        (bytes32 subscriptionId, address token, address recipient, uint256 amountPerPeriod, uint256 periodDuration) =
+            getTermsInfo(_terms);
 
-        (address target, uint256 value, bytes calldata callData) =
-            _executionCallData.decodeSingle();
+        (address target, uint256 value, bytes calldata callData) = _executionCallData.decodeSingle();
 
         // Length-check FIRST (post-audit ordering, see X402ReceiptEnforcer).
         require(callData.length == TRANSFER_CALLDATA_LENGTH, "X402Sub:invalid-calldata-length");
