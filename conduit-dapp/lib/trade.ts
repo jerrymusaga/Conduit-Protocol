@@ -420,6 +420,9 @@ export interface TradeToken {
   address: Hex;
   /** A short hint the scout reasons over to match the prompt. */
   note: string;
+  /** Uniswap v3 pool fee tier for the USDC pair (token-specific — cbETH's deepest
+   *  USDC pool is 3000, WETH/cbBTC are 500). Defaults to 500 if unset. */
+  fee?: number;
 }
 
 // The CURATED set a user can authorise for swaps — a vetted menu of liquid Base
@@ -433,9 +436,11 @@ export interface TradeToken {
 // quoted; on mainnet an un-quotable token is dropped from the signed set.
 // Recognisable to a normal user: ETH, Bitcoin, staked-ETH (the yield pick).
 const BASE_TOKENS: TradeToken[] = [
-  { name: "ETH",        symbol: "WETH",  address: "0x4200000000000000000000000000000000000006", note: "Ether — the base asset" },
-  { name: "Bitcoin",    symbol: "cbBTC", address: "0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf", note: "Coinbase wrapped BTC — Bitcoin exposure" },
-  { name: "Staked ETH", symbol: "cbETH", address: "0x2Ae3F1Ec7F1F5012CFEab0185bfc7aa3cf0DEc22", note: "Coinbase staked ETH — earns staking yield" },
+  { name: "ETH",        symbol: "WETH",  address: "0x4200000000000000000000000000000000000006", note: "Ether — the base asset", fee: 500 },
+  { name: "Bitcoin",    symbol: "cbBTC", address: "0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf", note: "Coinbase wrapped BTC — Bitcoin exposure", fee: 500 },
+  // cbETH's deepest USDC pool on Base is the 0.3% (3000) tier, not 0.05% — quoting
+  // it at 500 returns nothing and would drop it from the signed set on mainnet.
+  { name: "Staked ETH", symbol: "cbETH", address: "0x2Ae3F1Ec7F1F5012CFEab0185bfc7aa3cf0DEc22", note: "Coinbase staked ETH — earns staking yield", fee: 3000 },
 ];
 const TRADE_TOKENS: Record<number, TradeToken[]> = { 8453: BASE_TOKENS, 84532: BASE_TOKENS };
 
@@ -450,6 +455,9 @@ export interface AllowlistEntry {
   name: string;
   minAmountOut: bigint;
   note: string;
+  /** The Uniswap fee tier this token was quoted at — reused for the swap so the
+   *  trade hits the same pool the floor was priced against. */
+  fee: number;
 }
 
 export interface SwapAllowlistGrant {
@@ -511,12 +519,15 @@ export async function grantSwapAllowlist(params: {
   // floor); on testnet a nominal floor keeps the authorisation + scout pick demoable.
   const quoted = await Promise.all(
     tokens.map(async (t) => {
-      const expected = await quoteExpectedOut({ tokenIn, tokenOut: t.address, fee }, amountIn);
+      // Quote each token at ITS OWN pool fee tier (cbETH is 3000, not 500) —
+      // quoting at a single tier would drop tokens whose USDC pool isn't that tier.
+      const tFee = t.fee ?? fee;
+      const expected = await quoteExpectedOut({ tokenIn, tokenOut: t.address, fee: tFee }, amountIn);
       if (expected && expected > 0n) {
-        return { token: t.address, symbol: t.symbol, name: t.name, note: t.note, minAmountOut: (expected * BigInt(10_000 - params.slippageBps)) / 10_000n };
+        return { token: t.address, symbol: t.symbol, name: t.name, note: t.note, fee: tFee, minAmountOut: (expected * BigInt(10_000 - params.slippageBps)) / 10_000n };
       }
       if (config.chainId === 8453) return null; // mainnet: drop un-quotable tokens
-      return { token: t.address, symbol: t.symbol, name: t.name, note: t.note, minAmountOut: 1n }; // testnet nominal
+      return { token: t.address, symbol: t.symbol, name: t.name, note: t.note, fee: tFee, minAmountOut: 1n }; // testnet nominal
     })
   );
   const entries: AllowlistEntry[] = quoted.filter((e): e is AllowlistEntry => e !== null);
@@ -602,10 +613,12 @@ export async function buildAllowlistSwapCommission(params: {
   };
 
   // Reuse the swap-calldata encoder via a SwapBounds-shaped view of the chosen leg.
+  // Use the CHOSEN token's own fee tier (the one its floor was quoted against), so
+  // the swap hits the same pool — falling back to the grant default off-allowlist.
   const bounds: SwapBounds = {
     router: grant.router, tokenIn: grant.tokenIn, tokenOut,
     maxAmountIn: grant.maxAmountIn, minAmountOut: entry?.minAmountOut ?? 1n,
-    recipient: grant.recipient, fee: grant.fee,
+    recipient: grant.recipient, fee: entry?.fee ?? grant.fee,
   };
   const swapCalldata = encodeSwapCalldata(bounds, amountIn, params.recipientOverride);
 
