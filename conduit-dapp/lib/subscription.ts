@@ -93,18 +93,21 @@ export function encodeSubscriptionTerms(t: SubscriptionTerms): Hex {
   );
 }
 
-/** Resolve the on-chain subscription terms from a 402 envelope. */
+/** Resolve the on-chain subscription terms from a 402 envelope. An optional
+ *  `tier` (one of the seller-advertised cadence options) overrides the default
+ *  period + amount — that's how a buyer-selected cadence gets bound on-chain. */
 export function termsFromRequirements(
   req: PaymentRequirements,
-  sub: SubscriptionRequirements
+  sub: SubscriptionRequirements,
+  tier?: { periodSeconds: number; amountPerPeriod: string }
 ): SubscriptionTerms {
   return {
     enforcer: sub.enforcer,
     subscriptionId: sub.subscriptionId,
     token: req.asset,
     recipient: req.payTo,
-    amountPerPeriod: BigInt(sub.amountPerPeriod),
-    periodSeconds: sub.periodSeconds,
+    amountPerPeriod: BigInt(tier?.amountPerPeriod ?? sub.amountPerPeriod),
+    periodSeconds: tier?.periodSeconds ?? sub.periodSeconds,
   };
 }
 

@@ -71,15 +71,16 @@ interface ChargeCard {
 
 const now = () => new Date().toLocaleTimeString("en-US", { hour12: false });
 
-/** Per-product visual identity for the subscription cards — a gradient avatar +
- *  glyph so each feed reads as a distinct "product", plus what it delivers. */
-const PRODUCT_VISUAL: Record<string, { glyph: string; grad: string; ring: string }> = {
-  "pulse-feed":    { glyph: "📈", grad: "from-conduit-cyan/30 to-conduit-cyan/[0.04]",   ring: "ring-conduit-cyan/30" },
-  "daily-digest":  { glyph: "🧠", grad: "from-conduit-violet/30 to-conduit-violet/[0.04]", ring: "ring-conduit-violet/30" },
-  "weekly-trends": { glyph: "🌾", grad: "from-emerald-400/30 to-emerald-400/[0.04]",      ring: "ring-emerald-400/30" },
+/** Per-product visual identity for the subscription cards — a real Venice-generated
+ *  cover image (public/images/product-*.png) so each feed reads as a distinct
+ *  "product", with a fallback glyph for any unmapped service. */
+const PRODUCT_VISUAL: Record<string, { img: string; glyph: string; ring: string }> = {
+  "pulse-feed":    { img: "/images/product-pulse.png", glyph: "📈", ring: "ring-conduit-cyan/30" },
+  "daily-digest":  { img: "/images/product-alpha.png", glyph: "🧠", ring: "ring-conduit-violet/30" },
+  "weekly-trends": { img: "/images/product-yield.png", glyph: "🌾", ring: "ring-emerald-400/30" },
 };
 const productVisual = (id: string) =>
-  PRODUCT_VISUAL[id] ?? { glyph: "✦", grad: "from-conduit-border/40 to-transparent", ring: "ring-conduit-border" };
+  PRODUCT_VISUAL[id] ?? { img: "", glyph: "✦", ring: "ring-conduit-border" };
 
 export default function SubscriptionPage() {
   // Privy (auth) + wagmi (wallet client) — same wiring as /demo.
@@ -115,6 +116,9 @@ export default function SubscriptionPage() {
   // Subscription catalog + 402 requirements (loaded once).
   const [service, setService] = useState<CatalogService | null>(null);
   const [req, setReq] = useState<PaymentRequirements | null>(null);
+  // Buyer-selected cadence tier (index into req.subscription.tiers). 0 = the
+  // seller's default, so behavior is unchanged unless the buyer picks another.
+  const [tierIdx, setTierIdx] = useState(0);
   // The subscription marketplace: pick which recurring service to opt into.
   const [subServices, setSubServices] = useState<CatalogService[]>([]);
   const [subAgents, setSubAgents] = useState<DiscoveredAgent[]>([]); // registry tags
@@ -316,6 +320,7 @@ export default function SubscriptionPage() {
       const requirements = await fetch402(svc.resource);
       setService(svc);
       setReq(requirements);
+      setTierIdx(0); // reset to the seller default for the newly selected service
       append(`Selected ${svc.label} · charged once ${fmtCadence(requirements.subscription?.periodSeconds)}`);
     } catch (e) {
       append(`Could not load ${svc.label} · ${errMsg(e)}`);
@@ -358,13 +363,13 @@ export default function SubscriptionPage() {
         append("External wallet can't sign EIP-7702 — sign in with email or a passkey for the full flow.");
       }
 
-      const terms = termsFromRequirements(req, req.subscription);
+      const terms = termsFromRequirements(req, req.subscription, activeTier);
       const nowSecs = Math.floor(Date.now() / 1000);
       const expiry = noExpiry
         ? undefined
         : Math.max(nowSecs + 60, Math.floor(new Date(subExpiryAt).getTime() / 1000));
       append(
-        `Signing the subscription: ${service.priceUsdc} USDC → ${shorten(terms.recipient)} once ${fmtCadence(terms.periodSeconds)}` +
+        `Signing the subscription: ${activePriceUsdc ?? service.priceUsdc} USDC → ${shorten(terms.recipient)} once ${fmtCadence(terms.periodSeconds)}` +
           (expiry ? `, expires in ${fmtDuration(expiry - nowSecs)}` : ", no expiry") + "…"
       );
       // Size the gas-fee budget root to at least the live dynamic fee cap, so a
@@ -481,7 +486,15 @@ export default function SubscriptionPage() {
 
   // --- render --------------------------------------------------------------
 
-  const periodLabel = req?.subscription ? fmtCadence(req.subscription.periodSeconds) : "—";
+  // The active cadence tier (buyer-selected, or the seller default). Drives both
+  // what's displayed and what gets signed.
+  const subTiers = req?.subscription?.tiers;
+  const activeTier = subTiers?.[tierIdx];
+  const activePeriodSeconds = activeTier?.periodSeconds ?? req?.subscription?.periodSeconds;
+  const activePriceUsdc = activeTier
+    ? formatUnits(BigInt(activeTier.amountPerPeriod), 6)
+    : service?.priceUsdc;
+  const periodLabel = activePeriodSeconds ? fmtCadence(activePeriodSeconds) : "—";
   // The most recent Venice deliverable a charge bought (newest-first list).
   const lastDeliverable = charges.find((c) => c.stage === "settled" && c.deliverable?.body)?.deliverable ?? null;
 
@@ -493,9 +506,9 @@ export default function SubscriptionPage() {
           enforcerName: "X402SubscriptionEnforcer",
           enforcerAddr: req.subscription.enforcer,
           terms: [
-            { label: "amount", value: `${service.priceUsdc} USDC (exact)` },
+            { label: "amount", value: `${activePriceUsdc ?? service.priceUsdc} USDC (exact)` },
             { label: "merchant", value: shorten(req.payTo) },
-            { label: "cadence", value: `once ${fmtCadence(req.subscription.periodSeconds)}` },
+            { label: "cadence", value: `once ${periodLabel}` },
           ],
         }
       : null;
@@ -599,10 +612,20 @@ export default function SubscriptionPage() {
                           sel ? "border-conduit-cyan/60 bg-conduit-cyan/10" : "border-conduit-border/60 hover:border-conduit-cyan/40"
                         } ${subscribed && !sel ? "opacity-40" : ""}`}
                       >
-                        {/* avatar */}
-                        <span className={`grid h-11 w-11 shrink-0 place-items-center rounded-lg bg-gradient-to-br text-xl ring-1 ${vis.grad} ${vis.ring}`}>
-                          {vis.glyph}
-                        </span>
+                        {/* avatar — Venice-generated product cover */}
+                        {vis.img ? (
+                          <Image
+                            src={vis.img}
+                            alt=""
+                            width={44}
+                            height={44}
+                            className={`h-11 w-11 shrink-0 rounded-lg object-cover ring-1 ${vis.ring}`}
+                          />
+                        ) : (
+                          <span className={`grid h-11 w-11 shrink-0 place-items-center rounded-lg text-xl ring-1 ${vis.ring}`}>
+                            {vis.glyph}
+                          </span>
+                        )}
                         {/* details */}
                         <span className="min-w-0 flex-1">
                           <span className="flex items-center justify-between gap-2">
@@ -631,8 +654,35 @@ export default function SubscriptionPage() {
                 <div className="rounded-lg border border-conduit-border/60 p-3">
                   <p className="text-sm font-semibold text-white">{service.label}</p>
                   <p className="mt-0.5 text-[12px] text-conduit-muted">{service.description}</p>
+
+                  {/* Buyer-selectable cadence — pick one of the seller's tiers. */}
+                  {subTiers && subTiers.length > 1 && (
+                    <div className="mt-3">
+                      <p className="text-[11px] uppercase tracking-wide text-conduit-muted/70">Cadence</p>
+                      <div className="mt-1.5 flex flex-wrap gap-1.5">
+                        {subTiers.map((t, i) => {
+                          const on = i === tierIdx;
+                          return (
+                            <button
+                              key={t.periodSeconds}
+                              type="button"
+                              onClick={() => setTierIdx(i)}
+                              disabled={busy || subscribed}
+                              className={`rounded-lg border px-2.5 py-1.5 text-[11.5px] transition disabled:cursor-not-allowed ${
+                                on ? "border-conduit-cyan bg-conduit-cyan/10 text-white" : "border-conduit-border text-conduit-muted hover:border-conduit-cyan/40"
+                              }`}
+                            >
+                              {t.label} <span className="text-conduit-muted/70">· {formatUnits(BigInt(t.amountPerPeriod), 6)} USDC</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                      {!subscribed && <p className="mt-1.5 text-[10px] text-conduit-muted/60">You sign the cadence you pick — the charge is bound to it on-chain.</p>}
+                    </div>
+                  )}
+
                   <div className="mono mt-3 space-y-1 text-[12px]">
-                    <Row k="charge" v={`${service.priceUsdc} USDC (exact)`} />
+                    <Row k="charge" v={`${activePriceUsdc ?? service.priceUsdc} USDC (exact)`} />
                     <Row k="cadence" v={`once ${periodLabel}`} />
                     <Row k="paid to" v={shorten(req.payTo)} />
                     <Row k="on-chain rule" v={shorten(req.subscription?.enforcer ?? null)} />

@@ -32,12 +32,26 @@ export type AgentRole =
   | "scout" // paid market-intelligence: picks the best asset from a signed set
   | "feed"; // subscription feeds
 
+/** One seller-offered cadence option (period + the exact price for that period). */
+export interface SubscriptionTier {
+  periodSeconds: number;
+  /** Human price for THIS cadence. */
+  priceUsdc: string;
+  /** Exact per-period charge in base units (6-decimals), precomputed. */
+  amountBaseUnits: string;
+  /** Short label, e.g. "Weekly". */
+  label: string;
+}
+
 /** Subscription-only terms a recurring service advertises in its 402 envelope. */
 export interface SubscriptionTerms {
   /** Off-chain subscription identifier (bytes32), bound into the enforcer terms. */
   subscriptionId: `0x${string}`;
-  /** Billing period length in seconds (the cadence / "frequency"). */
+  /** Billing period length in seconds (the cadence / "frequency"). The default. */
   periodSeconds: number;
+  /** Optional seller-sanctioned cadence menu — the buyer may pick + sign one of
+   *  these instead of the default (price is fixed per tier by the seller). */
+  tiers?: SubscriptionTier[];
 }
 
 export interface Service {
@@ -82,9 +96,14 @@ function svc(
   };
 }
 
-const subTerms = (id: string, periodSeconds: number): SubscriptionTerms => ({
+const subTerms = (
+  id: string,
+  periodSeconds: number,
+  tiers?: { periodSeconds: number; priceUsdc: string; label: string }[]
+): SubscriptionTerms => ({
   subscriptionId: keccak256(toHex(`conduit:${id}`)),
   periodSeconds,
+  tiers: tiers?.map((t) => ({ ...t, amountBaseUnits: parseUnits(t.priceUsdc, 6).toString() })),
 });
 
 /**
@@ -125,15 +144,30 @@ export const SERVICES: Service[] = [
   // Variety of periods for the portfolio showcase; the LIVE demo drives the 60s
   // one so the cadence + the on-chain "already-charged-this-period" guard show
   // fast. subscriptionId is deterministic from the id.
+  // Each subscription offers a seller-sanctioned cadence menu (the FIRST tier is
+  // the default — same as the base price/period, so existing behavior is unchanged;
+  // the live demo still drives Market Pulse at 60s). The buyer may pick + sign a
+  // different tier; the price is fixed per tier by the seller.
   svc("pulse-feed", "Market Pulse", "subscription", "feed", "venice:chat", "0.01",
     "A live market pulse — the single most important move right now.",
-    subTerms("pulse-feed", 60)),
+    subTerms("pulse-feed", 60, [
+      { periodSeconds: 60, priceUsdc: "0.01", label: "Every minute" },
+      { periodSeconds: 3_600, priceUsdc: "0.05", label: "Hourly" },
+      { periodSeconds: 86_400, priceUsdc: "0.20", label: "Daily" },
+    ])),
   svc("daily-digest", "AI Alpha Daily", "subscription", "feed", "venice:chat+search", "0.10",
     "Your daily AI + crypto alpha — three concrete, web-researched takeaways, every day.",
-    subTerms("daily-digest", 86_400)),
+    subTerms("daily-digest", 86_400, [
+      { periodSeconds: 86_400, priceUsdc: "0.10", label: "Daily" },
+      { periodSeconds: 604_800, priceUsdc: "0.50", label: "Weekly" },
+      { periodSeconds: 2_592_000, priceUsdc: "1.50", label: "Monthly" },
+    ])),
   svc("weekly-trends", "DeFi Yield Weekly", "subscription", "feed", "venice:chat+search", "0.50",
     "A weekly DeFi yield report — where the best on-chain yields are this week (protocols + APYs).",
-    subTerms("weekly-trends", 604_800)),
+    subTerms("weekly-trends", 604_800, [
+      { periodSeconds: 604_800, priceUsdc: "0.50", label: "Weekly" },
+      { periodSeconds: 2_592_000, priceUsdc: "1.50", label: "Monthly" },
+    ])),
 ];
 
 export function getService(id: string): Service | undefined {
