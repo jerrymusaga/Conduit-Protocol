@@ -1259,12 +1259,27 @@ function fmtDuration(sec: number): string {
   return `${Math.round(sec / 86400)}d`;
 }
 function errMsg(e: unknown): string {
-  if (e && typeof e === "object") {
-    const o = e as Record<string, unknown>;
+  // Walk the whole error + cause chain and collect every message-like field, so an
+  // opaque top-level wrapper (e.g. "an internal error occurred") doesn't hide the
+  // real reason buried in a nested cause / details / metaMessages.
+  const found: string[] = [];
+  let cur: unknown = e;
+  for (let depth = 0; cur && typeof cur === "object" && depth < 6; depth++) {
+    const o = cur as Record<string, unknown>;
+    for (const k of ["shortMessage", "details", "message"] as const) {
+      const v = o[k];
+      if (typeof v === "string" && v.trim()) found.push(v.trim());
+    }
     const data = o.data as Record<string, unknown> | undefined;
-    const cause = o.cause as Record<string, unknown> | undefined;
-    const candidates = [o.shortMessage, data?.message, cause?.shortMessage, cause?.message, o.message];
-    for (const c of candidates) if (typeof c === "string" && c) return c;
+    if (typeof data?.message === "string" && data.message.trim()) found.push(data.message.trim());
+    if (typeof o.name === "string" && o.name && o.name !== "Error") found.push(`(${o.name}${o.code != null ? ` ${String(o.code)}` : ""})`);
+    cur = o.cause;
   }
+  // Prefer the most SPECIFIC line — skip the generic "internal error" wrapper if a
+  // more concrete message exists anywhere in the chain.
+  const generic = /^an?\s+(internal|unknown)\s+error/i;
+  const specific = found.find((m) => !generic.test(m));
+  if (specific) return found.length > 1 ? `${specific} ${found.filter((m) => /^\(/.test(m)).join(" ")}`.trim() : specific;
+  if (found.length) return found.join(" · ");
   return e instanceof Error ? e.message : String(e);
 }

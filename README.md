@@ -167,8 +167,8 @@ Required environment variables: `DEPLOYER_PRIVATE_KEY`, `BASE_SEPOLIA_RPC_URL` o
   implementation v0.0.2, account-abstraction v0.7.0, Solidity 0.8.23.
 - `redeemDelegations` returns no data in v1.3.0; the chain order is
   `[leaf, ..., root]` with the root authority set to all-`0xff`.
-- The facilitator selects its relay backend by environment variable:
-  `RELAY_BACKEND=viem-direct` or `oneshot-pl`.
+- The facilitator selects its relay backend:
+   `oneshot-pl`.
 
 ## Security model
 
