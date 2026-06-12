@@ -62,7 +62,7 @@ Every mock action is marked `MOCK:`. The wiring to swap in:
 
 1. **Connect** → viem `createWalletClient({ transport: custom(window.ethereum) })`.
 2. **Grant** → `wallet_grantPermissions` (ERC-7715, `erc20-token-periodic`) +
-   sign the EIP-7702 authorization. (`@metamask/delegation-toolkit`.)
+   sign the EIP-7702 authorization. (`@metamask/smart-accounts-kit`.)
 3. **Run flow** → build the redelegation carrying `X402ReceiptEnforcer`,
    call the protected endpoint, then the facilitator `/verify` → `/settle`.
 4. **Break-it buttons** → submit deliberately-invalid redemptions; surface
