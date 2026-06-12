@@ -81,6 +81,65 @@ export interface SubscriptionGrant {
   expiry: number;
 }
 
+// --- session persistence (so you can navigate away and come back to charge) ----
+// The charge is signed by the ephemeral coordinator (the root's delegate); without
+// it a restored subscription can't be charged. We persist it + the grant so the
+// active subscription survives navigation/reload. Blast radius is bounded: this key
+// can only ever sign leaves under a root the user signed, which the
+// X402SubscriptionEnforcer already pins to one merchant + amount + once-per-period.
+const SUB_SESSION_KEY = "conduit:sub-session:v1";
+
+export interface PersistedSubSession {
+  user: Hex;
+  serviceId: string;
+  coordinatorKey: Hex;
+  grant: SubscriptionGrant;
+}
+
+// bigint-safe JSON (SubscriptionGrant carries bigints in terms + feeGrant).
+function bigintReplacer(_k: string, v: unknown) {
+  return typeof v === "bigint" ? { __bigint: v.toString() } : v;
+}
+function bigintReviver(_k: string, v: unknown) {
+  if (v && typeof v === "object" && "__bigint" in (v as Record<string, unknown>)) {
+    return BigInt((v as { __bigint: string }).__bigint);
+  }
+  return v;
+}
+
+export function saveSubSession(s: PersistedSubSession): void {
+  try {
+    localStorage.setItem(SUB_SESSION_KEY, JSON.stringify(s, bigintReplacer));
+  } catch {
+    /* storage unavailable — non-fatal */
+  }
+}
+
+export function loadSubSession(user: Hex): PersistedSubSession | null {
+  try {
+    const raw = localStorage.getItem(SUB_SESSION_KEY);
+    if (!raw) return null;
+    const s = JSON.parse(raw, bigintReviver) as PersistedSubSession;
+    if (s.user?.toLowerCase() !== user.toLowerCase()) return null;
+    // Drop an expired subscription so we don't restore a dead one.
+    if (s.grant?.expiry && s.grant.expiry > 0 && Math.floor(Date.now() / 1000) >= s.grant.expiry) {
+      clearSubSession();
+      return null;
+    }
+    return s;
+  } catch {
+    return null;
+  }
+}
+
+export function clearSubSession(): void {
+  try {
+    localStorage.removeItem(SUB_SESSION_KEY);
+  } catch {
+    /* non-fatal */
+  }
+}
+
 /**
  * Pack the 94-byte X402SubscriptionEnforcer terms. Layout (matches the contract
  * and the fork test): subscriptionId(32) ++ token(20) ++ recipient(20) ++

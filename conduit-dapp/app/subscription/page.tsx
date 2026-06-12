@@ -15,6 +15,7 @@ import {
 import { useSetActiveWallet } from "@privy-io/wagmi";
 import { formatUnits, type Hex } from "viem";
 import { createCoordinatorAccount, type Coordinator } from "@/lib/grant";
+import { privateKeyToAccount } from "viem/accounts";
 import { feeCapAtoms, type Eip7702Authorization } from "@/lib/payment";
 import {
   fetchCatalog,
@@ -30,6 +31,9 @@ import {
   buildSubscriptionPayment,
   readSubscriptionState,
   termsFromRequirements,
+  saveSubSession,
+  loadSubSession,
+  clearSubSession,
   type SubscriptionGrant,
   type SubscriptionState,
 } from "@/lib/subscription";
@@ -197,6 +201,33 @@ export default function SubscriptionPage() {
     };
   }, [append]);
 
+  // Restore a persisted active subscription so navigating back (e.g. from
+  // /portfolio's "open subscriptions") lands on the LIVE subscription you can
+  // charge — not a fresh "choose a service" screen. Fail-safe: any error falls
+  // back to the normal flow.
+  const restoredRef = useRef(false);
+  useEffect(() => {
+    if (restoredRef.current || grant || cancelled || !address || subServices.length === 0) return;
+    const sess = loadSubSession(address);
+    if (!sess) return;
+    const svc = subServices.find((s) => s.id === sess.serviceId);
+    if (!svc) return;
+    restoredRef.current = true;
+    (async () => {
+      try {
+        const requirements = await fetch402(svc.resource);
+        const coord = privateKeyToAccount(sess.coordinatorKey);
+        coordinatorRef.current = { address: coord.address, privateKey: sess.coordinatorKey };
+        setService(svc);
+        setReq(requirements);
+        setGrant(sess.grant);
+        append(`Restored your active subscription · ${svc.label} — ready to charge`);
+      } catch {
+        restoredRef.current = false; // restore failed → normal fresh flow
+      }
+    })();
+  }, [address, subServices, grant, cancelled, append]);
+
   // 1s tick: drives the countdown + the period-rollover unlock.
   useEffect(() => {
     const id = setInterval(() => setNowSec(Math.floor(Date.now() / 1000)), 1000);
@@ -300,6 +331,7 @@ export default function SubscriptionPage() {
     });
     if (r.ok) {
       void markGrantRevoked(grant.delegationHash, address); // reflect in /portfolio
+      clearSubSession(); // the subscription is dead — don't restore it
       setCancelled(true);
       setGrant(null);
       setSubState(null);
@@ -386,6 +418,9 @@ export default function SubscriptionPage() {
       });
       setGrant(g);
       setCancelled(false);
+      // Persist the session (grant + coordinator key) so the active subscription
+      // survives navigation/reload and can still be charged from /portfolio.
+      if (service) saveSubSession({ user: address, serviceId: service.id, coordinatorKey: coordinator.privateKey, grant: g });
       append("Subscription approved · your signature binds merchant + amount + cadence on-chain");
       showToast("success", "Subscribed ✓ — bound to one merchant, amount + cadence");
       // Register in the per-wallet grants index so /portfolio can list it.

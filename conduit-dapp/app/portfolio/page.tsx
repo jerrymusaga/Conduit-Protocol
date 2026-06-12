@@ -279,6 +279,7 @@ export default function PortfolioPage() {
                 status={statusOf(g, live[g.id])}
                 nowSec={nowSec}
                 busy={busyId === g.id}
+                inShell={inShell}
                 onRevoke={() => void revoke(g)}
               />
             ))
@@ -290,13 +291,14 @@ export default function PortfolioPage() {
 }
 
 function GrantCard({
-  g, live, status, nowSec, busy, onRevoke,
+  g, live, status, nowSec, busy, inShell, onRevoke,
 }: {
   g: GrantRecord;
   live: LiveState | undefined;
   status: Status;
   nowSec: number;
   busy: boolean;
+  inShell: boolean;
   onRevoke: () => void;
 }) {
   const [showCaveat, setShowCaveat] = useState(false);
@@ -407,7 +409,7 @@ function GrantCard({
       {/* actions */}
       <div className="mt-4 flex items-center gap-3">
         <Link
-          href={isSub ? "/subscription" : "/demo"}
+          href={inShell ? (isSub ? "/app/subscriptions" : "/app/pay") : isSub ? "/subscription" : "/demo"}
           className="mono text-[12px] text-conduit-muted underline-offset-4 hover:text-conduit-cyan hover:underline"
         >
           open {isSub ? "subscriptions" : "console"} ↗
