@@ -106,15 +106,19 @@ export function ConduitPaySignIn() {
             </div>
           ) : (
             <div className="mt-6 space-y-3">
-              <p className="text-[12px] text-conduit-muted">
-                <span className="text-white">Create</span> a wallet, then <span className="text-white">Unlock</span> — below. Your key is derived from the passkey and held in an isolated iframe; it never touches this page.
-              </p>
-              {/* the isolated wallet frame, mounted inline here */}
+              <div className="rounded-xl border border-conduit-violet/25 bg-conduit-violet/[0.05] px-3.5 py-2.5 text-[12px] leading-relaxed text-conduit-muted">
+                First time? Tap <span className="text-white">Create wallet</span>. Coming back? Tap <span className="text-white">Unlock</span>.
+                Your key is derived from your passkey and lives in an <span className="text-white">isolated frame</span> — it never touches this page or any server.
+              </div>
+              {/* the isolated wallet frame, positioned over this slot */}
               <div
                 ref={frameRef}
-                className="h-[124px] w-full overflow-hidden rounded-xl border border-conduit-violet/30"
+                className="h-[124px] w-full overflow-hidden rounded-xl border border-conduit-violet/30 bg-black/30"
               />
               {note && <div className="mono text-[12px] text-conduit-cyan">{note}</div>}
+              <p className="text-[11px] leading-relaxed text-conduit-muted/70">
+                Works on Chrome, Android, or a hardware security key. On an unsupported device, use email or wallet instead.
+              </p>
               <button onClick={() => setMode("choose")} className="text-[12px] text-conduit-muted transition-colors hover:text-white">
                 ← other options
               </button>

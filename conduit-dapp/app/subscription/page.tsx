@@ -34,6 +34,7 @@ import {
   type SubscriptionState,
 } from "@/lib/subscription";
 import { gaslessRevoke } from "@/lib/revoke";
+import { Toast, type ToastState } from "@/components/Toast";
 import { registerGrant, markGrantRevoked } from "@/lib/grants";
 import { useFacilitatorEvents } from "@/lib/useFacilitatorEvents";
 import { config } from "@/lib/config";
@@ -139,6 +140,16 @@ export default function SubscriptionPage() {
   const append = useCallback((text: string) => {
     setLog((l) => [...l, { t: now(), text }]);
     requestAnimationFrame(() => logEndRef.current?.scrollIntoView({ behavior: "smooth" }));
+  }, []);
+
+  // Toast feedback — passkey/embedded wallets sign silently (no popup).
+  const [toast, setToast] = useState<ToastState>(null);
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showToast = useCallback((kind: "pending" | "success" | "error", text: string, autoHideMs?: number) => {
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    setToast({ kind, text });
+    const ms = autoHideMs ?? (kind === "pending" ? 0 : 3500);
+    if (ms > 0) toastTimer.current = setTimeout(() => setToast(null), ms);
   }, []);
 
   // Discover the subscription marketplace; default-select the fast (60s) feed so
@@ -262,6 +273,7 @@ export default function SubscriptionPage() {
   const cancel = async () => {
     if (busy || !grant || !walletClient || !address) return;
     setBusy(true);
+    showToast("pending", "Cancelling — disabling the subscription…");
     const r = await gaslessRevoke({
       walletClient,
       userAddress: address as Hex,
@@ -277,8 +289,10 @@ export default function SubscriptionPage() {
       setSubState(null);
       coordinatorRef.current = null;
       append(`Subscription cancelled ${r.viaGasless ? "gaslessly" : "on-chain"} ✓ · every future charge against this grant now reverts on-chain`);
+      showToast("success", "Subscription cancelled ✓");
     } else {
       append(`Cancel failed · ${r.error}`);
+      showToast("error", `Cancel failed · ${r.error}`);
     }
     setBusy(false);
   };
@@ -309,6 +323,7 @@ export default function SubscriptionPage() {
       return;
     }
     setBusy(true);
+    showToast("pending", "Signing your subscription…");
     try {
       const coordinator = createCoordinatorAccount();
       coordinatorRef.current = coordinator;
@@ -355,6 +370,7 @@ export default function SubscriptionPage() {
       setGrant(g);
       setCancelled(false);
       append("Subscription approved · your signature binds merchant + amount + cadence on-chain");
+      showToast("success", "Subscribed ✓ — bound to one merchant, amount + cadence");
       // Register in the per-wallet grants index so /portfolio can list it.
       void registerGrant({
         id: g.delegationHash,
@@ -374,6 +390,7 @@ export default function SubscriptionPage() {
     } catch (e) {
       console.error("[conduit] subscribe failed →", e);
       append(`Subscribe failed · ${errMsg(e)}`);
+      showToast("error", `Subscribe failed · ${errMsg(e)}`);
     } finally {
       setBusy(false);
     }
@@ -468,6 +485,7 @@ export default function SubscriptionPage() {
 
   return (
     <main className="min-h-screen">
+      <Toast toast={toast} />
       {/* top bar — standalone only; the ConduitPay shell provides the header */}
       {!embedded && (
       <div className="border-b border-conduit-border/60">
