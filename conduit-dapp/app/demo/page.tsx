@@ -278,7 +278,7 @@ export default function DemoPage() {
   const coordinatorRef = useRef<Coordinator | null>(null);
 
   // Console state.
-  const [prompt, setPrompt] = useState("Create a launch brief for a new AI productivity app — research the space, write the positioning, design a cover image, and record a voiceover.");
+  const [prompt, setPrompt] = useState("");
   // A2A coordination mode. Default = real agent-to-agent: one specialist
   // sub-agent (own on-chain key) per purchased service. `looped` (coordinator
   // pays directly, fewer hops) is a silent live-reliability fallback reachable
@@ -1860,7 +1860,8 @@ export default function DemoPage() {
                 onChange={(e) => setPrompt(e.target.value)}
                 disabled={busy}
                 rows={2}
-                className="mono mt-3 w-full resize-none rounded-lg border border-conduit-border bg-transparent px-3 py-2 text-[13px] text-white outline-none focus:border-conduit-cyan disabled:opacity-40"
+                placeholder="What would you like to do? e.g. research the best ETH staking yield, then move 20 USDC into it"
+                className="mono mt-3 w-full resize-none rounded-lg border border-conduit-border bg-transparent px-3 py-2 text-[13px] text-white outline-none placeholder:text-conduit-muted/50 focus:border-conduit-cyan disabled:opacity-40"
               />
               <div className="mt-3 flex flex-wrap items-center gap-3">
                 <button

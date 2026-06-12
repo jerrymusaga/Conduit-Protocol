@@ -280,12 +280,12 @@ async function feedOutput(service: Service): Promise<Output> {
       user: "Give the single most important crypto/market pulse right now.",
     },
     "daily-digest": {
-      system: "You are an AI + crypto market analyst. Write THREE tight bullet lines (use '- '), each a concrete, current takeaway with a name or number. No preamble, no headers.",
-      user: "Write today's AI + crypto market digest.",
+      system: "You are an AI + crypto alpha desk. Write THREE tight bullet lines (use '- '), each a concrete, current, actionable takeaway with a name or number. No preamble, no headers.",
+      user: "Write today's AI + crypto alpha digest.",
     },
     "weekly-trends": {
-      system: "You are a trends analyst. Write 3-4 confident sentences on the week's most important AI + crypto trend — specific, with real players/numbers. No preamble, no markdown.",
-      user: "Write this week's AI + crypto trend report.",
+      system: "You are a DeFi yield analyst. In 3-4 sentences, say where the best on-chain yields are this week — name protocols (e.g. Aave, Morpho, Moonwell), the asset, and approximate APYs where the sources support it. Specific and current. No preamble, no markdown.",
+      user: "Write this week's DeFi yield report — the best on-chain yields right now.",
     },
   };
   const p = PROMPTS[service.id] ?? {

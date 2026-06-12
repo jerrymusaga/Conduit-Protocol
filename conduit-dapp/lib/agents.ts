@@ -76,12 +76,12 @@ export const AGENTS: Agent[] = [
     "Picks the single best asset from your approved set, with live market reasoning."),
 
   // SUBSCRIPTION (recurring, X402SubscriptionEnforcer) — varied periods.
-  a("pulse-feed", "Realtime Pulse Feed", "feed", "venice:chat", "0.01", "subscription",
-    "Recurring real-time market-pulse updates (demo cadence: 60s).", sub("pulse-feed", 60)),
-  a("daily-digest", "Daily AI Digest", "feed", "venice:chat+search", "0.10", "subscription",
-    "A once-a-day AI/market digest.", sub("daily-digest", 86_400)),
-  a("weekly-trends", "Weekly Trend Report", "feed", "venice:reasoning", "0.50", "subscription",
-    "A weekly deep trend report.", sub("weekly-trends", 604_800)),
+  a("pulse-feed", "Market Pulse", "feed", "venice:chat", "0.01", "subscription",
+    "A live market pulse — the single most important move right now (demo cadence: 60s).", sub("pulse-feed", 60)),
+  a("daily-digest", "AI Alpha Daily", "feed", "venice:chat+search", "0.10", "subscription",
+    "Your daily AI + crypto alpha — three concrete takeaways, every day.", sub("daily-digest", 86_400)),
+  a("weekly-trends", "DeFi Yield Weekly", "feed", "venice:chat+search", "0.50", "subscription",
+    "A weekly DeFi yield report — where the best on-chain yields are this week.", sub("weekly-trends", 604_800)),
 ];
 
 export const PROCUREMENT_AGENTS = AGENTS.filter((x) => x.paymentKind === "one-shot");

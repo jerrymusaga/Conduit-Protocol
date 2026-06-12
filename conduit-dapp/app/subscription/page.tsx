@@ -472,6 +472,8 @@ export default function SubscriptionPage() {
   // --- render --------------------------------------------------------------
 
   const periodLabel = req?.subscription ? `${req.subscription.periodSeconds}s` : "—";
+  // The most recent Venice deliverable a charge bought (newest-first list).
+  const lastDeliverable = charges.find((c) => c.stage === "settled" && c.deliverable?.body)?.deliverable ?? null;
 
   // The ERC-7710 binding every charge carries (same enforcer + terms each time).
   const inspectorBinding: InspectorBinding | null =
@@ -757,6 +759,17 @@ export default function SubscriptionPage() {
                   </p>
                 </div>
               </div>
+
+              {/* what the latest charge delivered — the Venice update */}
+              {lastDeliverable?.body && (
+                <div className="mt-4 rounded-lg border border-conduit-cyan/25 bg-conduit-cyan/[0.04] p-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[12px] font-semibold text-white">Latest · {lastDeliverable.headline}</span>
+                    <span className="mono rounded bg-conduit-violet/15 px-1.5 py-0.5 text-[10px] text-conduit-violet">✦ Venice</span>
+                  </div>
+                  <p className="mt-1 whitespace-pre-line text-[12px] leading-relaxed text-conduit-muted">{lastDeliverable.body}</p>
+                </div>
+              )}
 
               <div className="mono mt-4 space-y-1.5 text-[12px]">
                 <Row k="period" v={subState ? `#${subState.currentPeriod}` : "—"} />

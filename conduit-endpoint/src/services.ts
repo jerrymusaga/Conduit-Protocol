@@ -125,14 +125,14 @@ export const SERVICES: Service[] = [
   // Variety of periods for the portfolio showcase; the LIVE demo drives the 60s
   // one so the cadence + the on-chain "already-charged-this-period" guard show
   // fast. subscriptionId is deterministic from the id.
-  svc("pulse-feed", "Realtime Pulse Feed", "subscription", "feed", "venice:chat", "0.01",
-    "Recurring real-time market-pulse updates (demo cadence: 60s).",
+  svc("pulse-feed", "Market Pulse", "subscription", "feed", "venice:chat", "0.01",
+    "A live market pulse — the single most important move right now (demo cadence: 60s).",
     subTerms("pulse-feed", 60)),
-  svc("daily-digest", "Daily AI Digest", "subscription", "feed", "venice:chat+search", "0.10",
-    "A once-a-day AI/market digest (subscription).",
+  svc("daily-digest", "AI Alpha Daily", "subscription", "feed", "venice:chat+search", "0.10",
+    "Your daily AI + crypto alpha — three concrete, web-researched takeaways, every day.",
     subTerms("daily-digest", 86_400)),
-  svc("weekly-trends", "Weekly Trend Report", "subscription", "feed", "venice:reasoning", "0.50",
-    "A weekly deep trend report (subscription).",
+  svc("weekly-trends", "DeFi Yield Weekly", "subscription", "feed", "venice:chat+search", "0.50",
+    "A weekly DeFi yield report — where the best on-chain yields are this week (protocols + APYs).",
     subTerms("weekly-trends", 604_800)),
 ];
 
