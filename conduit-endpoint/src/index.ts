@@ -267,13 +267,35 @@ async function scoutOutput(topic: string): Promise<Output> {
   }
 }
 
-/** Subscription feed: a recurring sample (the period mechanic is the demo beat). */
-function feedOutput(service: Service): Output {
-  return { type: "subscription", source: "venice:chat", content: {
-    service: service.id,
-    period: service.subscription?.periodSeconds,
-    sample: { index: Math.random().toString(36).slice(2, 8), at: Date.now() },
-  } };
+/**
+ * Subscription feed: what each PERIOD's charge actually buys — a real Venice AI
+ * deliverable (a live market pulse / digest / trend report), so the subscription
+ * is a genuine recurring service, not just a recurring transfer. The on-chain
+ * period mechanic is the safety beat; this is the value the subscriber receives.
+ */
+async function feedOutput(service: Service): Promise<Output> {
+  const PROMPTS: Record<string, { system: string; user: string }> = {
+    "pulse-feed": {
+      system: "You are a crypto markets pulse desk. One sharp, current sentence — a concrete move with a figure where the sources support it. No preamble, no markdown.",
+      user: "Give the single most important crypto/market pulse right now.",
+    },
+    "daily-digest": {
+      system: "You are an AI + crypto market analyst. Write THREE tight bullet lines (use '- '), each a concrete, current takeaway with a name or number. No preamble, no headers.",
+      user: "Write today's AI + crypto market digest.",
+    },
+    "weekly-trends": {
+      system: "You are a trends analyst. Write 3-4 confident sentences on the week's most important AI + crypto trend — specific, with real players/numbers. No preamble, no markdown.",
+      user: "Write this week's AI + crypto trend report.",
+    },
+  };
+  const p = PROMPTS[service.id] ?? {
+    system: "You are a crypto markets pulse desk. One sharp, current sentence with a figure where the sources support it. No preamble, no markdown.",
+    user: "Give the single most important crypto/market pulse right now.",
+  };
+  const text = await veniceChat(p.system, p.user, { webSearch: "on", stripThinking: true, maxTokens: 320 });
+  return text
+    ? { type: "feed", source: "venice:chat · web-search", content: { headline: service.label, body: text, period: service.subscription?.periodSeconds } }
+    : { type: "feed", source: "venice unavailable", content: { headline: service.label, body: "This period's update couldn't be generated — please try again.", period: service.subscription?.periodSeconds } };
 }
 
 /** Produce the success payload for a settled service — by ROLE, about `topic`. */

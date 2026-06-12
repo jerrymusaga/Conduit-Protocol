@@ -65,6 +65,8 @@ interface ChargeCard {
   txHash?: string | null;
   /** How the settlement confirmed: "webhook" (1Shot signed push) or "poll". */
   confirmedVia?: "webhook" | "poll" | null;
+  /** What this period's charge actually bought — a live Venice deliverable. */
+  deliverable?: { headline?: string; body?: string; source?: string } | null;
 }
 
 const now = () => new Date().toLocaleTimeString("en-US", { hour12: false });
@@ -421,7 +423,10 @@ export default function SubscriptionPage() {
         correlationId,
       });
       if (r.ok) {
-        patchCard(correlationId, { stage: "settled", txHash: r.settlement?.transaction ?? null });
+        // What this period's charge bought — the live Venice deliverable.
+        const d = (r.data as { content?: { headline?: string; body?: string }; source?: string } | undefined);
+        const deliverable = d?.content?.body ? { headline: d.content.headline, body: d.content.body, source: d.source } : null;
+        patchCard(correlationId, { stage: "settled", txHash: r.settlement?.transaction ?? null, deliverable });
         setAuthorization(null); // designation consumed by the first settled tx
         append(`Charged ✓ · ${service.priceUsdc} USDC settled on-chain`);
         // 1Shot confirms out of band; poll the job for the final tx + HOW it
@@ -566,8 +571,7 @@ export default function SubscriptionPage() {
             {subServices.length > 0 && (
               <div className="mt-4">
                 <p className="text-[11px] uppercase tracking-wide text-conduit-muted/70">
-                  Discovered on ERC-8004 · {subServices.length} subscriptions
-                  {subAgents.some((a) => a.source === "registry") ? " (on-chain)" : ""}
+                  Choose a service
                 </p>
                 <div className="mt-2 grid gap-2 sm:grid-cols-3">
                   {subServices.map((s) => {
@@ -613,9 +617,8 @@ export default function SubscriptionPage() {
                 {!subscribed ? (
                   <>
                     <p className="text-[12px] leading-relaxed text-conduit-muted">
-                      You sign ONE root delegation whose only caveat is this subscription. Your
-                      signature is the guardrail — the agent can pay this exact amount to this
-                      merchant once per period, and <span className="text-white">nothing else</span>.
+                      One signature. The service can charge <span className="text-white">this exact amount, once per period</span> — and nothing else.
+                      Each period you get a live Venice update.
                     </p>
 
                     {/* buyer-side bounds */}
@@ -676,8 +679,7 @@ export default function SubscriptionPage() {
                         </span>
                       </label>
                       <p className="text-[11px] leading-relaxed text-conduit-muted/70">
-                        Both are <span className="text-white">your</span> bounds: the subscription
-                        auto-expires, and gas (paid to 1Shot in USDC) is capped per period.
+                        Your bounds: when it auto-expires, and the per-period gas budget — paid in USDC, never ETH.
                       </p>
                     </div>
 
@@ -686,7 +688,7 @@ export default function SubscriptionPage() {
                       disabled={!connected || busy}
                       className="btn-primary w-full justify-center text-sm disabled:opacity-40"
                     >
-                      {busy ? "Signing…" : "Approve subscription"}
+                      {busy ? "Signing…" : "Subscribe"}
                     </button>
                   </>
                 ) : (
@@ -714,7 +716,7 @@ export default function SubscriptionPage() {
                       disabled={busy}
                       className="w-full rounded-lg border border-conduit-magenta/40 px-3 py-2 text-xs font-medium text-conduit-magenta transition-colors hover:bg-conduit-magenta/10 disabled:opacity-40"
                     >
-                      {busy ? "Working…" : "Cancel subscription (revoke on-chain)"}
+                      {busy ? "Working…" : "Cancel — gasless, no ETH"}
                     </button>
                   </div>
                 )}
@@ -790,9 +792,8 @@ export default function SubscriptionPage() {
                   Force charge again now →
                 </button>
                 <p className="text-[11px] leading-relaxed text-conduit-muted/70">
-                  Already charged this period? &ldquo;Force charge again&rdquo; submits a real
-                  payment — Conduit blocks it on-chain (<span className="mono">already-charged-this-period</span>).
-                  A recurring charge rate-limited by a caveat, not a server.
+                  Already paid this period? &ldquo;Force charge again&rdquo; sends a real payment — and the
+                  chain rejects it (<span className="mono">already charged this period</span>). No money moves.
                 </p>
               </div>
             </section>
@@ -806,7 +807,7 @@ export default function SubscriptionPage() {
               <h2 className="text-sm font-semibold uppercase tracking-wide text-conduit-muted">
                 Charges
               </h2>
-              <span className="mono text-[11px] text-conduit-muted">via Conduit facilitator · erc7710</span>
+              <span className="mono text-[11px] text-conduit-muted">a live Venice update each period</span>
             </div>
             <div className="min-h-[460px] space-y-3 px-5 py-5">
               {charges.length === 0 ? (
@@ -815,18 +816,15 @@ export default function SubscriptionPage() {
                     {connected ? (subscribed ? "Charge the subscription to begin." : "Approve the subscription to begin.") : "Sign in to begin."}
                   </p>
                   <p className="mx-auto mt-3 max-w-md text-[12px] leading-relaxed text-conduit-muted/70">
-                    Each charge flows request → check → settle → delivered. Your signed rule lets
-                    exactly one charge per period through; a second in the same period is
-                    rejected on-chain.
+                    Each period buys a live Venice update — and your signed rule lets exactly one
+                    charge through per period; a second in the same period is rejected on-chain.
                   </p>
                 </div>
               ) : (
                 <>
                   <p className="text-[12px] leading-relaxed text-conduit-muted">
-                    Each charge is an <span className="text-white">ERC-7710 delegation</span> redeemed
-                    through <span className="text-white">MetaMask&apos;s DelegationManager</span>, bounded by
-                    the <span className="text-conduit-cyan">X402SubscriptionEnforcer</span>. Expand a card to
-                    inspect the redemption + on-chain proof.
+                    Each charge is bounded by your signed rule — exact amount, one merchant, once per
+                    period — and delivers a live Venice update. Inspect any card for the on-chain proof.
                   </p>
                   {charges.map((c) => (
                     <ChargeCardView
@@ -877,15 +875,38 @@ export default function SubscriptionPage() {
  *  signature on YOUR own root — exact amount, once per period, revocable. */
 function SubscriptionHero({ subscribed }: { subscribed: boolean }) {
   const rows: { label: string; old: string; conduit: string }[] = [
-    { label: "Who holds the authority", old: "Merchant stores your card", conduit: "You sign a rule on your own account" },
-    { label: "Amount", old: "Whatever they charge", conduit: "Exact amount, fixed by your signature" },
+    { label: "Amount", old: "Whatever they charge", conduit: "Exact, fixed by your signature" },
     { label: "Frequency", old: "Whenever they decide", conduit: "Once per period — a 2nd reverts" },
-    { label: "If the agent is hijacked", old: "It can redirect or overcharge", conduit: "Physically can't — the rule forbids it" },
-    { label: "Cancelling", old: "Email support, then wait", conduit: "Revoke on-chain yourself, instantly" },
+    { label: "If it's hijacked", old: "Can redirect or overcharge", conduit: "Can't — your rule forbids it" },
+    { label: "Cancelling", old: "Email support, then wait", conduit: "Revoke yourself, instantly — gasless" },
+  ];
+  const steps: [string, string][] = [
+    ["Sign once", "One signature binds this service · the exact amount · the cadence — to your own account."],
+    ["Charged each period", "It pulls exactly that amount when the period rolls. A 2nd pull in the same period reverts on-chain."],
+    ["Cancel anytime", "Disable it and every future charge reverts — gasless, no ETH."],
   ];
   return (
     <section className="panel reveal mx-auto mt-6 max-w-7xl overflow-hidden p-0">
-      <div className="grid gap-0 md:grid-cols-2">
+      {/* headline + 3 steps */}
+      <div className="p-6 sm:p-8">
+        <h1 className="text-2xl font-semibold tracking-tight text-white sm:text-[28px]">
+          Subscribe once. Charged exactly the same, every period.
+        </h1>
+        <p className="mt-2 max-w-2xl text-[14px] leading-relaxed text-conduit-muted">
+          You sign one permission. The service charges a fixed amount each period — it can&apos;t overcharge,
+          bill twice in a period, or change who gets paid. Cancel anytime, gasless.
+        </p>
+        <div className="mt-5 grid gap-3 sm:grid-cols-3">
+          {steps.map(([t, b], i) => (
+            <div key={t} className="rounded-xl border border-conduit-border/60 p-3.5">
+              <div className="mono text-[11px] text-conduit-cyan">0{i + 1}</div>
+              <div className="mt-1 text-sm font-semibold text-white">{t}</div>
+              <div className="mt-1 text-[12px] leading-relaxed text-conduit-muted">{b}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+      <div className="grid gap-0 border-t border-conduit-border/60 md:grid-cols-2">
         {/* Traditional */}
         <div className="border-b border-conduit-border/60 p-6 md:border-b-0 md:border-r">
           <p className="mono text-[11px] uppercase tracking-wide text-conduit-muted/70">
@@ -1045,13 +1066,26 @@ function ChargeCardView({
         </div>
       )}
 
+      {/* what this period bought — the live Venice deliverable */}
+      {done && card.deliverable?.body && (
+        <div className="mt-3 rounded-lg border border-conduit-cyan/25 bg-conduit-cyan/[0.04] p-3">
+          <div className="flex items-center justify-between">
+            <span className="text-[12px] font-semibold text-white">{card.deliverable.headline ?? "This period's update"}</span>
+            {card.deliverable.source?.startsWith("venice") && (
+              <span className="mono rounded bg-conduit-violet/15 px-1.5 py-0.5 text-[10px] text-conduit-violet">✦ Venice</span>
+            )}
+          </div>
+          <div className="mt-1.5 whitespace-pre-line text-[12.5px] leading-relaxed text-conduit-muted">{card.deliverable.body}</div>
+        </div>
+      )}
+
       {binding && (
         <>
           <button
             onClick={() => setOpen((o) => !o)}
             className="mono mt-2 text-[11px] text-conduit-muted underline-offset-4 hover:text-conduit-cyan"
           >
-            {open ? "▾ hide ERC-7710 details" : "▸ inspect ERC-7710"}
+            {open ? "▾ hide details" : "▸ inspect the on-chain rule"}
           </button>
           {open && <Erc7710Inspector binding={binding} txHash={card.txHash} />}
         </>
