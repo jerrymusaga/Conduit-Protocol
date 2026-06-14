@@ -93,6 +93,12 @@ export default function PortfolioPage() {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [nowSec, setNowSec] = useState(now());
   const [note, setNote] = useState<string | null>(null);
+  // Grants revoked in THIS session. The revoke settlement fires an SSE "settled"
+  // event that triggers refresh(); if that backend read races ahead of the
+  // markGrantRevoked write, the reloaded grant comes back without revokedAt and
+  // the card flips back to "active" (button clickable → re-click reverts with
+  // "already revoked"). Overlaying this set on every refresh keeps revoke sticky.
+  const revokedIds = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     if (!authenticated || wallets.length === 0) return;
@@ -144,8 +150,13 @@ export default function PortfolioPage() {
     setLoading(true);
     try {
       const list = await listGrants(address);
-      setGrants(list);
-      const entries = await Promise.all(list.map(async (g) => [g.id, await readLive(g)] as const));
+      // Keep any revoke we performed this session sticky, even if this backend
+      // read raced ahead of the markGrantRevoked write.
+      const merged = revokedIds.current.size
+        ? list.map((g) => (revokedIds.current.has(g.id) && !g.revokedAt ? { ...g, revokedAt: Date.now() } : g))
+        : list;
+      setGrants(merged);
+      const entries = await Promise.all(merged.map(async (g) => [g.id, await readLive(g)] as const));
       setLive(Object.fromEntries(entries));
     } finally {
       setLoading(false);
@@ -187,7 +198,9 @@ export default function PortfolioPage() {
       log: setNote,
     });
     if (r.ok) {
-      await markGrantRevoked(g.id, address);
+      revokedIds.current.add(g.id); // sticky: survive a racing SSE-triggered refresh
+      const marked = await markGrantRevoked(g.id, address);
+      if (!marked) console.warn(`[portfolio] markGrantRevoked did not persist for ${g.id}; kept revoked locally`);
       setGrants((gs) => gs.map((x) => (x.id === g.id ? { ...x, revokedAt: Date.now() } : x)));
       setNote(`Revoked ${r.viaGasless ? "gaslessly" : "on-chain"} ✓ · ${shorten(r.tx ?? "")} — every charge against this permission now reverts.`);
     } else {

@@ -9,7 +9,7 @@
  */
 import { keccak256, toHex, type Hex } from "viem";
 
-export type AgentRole = "research" | "copy" | "image" | "analysis" | "onchain" | "voice" | "scout" | "feed";
+export type AgentRole = "research" | "copy" | "creative" | "image" | "analysis" | "onchain" | "voice" | "scout" | "feed";
 export type PaymentKind = "one-shot" | "subscription";
 
 export interface AgentSubscription {
@@ -56,8 +56,10 @@ export const AGENTS: Agent[] = [
     "Researches a topic with web search + synthesis."),
   a("researcher-pro", "Premium Researcher", "research", "venice:reasoning", "0.09", "one-shot",
     "Deep research via a Venice reasoning model — higher quality."),
-  a("copywriter", "Copywriter", "copy", "venice:chat", "0.04", "one-shot",
-    "Writes the brief / marketing copy on the topic."),
+  a("copywriter", "Writer", "copy", "venice:chat", "0.04", "one-shot",
+    "Writes the brief, the announcement, the tagline — sharp marketing copy on your topic."),
+  a("roaster", "Roaster", "creative", "venice:chat", "0.04", "one-shot",
+    "Does exactly what you ask — a savage roast, a joke, a poem, a rant — in your tone."),
   a("illustrator", "Illustrator", "image", "venice:image", "0.06", "one-shot",
     "Generates a cover image for the deliverable (fast)."),
   a("illustrator-pro", "Pro Illustrator", "image", "venice:image-4k", "0.15", "one-shot",

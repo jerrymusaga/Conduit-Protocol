@@ -64,7 +64,7 @@ function roleKind(role: AgentRole): CatalogService["kind"] {
     case "voice": return "audio";
     case "onchain": return "data";
     case "feed": return "subscription";
-    default: return "text"; // research, copy, analysis
+    default: return "text"; // research, copy, creative, analysis
   }
 }
 
@@ -85,7 +85,8 @@ function agentToService(a: DiscoveredAgent): CatalogService {
  *  (research grounds any brief; the narrator voices every deliverable). */
 const ROLE_RULES: { role: AgentRole; test: RegExp; always?: boolean; why: string }[] = [
   { role: "research", test: /.^/, always: true, why: "Research the topic." },
-  { role: "copy", test: /(brief|copy|launch|positioning|announce|write|marketing|pitch|tagline)/, why: "Write the brief / copy." },
+  { role: "copy", test: /(brief|copy|launch|positioning|announce|write|marketing|pitch|tagline|slogan|caption)/, why: "Write the brief / copy." },
+  { role: "creative", test: /(roast|joke|poem|rant|funny|meme|parody|satir|story|rhyme|\brap\b|haiku|diss|burn|comedy|humou?r|limerick)/, why: "Do the creative ask (roast / joke / poem)." },
   { role: "image", test: /(cover|image|visual|illustrat|design|art|graphic|logo|poster)/, why: "Design a cover image." },
   { role: "analysis", test: /(analy|market|compar|competit|outlook|assess|risk|trend|insight|strategy)/, why: "Analyze the landscape." },
   { role: "onchain", test: /(eth|staking|on-?chain|crypto|token|defi|tvl|validator|wallet|blockchain|web3)/, why: "Pull real on-chain data." },

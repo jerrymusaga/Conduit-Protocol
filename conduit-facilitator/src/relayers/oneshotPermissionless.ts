@@ -1,7 +1,7 @@
 import { encodeFunctionData, erc20Abi, type Address, type Hex } from "viem";
 import { config } from "../config.js";
 import { chainConfig } from "../chain.js";
-import { createJob, getJob, linkTask, updateJob } from "../jobs.js";
+import { createJob, getJob, linkTask, pendingTasks, updateJob } from "../jobs.js";
 import {
   computeFeeAtoms,
   estimate7710Transaction,
@@ -245,5 +245,20 @@ async function pollOneshot(jobId: string, taskId: Hex): Promise<void> {
       return;
     }
   }
-  updateJob(jobId, { status: "failed", error: "1Shot task timed out" });
+  // Poll gave up. If a webhook is configured it stays the source of truth — do
+  // NOT mark failed (that would wrongly notify "failed" for a job that may still
+  // confirm via the signed webhook). Without a webhook, poll is the only path.
+  if (config.oneshot.webhookUrl) {
+    console.warn(`[oneshot] poll window elapsed for job ${jobId.slice(0, 8)} — leaving terminal state to the webhook`);
+  } else {
+    updateJob(jobId, { status: "failed", error: "1Shot task timed out" });
+  }
+}
+
+// On boot, resume polling for any jobs that were still in-flight when the
+// process last stopped (persisted in the jobs store) — so a restart
+// mid-settlement still drives them to a terminal state. Webhooks + this poll.
+for (const { taskId, jobId } of pendingTasks()) {
+  console.log(`[oneshot] resuming poll for job ${jobId.slice(0, 8)} (task ${taskId.slice(0, 12)}…)`);
+  void pollOneshot(jobId, taskId as Hex);
 }

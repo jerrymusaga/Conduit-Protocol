@@ -25,6 +25,7 @@ export type ServiceKind = "image" | "audio" | "text" | "data" | "subscription";
 export type AgentRole =
   | "research"
   | "copy"
+  | "creative" // free-form creative writing: roasts, jokes, poems, rants — does what you ask
   | "image"
   | "analysis"
   | "onchain"
@@ -119,8 +120,10 @@ export const SERVICES: Service[] = [
     "Researches a topic with web search + synthesis."),
   svc("researcher-pro", "Premium Researcher", "text", "research", "venice:reasoning", "0.09",
     "Deep research via a Venice reasoning model — higher quality, higher price."),
-  svc("copywriter", "Copywriter", "text", "copy", "venice:chat", "0.04",
-    "Writes the brief / marketing copy on the topic."),
+  svc("copywriter", "Writer", "text", "copy", "venice:chat", "0.04",
+    "Writes the brief, the announcement, the tagline — sharp marketing copy on your topic."),
+  svc("roaster", "Roaster", "text", "creative", "venice:chat", "0.04",
+    "Does exactly what you ask — a savage roast, a joke, a poem, a rant — in your tone."),
   svc("illustrator", "Illustrator", "image", "image", "venice:image", "0.06",
     "Generates a cover image for the deliverable (fast)."),
   svc("illustrator-pro", "Pro Illustrator", "image", "image", "venice:image-4k", "0.15",

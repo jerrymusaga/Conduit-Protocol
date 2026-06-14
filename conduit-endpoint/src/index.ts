@@ -81,19 +81,6 @@ app.get("/services", (_req, res) => {
 
 const DEFAULT_TOPIC = "an AI product launch";
 
-// Ethereum mainnet contracts the Onchain Scout reads via Venice's RPC proxy.
-const ETH2_DEPOSIT = "0x00000000219ab540356cBB839Cbe05303d7705Fa"; // beacon deposit contract
-const LIDO_STETH = "0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84"; // stETH
-const SELECTOR_TOTAL_SUPPLY = "0x18160ddd"; // totalSupply()
-
-/** wei (bigint) → "34.21M ETH" style human string. */
-function fmtEth(wei: bigint): string {
-  const eth = Number(wei) / 1e18;
-  if (eth >= 1e6) return `${(eth / 1e6).toFixed(2)}M ETH`;
-  if (eth >= 1e3) return `${(eth / 1e3).toFixed(1)}K ETH`;
-  return `${eth.toFixed(2)} ETH`;
-}
-
 type Output = Record<string, unknown>;
 
 /** Researcher: web-search-grounded research on the topic (Venice chat+search). */
@@ -111,18 +98,36 @@ async function researchOutput(topic: string): Promise<Output> {
     : { type: "text", source: "venice unavailable", content: "Research couldn't be generated right now — please try again." };
 }
 
-/** Copywriter: a punchy positioning brief on the topic (Venice chat). */
+/** Writer: sharp marketing copy / a positioning brief for the topic (Venice chat).
+ *  The earnest counterpart to the Roaster's free-form creative writing. */
 async function copyOutput(topic: string): Promise<Output> {
   const text = await veniceChat(
-    "You are a senior brand copywriter. Write a sharp positioning brief in 2-3 sentences: a " +
-      "crisp value proposition plus the angle that makes it land. Confident, specific, fresh — " +
-      "no clichés, no preamble, no markdown.",
+    "You are a senior brand copywriter. Write sharp marketing copy — a crisp value proposition " +
+      "plus the angle that makes it land — for what the user describes. 2-3 sentences. Confident, " +
+      "specific, fresh — no clichés, no preamble, no markdown.",
     `Write launch copy / a positioning brief for: ${topic}`,
     { stripThinking: true, maxTokens: 300 }
   );
   return text
     ? { type: "text", source: "venice:chat", content: text }
     : { type: "text", source: "venice unavailable", content: "Copy couldn't be generated right now — please try again." };
+}
+
+/** Roaster: free-form creative writing — does EXACTLY what the prompt asks (a
+ *  roast, a joke, a poem, a rant) with sharp wit, in the requested tone. The
+ *  instruction-following counterpart to the Writer's earnest copy (Venice chat). */
+async function roasterOutput(topic: string): Promise<Output> {
+  const text = await veniceChat(
+    "You are a savage but clever roast comedian and versatile creative writer. Do EXACTLY what " +
+      "the user asks — roast, joke, rant, poem, parody, diss — with sharp, original wit. Punchy " +
+      "and specific; land real jokes, not generic filler. Keep it tight (2-5 sentences unless " +
+      "they ask for more). No preamble, no markdown, no disclaimers.",
+    topic,
+    { stripThinking: true, maxTokens: 400 }
+  );
+  return text
+    ? { type: "text", source: "venice:chat", content: text }
+    : { type: "text", source: "venice unavailable", content: "Couldn't generate that right now — please try again." };
 }
 
 /** Analyst: market/landscape analysis + outlook (Venice reasoning model). */
@@ -139,22 +144,22 @@ async function analysisOutput(topic: string): Promise<Output> {
     : { type: "text", source: "venice unavailable", content: "Analysis couldn't be generated right now — please try again." };
 }
 
-/** Onchain Scout: real on-chain crypto metrics via Venice crypto-rpc. */
+/** Onchain Scout: live network metrics via Venice crypto-rpc. Topic-NEUTRAL
+ *  (latest block + gas) so it reads real on-chain state without being hardwired
+ *  to one asset's staking numbers — honest "live on-chain data", any topic. */
 async function onchainOutput(): Promise<Output> {
   const net = "ethereum-mainnet";
-  const [blockHex, depositBalHex, lidoSupplyHex] = await Promise.all([
+  const [blockHex, gasHex] = await Promise.all([
     veniceRpc(net, "eth_blockNumber", []),
-    veniceRpc(net, "eth_getBalance", [ETH2_DEPOSIT, "latest"]),
-    veniceRpc(net, "eth_call", [{ to: LIDO_STETH, data: SELECTOR_TOTAL_SUPPLY }, "latest"]),
+    veniceRpc(net, "eth_gasPrice", []),
   ]);
-  if (!blockHex && !depositBalHex && !lidoSupplyHex) {
+  if (!blockHex && !gasHex) {
     return { type: "data", source: "venice unavailable", content: { note: "On-chain data couldn't be read right now — please try again." } };
   }
   // ONLY real RPC-derived values — no canned constants padding the result.
-  const content: Record<string, unknown> = {};
-  if (depositBalHex) content.totalDepositedETH = fmtEth(hexToBigInt(depositBalHex as `0x${string}`));
-  if (lidoSupplyHex) content.lidoStakedETH = fmtEth(hexToBigInt(lidoSupplyHex as `0x${string}`));
-  if (blockHex) content.atBlock = Number(hexToBigInt(blockHex as `0x${string}`));
+  const content: Record<string, unknown> = { network: net };
+  if (blockHex) content.latestBlock = Number(hexToBigInt(blockHex as `0x${string}`));
+  if (gasHex) content.gasPriceGwei = Math.round((Number(hexToBigInt(gasHex as `0x${string}`)) / 1e9) * 100) / 100;
   return { type: "data", source: "venice:crypto-rpc · ethereum-mainnet", content };
 }
 
@@ -303,6 +308,7 @@ async function serviceResult(service: Service, topic: string): Promise<Output> {
   switch (service.role) {
     case "research": return researchOutput(topic);
     case "copy": return copyOutput(topic);
+    case "creative": return roasterOutput(topic);
     case "analysis": return analysisOutput(topic);
     case "onchain": return onchainOutput();
     case "image": return imageOutput(topic);

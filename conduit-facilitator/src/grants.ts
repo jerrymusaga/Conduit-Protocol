@@ -19,7 +19,7 @@ import { config } from "./config.js";
  * deploy would back this with a real DB.
  */
 
-export type GrantKind = "budget" | "subscription" | "swap";
+export type GrantKind = "budget" | "subscription" | "swap" | "yield";
 
 export interface GrantRecord {
   /** Stable id — the delegationHash if the client has it, else a uuid. */
@@ -130,7 +130,9 @@ export function listGrants(user: string): GrantRecord[] {
 /** Mark a grant revoked (the user ran disableDelegation on-chain). */
 export function revokeGrant(id: string, user: string): GrantRecord | undefined {
   const arr = byUser.get(user.toLowerCase());
-  const rec = arr?.find((g) => g.id === id);
+  // Match by id, falling back to delegationHash — the client may key on either
+  // (subscriptions register id = delegationHash; budgets/swaps may use a uuid).
+  const rec = arr?.find((g) => g.id === id || g.delegationHash === id);
   if (!rec) return undefined;
   rec.revokedAt = Date.now();
   persist();

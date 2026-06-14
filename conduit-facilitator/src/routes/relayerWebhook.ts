@@ -22,8 +22,19 @@ const jwksUrl = jwksUrlFor(
   config.oneshot.relayerUrl ?? relayerUrlForChain(config.chainId)
 );
 
-// Dedupe at-least-once delivery on (transactionId, eventName).
+// Dedupe at-least-once delivery on (transactionId, eventName). Bounded FIFO so
+// the set can't grow unbounded on a long-running instance; the job-status writes
+// it guards are idempotent, so eviction of an old key is harmless. (Durable
+// dedupe across restarts is unnecessary now that jobs persist + status writes
+// are idempotent.)
 const seen = new Set<string>();
+const SEEN_MAX = 5000;
+function markSeen(key: string): boolean {
+  if (seen.has(key)) return false;
+  seen.add(key);
+  if (seen.size > SEEN_MAX) seen.delete(seen.values().next().value as string); // evict oldest
+  return true;
+}
 
 export const relayerWebhookRouter = Router();
 
@@ -43,8 +54,7 @@ relayerWebhookRouter.post("/relayer-webhook", async (req: Request, res: Response
   const dedupeKey = `${taskId}:${event.eventName}`;
 
   // Respond 200 fast; do the (idempotent, in-memory) work inline since it's cheap.
-  if (taskId && !seen.has(dedupeKey)) {
-    seen.add(dedupeKey);
+  if (taskId && markSeen(dedupeKey)) {
     const job = getJobByTask(taskId);
     if (job) {
       const txHash =

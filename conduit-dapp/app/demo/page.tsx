@@ -84,6 +84,33 @@ type CardStage = "queued" | "requested" | "allowed" | "denied" | "settling" | "s
  *  (defense-in-depth; the on-chain SwapAllowlist cap is whatever you sign ≤ this). */
 const MAX_TRADE_USDC = process.env.NEXT_PUBLIC_MAX_TRADE_USDC ?? "1000";
 
+/** Does the prompt GENUINELY ask to move money (deposit/swap), or just mention a
+ *  topic like "the lending landscape"? Requires a directional action verb tied to
+ *  an amount / "my funds" — so an incidental "lending"/"yield" keyword in a pure
+ *  research prompt (e.g. a launch brief) can't trigger a spurious deposit/swap.
+ *  Returns which primitive the action targets, or null. */
+function actionIntent(prompt: string): "yield" | "trade" | null {
+  const p = prompt.toLowerCase();
+  const hasDirective =
+    /\b(deposit|supply|lend|stake|staking|park|move|put|allocate|invest|swap|buy|sell|trade|rebalance|convert)\b/.test(p) &&
+    /(\d[\d.,]*\s*(?:usdc|usd|dollars?)|\bmy\s+(?:usdc|funds?|cash|stable\w*|money|balance)\b)/.test(p);
+  if (!hasDirective) return null;
+  if (isYieldIntent(prompt)) return "yield";
+  if (isTradeIntent(prompt)) return "trade";
+  return null;
+}
+
+/** Classify a prompt as a PURE bounded action (a real action directive AND no
+ *  research/content ask) → which primitive, or null. A pure "deposit 50 USDC into
+ *  the best yield venue" skips the research campaign and runs the primitive
+ *  directly; a COMBINED prompt ("research the best yield, then deposit 20 USDC")
+ *  returns null so the campaign still runs first. Shared by run() + the button. */
+function pureActionKind(prompt: string): "yield" | "trade" | null {
+  const wantsResearch =
+    /\b(research|analy[sz]|report|brief|write|copy|draft|design|image|illustrat|voice|narrat|summar(?:y|ize)|news|compare|evaluate|assess|explain|landscape|overview|find\s+out|look\s+into|tell\s+me)\b/i.test(prompt);
+  return wantsResearch ? null : actionIntent(prompt);
+}
+
 /** A throwaway address for the rogue-swap beat (redirect target). */
 function randomRogueAddr(): Hex {
   const b = crypto.getRandomValues(new Uint8Array(20));
@@ -400,6 +427,10 @@ export default function DemoPage() {
       : exhausted
         ? "Budget spent — grant a new permission"
         : null;
+
+  // Whether the current prompt is a pure bounded action (drives the button label
+  // + the campaign-skip in run()). null = a research/combined prompt → hire a team.
+  const promptAction = pureActionKind(prompt);
 
   const append = useCallback((text: string) => {
     setLog((l) => [...l, { t: now(), text }]);
@@ -911,10 +942,12 @@ export default function DemoPage() {
       });
 
       // TRADE intent → also sign a swap authorization (separate from the spend
-      // budget, which only allows transfers). Isolated: only trade prompts.
+      // budget, which only allows transfers). Gate on a genuine trade DIRECTIVE
+      // (not an incidental "yield"/"invest" keyword) so a research prompt doesn't
+      // pre-sign a swap it never uses.
       swapGrantRef.current = null;
       setSwapAuthorized(false);
-      if (isTradeIntent(prompt)) {
+      if (actionIntent(prompt) === "trade") {
         await authorizeSwap(coordinator, expirySeconds ? Math.floor(Date.now() / 1000) + expirySeconds : undefined);
       }
     } catch (e) {
@@ -1085,7 +1118,20 @@ export default function DemoPage() {
     const activeGrant = opts?.grantOverride ?? grantResult;
     if (busy || !granted || !activeGrant || !coordinatorRef.current) return;
     setBusy(true);
-    showToast("pending", "Hiring agents + settling payments…");
+    // A PURE yield/trade intent (e.g. the subscription deep-link "deposit into the
+    // best yield venue") is a bounded PRIMITIVE — skip the research campaign so we
+    // don't hire (and pay) a team the action never uses. A COMBINED prompt that
+    // also asks to research/analyze/write still runs the campaign first.
+    const actionKind = pureActionKind(prompt);
+    const primitiveOnly = actionKind !== null;
+    showToast(
+      "pending",
+      actionKind === "yield"
+        ? "Authorizing your deposit…"
+        : actionKind === "trade"
+          ? "Authorizing your swap…"
+          : "Hiring agents + settling payments…"
+    );
     setCards([]);
     setRevoked(false);
     setReport(null);
@@ -1162,7 +1208,7 @@ export default function DemoPage() {
       };
 
       const outcome: {
-        status: "ok" | "paused-budget" | "failed";
+        status: "ok" | "paused-budget" | "failed" | "skipped";
         planTotal?: bigint;
         budget?: bigint;
         budgetCapped?: boolean;
@@ -1170,7 +1216,12 @@ export default function DemoPage() {
         totalSpent: bigint;
         plan: PlanItem[];
         settlement?: { jobId?: string; status?: string; transaction?: string | null; confirmedVia?: "webhook" | "poll" | null };
-      } = opts?.atomic
+      } = primitiveOnly
+        ? // Skip the research campaign entirely for a bounded primitive — the yield/
+          // trade block below runs it (with the 7702 auth bundled, since no
+          // campaign redemption designated the account first).
+          { status: "skipped", totalSpent: 0n, plan: [] }
+        : opts?.atomic
         ? await runCommissionAtomic({
             prompt,
             grant: activeGrant,
@@ -1235,17 +1286,20 @@ export default function DemoPage() {
         void enrichReport(prompt, sections);
       }
 
-      // YIELD DEPOSIT — checked BEFORE trade (deposit-specific intent). A "deposit
-      // my USDC into the best yield"/"lend on Aave" prompt routes to the yield
-      // primitive (supply into a signed venue set), not a swap.
-      if (isYieldIntent(prompt) && coordinatorRef.current) {
+      // Run the bounded action ONLY on a genuine directive (an action verb + an
+      // amount/"my funds") — so an incidental "lending"/"yield" keyword in a pure
+      // research prompt (e.g. a launch brief) doesn't trigger a spurious deposit.
+      const action = actionIntent(prompt);
+      // YIELD DEPOSIT — checked BEFORE trade. A "deposit 50 USDC into the best
+      // yield venue"/"lend on Aave" prompt routes to the yield primitive.
+      if (action === "yield" && coordinatorRef.current) {
         await runYieldDeposit(coordinatorRef.current, commissionOk ? undefined : (authorization ?? undefined), activeGrant?.expiry);
       }
       // TRADE — independent of the research outcome (its own authorization). So a
       // trade prompt runs even if research paused/failed. Sign the swap on the fly
       // if needed; bundle the 7702 auth into the trade when research DIDN'T run
       // (so the account still gets designated on the trade's first redemption).
-      else if (isTradeIntent(prompt) && coordinatorRef.current) {
+      else if (action === "trade" && coordinatorRef.current) {
         let swap: SwapAllowlistGrant | null = swapGrantRef.current;
         if (!swap) {
           append("Coordinator › this is a trade — authorizing the bounded swap now (approve in your wallet)…");
@@ -2168,10 +2222,22 @@ export default function DemoPage() {
                 <button
                   onClick={() => run({ atomic: true })}
                   disabled={!granted || busy || !!runBlock}
-                  title="Hire everyone together in a single payment. If your budget can't cover the whole team, no one is charged."
+                  title={
+                    promptAction === "yield"
+                      ? "Deposit into the venues you authorize — a scout picks the best APY inside your signed set."
+                      : promptAction === "trade"
+                        ? "Authorize one bounded swap into your chosen token set."
+                        : "Hire everyone together in a single payment. If your budget can't cover the whole team, no one is charged."
+                  }
                   className="btn-primary justify-center px-8 text-sm disabled:opacity-40"
                 >
-                  {busy ? "Hiring…" : "Hire the team"}
+                  {busy
+                    ? (promptAction === "yield" ? "Depositing…" : promptAction === "trade" ? "Authorizing…" : "Hiring…")
+                    : promptAction === "yield"
+                      ? "Deposit into your venues"
+                      : promptAction === "trade"
+                        ? "Authorize the swap"
+                        : "Hire the team"}
                 </button>
                 <p className="text-[10px] text-conduit-muted/70">
                   <span className="text-conduit-violet">✦</span> everyone paid together · all-or-nothing · Venice-powered

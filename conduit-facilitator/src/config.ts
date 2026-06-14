@@ -33,6 +33,11 @@ const baseSchema = z.object({
   // Where the per-wallet grants registry is persisted (JSON). Point this at a
   // mounted volume in production so it survives redeploys. Defaults to ./data.
   GRANTS_FILE: z.string().default("./data/grants.json"),
+
+  // Where in-flight settlement jobs + their relayer TaskId links are persisted
+  // (JSON), so a restart mid-settlement doesn't orphan a job (inbound webhooks
+  // can still resolve it, and polling resumes). Same volume guidance as above.
+  JOBS_FILE: z.string().default("./data/jobs.json"),
 });
 
 const parsed = baseSchema.safeParse(process.env);
@@ -57,6 +62,7 @@ export const config = {
   relayBackend: "oneshot-pl" as const,
   webhookUrl: env.WEBHOOK_URL,
   grantsFile: env.GRANTS_FILE,
+  jobsFile: env.JOBS_FILE,
   oneshot: {
     relayerUrl: env.ONESHOT_RELAYER_URL,
     gasToken: env.ONESHOT_GAS_TOKEN ?? "USDC",

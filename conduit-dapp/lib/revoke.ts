@@ -143,6 +143,14 @@ export async function settleGaslessRevoke(
  * Pass `signAuthorization` (from useActiveWallet) so an undesignated account can
  * still go gasless.
  */
+/** The DelegationManager reverts when disabling an already-disabled delegation.
+ *  A revoke is idempotent — if it's already off, the user's goal is met — so we
+ *  treat this as success rather than surfacing a confusing "revoke failed". */
+const isAlreadyDisabled = (e: unknown): boolean =>
+  /already\s*disabled|alreadydisabled|already\s*revoked|cannot\s*disable.*disabled/i.test(
+    e instanceof Error ? e.message : String(e)
+  );
+
 export async function gaslessRevoke(params: {
   walletClient: WalletClient;
   userAddress: Hex;
@@ -150,7 +158,7 @@ export async function gaslessRevoke(params: {
   delegationManager: Hex;
   signAuthorization?: (a: { contractAddress: Hex; chainId: number; nonce: number }) => Promise<Eip7702Authorization>;
   log?: (s: string) => void;
-}): Promise<{ ok: boolean; tx?: string | null; viaGasless?: boolean; error?: string }> {
+}): Promise<{ ok: boolean; tx?: string | null; viaGasless?: boolean; error?: string; alreadyRevoked?: boolean }> {
   const log = params.log ?? (() => {});
   const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
   try {
@@ -189,6 +197,11 @@ export async function gaslessRevoke(params: {
     }
     return { ok: true, tx, viaGasless: true };
   } catch (gaslessErr) {
+    // Idempotent: if it's already disabled, the kill switch already did its job.
+    if (isAlreadyDisabled(gaslessErr)) {
+      log("This permission is already revoked on-chain — nothing more to do.");
+      return { ok: true, tx: null, viaGasless: true, alreadyRevoked: true };
+    }
     log(`Gasless revoke unavailable (${msg(gaslessErr)}) — falling back to a direct tx (needs a little ETH)…`);
     try {
       const tx = await revokeRootDelegation({
@@ -198,6 +211,10 @@ export async function gaslessRevoke(params: {
       await publicClient.waitForTransactionReceipt({ hash: tx });
       return { ok: true, tx, viaGasless: false };
     } catch (e) {
+      if (isAlreadyDisabled(e)) {
+        log("This permission is already revoked on-chain — nothing more to do.");
+        return { ok: true, tx: null, viaGasless: false, alreadyRevoked: true };
+      }
       return { ok: false, error: msg(e) };
     }
   }

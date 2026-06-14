@@ -20,7 +20,7 @@ const hexAddress = z.string().regex(/^0x[0-9a-fA-F]{40}$/);
 const grantSchema = z.object({
   id: z.string().min(1).optional(),
   user: hexAddress,
-  kind: z.enum(["budget", "subscription", "swap"]),
+  kind: z.enum(["budget", "subscription", "swap", "yield"]),
   label: z.string().max(200).default(""),
   prompt: z.string().max(2000).optional(),
   coordinator: z.string().optional(),

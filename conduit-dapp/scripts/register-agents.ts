@@ -59,6 +59,7 @@ async function main() {
   console.log(`agents:     ${AGENTS.length}\n`);
 
   const out: { id: string; agentId: string; tx: string }[] = [];
+  let firstBlock: bigint | null = null;
   for (const agent of AGENTS) {
     const agentURI = `${CARD_BASE}/api/agent-card/${agent.id}`;
     const metadata = [
@@ -67,13 +68,28 @@ async function main() {
       { metadataKey: "priceUsdc", metadataValue: toHex(agent.priceUsdc) },
     ];
     process.stdout.write(`registering ${agent.id} … `);
-    const hash = await wallet.writeContract({
-      address: REGISTRY,
-      abi,
-      functionName: "register",
-      args: [agentURI, metadata],
-    });
+    // A 7702-DELEGATED registrant is capped to one in-flight tx by Base's RPC, so
+    // submit strictly one at a time: explicit pending nonce + retry-with-backoff on
+    // the "in-flight transaction limit" error until the prior tx fully clears.
+    let hash: Hex | undefined;
+    for (let attempt = 0; attempt < 8 && !hash; attempt++) {
+      try {
+        const nonce = await pub.getTransactionCount({ address: account.address, blockTag: "pending" });
+        hash = await wallet.writeContract({ address: REGISTRY, abi, functionName: "register", args: [agentURI, metadata], nonce });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        if (/in-flight transaction limit|nonce|already known|replacement/i.test(msg)) {
+          const waitMs = 4000 * (attempt + 1);
+          process.stdout.write(`(in-flight limit, retrying in ${waitMs / 1000}s) `);
+          await new Promise((r) => setTimeout(r, waitMs));
+          continue;
+        }
+        throw e;
+      }
+    }
+    if (!hash) throw new Error(`could not submit registration for ${agent.id} after retries`);
     const receipt = await pub.waitForTransactionReceipt({ hash });
+    if (firstBlock === null) firstBlock = receipt.blockNumber;
     // Pull the agentId out of the Registered event.
     let agentId = "?";
     for (const log of receipt.logs) {
@@ -89,12 +105,19 @@ async function main() {
     }
     console.log(`agentId=${agentId}  tx=${hash}`);
     out.push({ id: agent.id, agentId, tx: hash });
+    // Let the sequencer clear this tx from the delegated account's in-flight set
+    // before submitting the next one.
+    await new Promise((r) => setTimeout(r, 4000));
   }
 
   console.log("\nregistered agents:");
   console.table(out);
-  console.log(`\n➡  set NEXT_PUBLIC_AGENT_REGISTRANT=${account.address} in the dapp env,`);
-  console.log("   redeploy, and discovery will read these agents back from the registry.");
+  console.log(`\n➡  set these in the dapp env, then redeploy:`);
+  console.log(`     NEXT_PUBLIC_AGENT_REGISTRANT=${account.address}`);
+  // Discovery scans a fixed 500-block window from this block, so re-registration
+  // MUST bump it to the new window or the fresh agents won't be discovered.
+  console.log(`     NEXT_PUBLIC_AGENT_REGISTRY_FROM_BLOCK=${firstBlock ?? "<first-reg-block>"}`);
+  console.log("   discovery will then read these agents back from the registry.");
 }
 
 main().catch((e) => {

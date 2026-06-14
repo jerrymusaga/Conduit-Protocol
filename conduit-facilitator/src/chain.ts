@@ -32,8 +32,9 @@ const CHAINS: Record<number, ChainConfig> = {
     delegationManager: "0xdb9B1e94B5b69Df7e401DDbedE43491141047dB3",
     usdc: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
   },
-  // Base mainnet (final demo) — DelegationManager + USDC addresses confirmed
-  // before the mainnet swap; placeholders flagged in README until then.
+  // Base mainnet — DelegationManager verified on-chain (eip712Domain →
+  // name="DelegationManager", version="1", chainId=8453; same CREATE2 address as
+  // Base Sepolia). USDC is the canonical Base mainnet USDC.
   8453: {
     chain: base,
     caip2: "eip155:8453",
