@@ -1,50 +1,20 @@
 # Conduit
 
-## At a glance
+**Conduit is infrastructure for paying AI agents you don't have to trust** — an open
+x402 + ERC-7710 facilitator and a family of on-chain caveat enforcers on MetaMask Smart
+Accounts. It gives an autonomous agent a budget it physically cannot misuse: a fully
+compromised agent that redirects a payment, overspends a cap, or goes off-allowlist is
+reverted on-chain in the same transaction.
 
-- **What:** an open **x402 + ERC-7710 facilitator** and a family of **on-chain caveat
-  enforcers** on MetaMask Smart Accounts — a budget an autonomous agent physically cannot
-  misuse, even when fully compromised.
-- **Live:** https://conduit-protocol.vercel.app · **Network:** Base mainnet (verified)
-- **Tracks:** x402 + ERC-7710 · 1Shot Relayer · Venice AI · Best Agent · A2A Coordination ·
-  Best Feedback · Best Social
-- **Stack:** Foundry/Solidity · `@metamask/smart-accounts-kit` · EIP-7702 · ERC-7715 ·
-  1Shot Permissionless Relayer · Venice AI · ERC-8004 · Next.js
-- **Proof:** 6 enforcers verified on Basescan · 13 agents on ERC-8004 · facilitator +
-  endpoint + dapp hosted end-to-end
+Its core strength is settlement through the **1Shot Permissionless Relayer** — a
+coordinator hires N agents and the whole team is paid in **one atomic `redeemDelegations`
+transaction: 1 signature, N agents, 1 fee, gas in USDC** (all-or-nothing — an over-budget
+leg reverts the entire transaction and spends nothing), with status confirmed by 1Shot's
+Ed25519-signed webhooks. Agent intelligence is by **Venice**.
 
-Conduit is an open x402 facilitator and a family of on-chain caveat enforcers that
-give an autonomous agent a budget it physically cannot misuse — even when the agent
-is fully compromised.
-
-It implements the x402 `erc7710` settlement method on MetaMask Smart Accounts,
-adds custom `CaveatEnforcer` contracts that bind every agent action to exactly what
-the user authorized, and settles through the 1Shot Permissionless Relayer so the
-user pays gas in USDC and never holds ETH.
-
-The product is the facilitator plus the enforcer set. The dapp (ConduitPay) and the
-resource server are a working harness that exercises the primitives end to end on
-Base mainnet.
-
-## Highlights
-
-- **Bind the money, not the agent.** A fully compromised agent that tries to redirect a
-  payment, overspend a cap, or touch an off-allowlist token/venue is **reverted on-chain
-  in the same transaction** — impossible, not "detected."
-- **A custom on-chain caveat-enforcer family** (the moat) — 6 enforcers, **deployed and
-  verified on Base mainnet**, that no other x402 facilitator ships.
-- **Safe agent autonomy.** You sign a *set* of tokens or yield venues; a Venice scout
-  picks the best member with live data; the agent can never reach beyond the set you
-  signed. "Find the best yield" becomes safe.
-- **1 signature · N agents · 1 transaction · 1 fee.** A coordinator hires a whole agent
-  team, settled in a single `redeemDelegations` batch — **all-or-nothing** (an over-budget
-  leg reverts the whole tx, zero spent).
-- **Gas in USDC, no ETH.** Settlement — and even the gasless kill switch — are paid in
-  stablecoin through the 1Shot Permissionless Relayer; the user never holds ETH.
-- **No Solidity for integrators.** Point an x402-protected resource at Conduit and your
-  callers inherit the whole safety family — nothing to write or audit.
-- **Live and verifiable on Base mainnet.** 6 enforcers verified on Basescan, 13 agents on
-  the ERC-8004 registry, intelligence by Venice — hosted end-to-end.
+**ConduitPay** is the product built on Conduit — a dapp where you pay agent teams,
+subscribe for intel, and deposit into yield, every action bounded by a caveat you sign.
+Live on Base mainnet: https://conduit-protocol.vercel.app
 
 ## The core idea
 
@@ -140,10 +110,12 @@ X402SubscriptionEnforcer subscriptionId(32) ++ token(20) ++ recipient(20)
                           ++ amountPerPeriod(16) ++ periodDuration(4) ++ reserved(2)
 ```
 
-## Settlement (1Shot, gas in USDC)
+## Settlement — 1 signature, N agents, 1 transaction (1Shot)
 
-The facilitator's `oneshot-pl` backend settles through 1Shot's Permissionless
-Relayer JSON-RPC:
+This is Conduit's core strength: a coordinator hires a whole agent team and the entire
+team is paid in a **single transaction** through 1Shot's Permissionless Relayer —
+atomically, with gas in USDC and status from signed webhooks. The facilitator's
+`oneshot-pl` backend uses 1Shot's JSON-RPC:
 
 - `relayer_send7710Transaction` submits the redemption. The payment carries `works[]`
   (the `[approve, action]` legs, e.g. `[USDC.approve(router), router.exactInputSingle]`
@@ -166,18 +138,18 @@ at startup; the dapp reads them from the 402 envelope.
 ## Enforcer family
 
 Every enforcer is a `CaveatEnforcer` (single-call, default-exec mode), independently
-deployed, verified, and unit-tested. Source: [`src/`](https://github.com/jerrymusaga/Conduit-Protocol/tree/cd4d974/src)
-(each enforcer name below links to its Solidity; deployed + verified addresses are in
-[Deployed addresses](#deployed-addresses-base-mainnet)).
+deployed, verified, and unit-tested. Solidity source in
+[`src/`](https://github.com/jerrymusaga/Conduit-Protocol/tree/main/src) (each name links
+to its contract); verified addresses are under [Deployed addresses](#deployed-addresses-base-mainnet).
 
 | Enforcer (source) | Guards | Pins on-chain |
 |---|---|---|
-| [`X402ReceiptEnforcer`](https://github.com/jerrymusaga/Conduit-Protocol/blob/cd4d974/src/X402ReceiptEnforcer.sol) | one x402 payment | token, recipient, max amount, one-shot intent (paired with `IdEnforcer`) |
-| [`X402SubscriptionEnforcer`](https://github.com/jerrymusaga/Conduit-Protocol/blob/cd4d974/src/X402SubscriptionEnforcer.sol) | a recurring charge | exact amount, merchant, one charge per period (on-chain period tracking) |
-| [`SwapBoundsEnforcer`](https://github.com/jerrymusaga/Conduit-Protocol/blob/cd4d974/src/SwapBoundsEnforcer.sol) | one Uniswap v3 swap | router, fixed pair, input cap, slippage floor, recipient |
-| [`SwapAllowlistEnforcer`](https://github.com/jerrymusaga/Conduit-Protocol/blob/cd4d974/src/SwapAllowlistEnforcer.sol) | a swap into a chosen set | a signed set of output tokens, each with its own floor |
-| [`ApproveBoundsEnforcer`](https://github.com/jerrymusaga/Conduit-Protocol/blob/cd4d974/src/ApproveBoundsEnforcer.sol) | one ERC-20 approval | token, single spender, capped amount (rides the same 1Shot batch) |
-| [`YieldAllowlistEnforcer`](https://github.com/jerrymusaga/Conduit-Protocol/blob/cd4d974/src/YieldAllowlistEnforcer.sol) | one Aave-V3 `supply` | a signed set of venues, one asset, cap, `onBehalfOf` = user |
+| [`X402ReceiptEnforcer`](https://github.com/jerrymusaga/Conduit-Protocol/blob/main/src/X402ReceiptEnforcer.sol) | one x402 payment | token, recipient, max amount, one-shot intent (paired with `IdEnforcer`) |
+| [`X402SubscriptionEnforcer`](https://github.com/jerrymusaga/Conduit-Protocol/blob/main/src/X402SubscriptionEnforcer.sol) | a recurring charge | exact amount, merchant, one charge per period (on-chain period tracking) |
+| [`SwapBoundsEnforcer`](https://github.com/jerrymusaga/Conduit-Protocol/blob/main/src/SwapBoundsEnforcer.sol) | one Uniswap v3 swap | router, fixed pair, input cap, slippage floor, recipient |
+| [`SwapAllowlistEnforcer`](https://github.com/jerrymusaga/Conduit-Protocol/blob/main/src/SwapAllowlistEnforcer.sol) | a swap into a chosen set | a signed set of output tokens, each with its own floor |
+| [`ApproveBoundsEnforcer`](https://github.com/jerrymusaga/Conduit-Protocol/blob/main/src/ApproveBoundsEnforcer.sol) | one ERC-20 approval | token, single spender, capped amount (rides the same 1Shot batch) |
+| [`YieldAllowlistEnforcer`](https://github.com/jerrymusaga/Conduit-Protocol/blob/main/src/YieldAllowlistEnforcer.sol) | one Aave-V3 `supply` | a signed set of venues, one asset, cap, `onBehalfOf` = user |
 
 The two allowlist enforcers make agent autonomy safe: the user signs a *set* (of
 tokens, or of yield venues, each with its own floor); a Venice scout reasons over
@@ -216,59 +188,6 @@ Signer support per flow: the **MetaMask extension** drives Pay (and Subscription
 via ERC-7715 Advanced Permissions; **Privy embedded** and **passkey** wallets drive
 every flow (including swap/yield, whose allowlist enforcers are custom caveats on the
 user-signed root). All are MetaMask Smart Accounts via the 7702 DeleGator.
-
-## Deployed addresses (Base mainnet)
-
-The full enforcer family is deployed and verified on Base mainnet.
-
-**Conduit's custom caveat enforcers** (the moat — each deployed + verified on Basescan):
-
-| Enforcer | Address (Basescan) |
-|---|---|
-| X402ReceiptEnforcer | [`0xF3D95eD5949970F483b11867b3b6509422a617AA`](https://basescan.org/address/0xF3D95eD5949970F483b11867b3b6509422a617AA#code) |
-| X402SubscriptionEnforcer | [`0x177e5DC050Da4aCE6655B721E3a24B2A553B5F9F`](https://basescan.org/address/0x177e5DC050Da4aCE6655B721E3a24B2A553B5F9F#code) |
-| SwapBoundsEnforcer | [`0x62DabA9aAD63B914Cba295B08a65263eEc401EE3`](https://basescan.org/address/0x62DabA9aAD63B914Cba295B08a65263eEc401EE3#code) |
-| SwapAllowlistEnforcer | [`0x150933Eb33176B763c79609FF771d14D8Dc665c5`](https://basescan.org/address/0x150933Eb33176B763c79609FF771d14D8Dc665c5#code) |
-| ApproveBoundsEnforcer | [`0x388084511a9a1891021ea6989b8A756D1561e0aA`](https://basescan.org/address/0x388084511a9a1891021ea6989b8A756D1561e0aA#code) |
-| YieldAllowlistEnforcer | [`0xcBc69E09A6dfeCd503881DcAd595166f81836029`](https://basescan.org/address/0xcBc69E09A6dfeCd503881DcAd595166f81836029#code) |
-
-**Framework + tokens:**
-
-| Contract | Address (Basescan) |
-|---|---|
-| DelegationManager (MetaMask v1.3.0) | [`0xdb9B1e94B5b69Df7e401DDbedE43491141047dB3`](https://basescan.org/address/0xdb9B1e94B5b69Df7e401DDbedE43491141047dB3) |
-| EIP7702StatelessDeleGatorImpl | [`0x63c0c19a282a1B52b07dD5a65b58948A07DAE32B`](https://basescan.org/address/0x63c0c19a282a1B52b07dD5a65b58948A07DAE32B) |
-| USDC | [`0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`](https://basescan.org/address/0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913) |
-
-**Agents (ERC-8004 Identity Registry).** The marketplace agents are registered on the
-Base mainnet ERC-8004 Identity Registry
-([`0x8004A169FB4a3325136EB29fA0ceB6D2e539a432`](https://basescan.org/address/0x8004A169FB4a3325136EB29fA0ceB6D2e539a432))
-by registrant
-([`0x131EC028Bb8Bd936A3416635777D905497F3D21f`](https://basescan.org/address/0x131EC028Bb8Bd936A3416635777D905497F3D21f)) —
-**13 agents, IDs 55321–55336** (including the **Roaster**, agentId `55324`). Each
-agent's on-chain `agentURI` points at its AgentCard, e.g.
-[`/api/agent-card/roaster`](https://conduit-protocol.vercel.app/api/agent-card/roaster).
-
-**Aave-V3 yield venues:**
-[Aave](https://basescan.org/address/0xA238Dd80C259a72e81d7e4664a9801593F98d1c5) ·
-[Seamless](https://basescan.org/address/0x8F44Fd754285aa6A2b8B9B97739B79746e0475a7) ·
-[ZeroLend](https://basescan.org/address/0x766f21277087E18967c1b10bF602d8Fe56d0c671).
-
-## Deployed addresses (Base Sepolia, testnet)
-
-The same family was first deployed + tested on Base Sepolia.
-
-| Contract | Address |
-|---|---|
-| X402ReceiptEnforcer | `0x111115259a41bd174c7C1f6B7eE36ec1Ab3CD5c1` |
-| X402SubscriptionEnforcer | `0x9847Be9B20f23b2cb12C2D6C49B58772096E45eF` |
-| SwapBoundsEnforcer | `0x1fd734c9c78e9c34238c2b5f4E936368727326f6` |
-| SwapAllowlistEnforcer | `0xb95adacB74E981bcfB1e97B4d277E51A95753C8F` |
-| ApproveBoundsEnforcer | `0xA86e7b31fA6a77186F09F36C06b2E7c5D3132795` |
-| YieldAllowlistEnforcer | `0xDf4179e3b5A5B5D8Bfbd3fAe076D127bd96F3fa4` |
-| DelegationManager (MetaMask v1.3.0) | `0xdb9B1e94B5b69Df7e401DDbedE43491141047dB3` |
-| EIP7702StatelessDeleGatorImpl | `0x63c0c19a282a1B52b07dD5a65b58948A07DAE32B` |
-| USDC | `0x036CbD53842c5426634e7929541eC2318f3dCF7e` |
 
 ## Smart Accounts Kit usage
 
@@ -331,11 +250,6 @@ caveat enforcers.
   [`conduit-facilitator/src/relayers/oneshotWebhook.ts`](https://github.com/jerrymusaga/Conduit-Protocol/blob/cd4d974/conduit-facilitator/src/relayers/oneshotWebhook.ts)
   + inbound handler
   [`conduit-facilitator/src/routes/relayerWebhook.ts`](https://github.com/jerrymusaga/Conduit-Protocol/blob/cd4d974/conduit-facilitator/src/routes/relayerWebhook.ts).
-- **Gasless revocation through the relayer** — the kill switch builds a bounded "the
-  relayer may only call `disableDelegation`" delegation (MetaMask `AllowedTargetsEnforcer`
-  + `AllowedMethodsEnforcer`) and settles it through the relayer, so revoking costs USDC,
-  not ETH:
-  [`conduit-dapp/lib/revoke.ts#L47-L129`](https://github.com/jerrymusaga/Conduit-Protocol/blob/cd4d974/conduit-dapp/lib/revoke.ts#L47-L129).
 
 ## Venice AI usage
 - **Seller agents** (chat + web-search, reasoning, image, TTS, crypto-RPC) — the paid
@@ -353,6 +267,43 @@ caveat enforcers.
 - **Scout** (picks the best token/venue within a signed set):
   [`conduit-dapp/app/api/scout/route.ts`](https://github.com/jerrymusaga/Conduit-Protocol/blob/cd4d974/conduit-dapp/app/api/scout/route.ts)
   + [`conduit-dapp/app/api/yield-scout/route.ts`](https://github.com/jerrymusaga/Conduit-Protocol/blob/cd4d974/conduit-dapp/app/api/yield-scout/route.ts).
+
+## Deployed addresses (Base mainnet)
+
+The full enforcer family is deployed and verified on Base mainnet.
+
+**Conduit's custom caveat enforcers** (the moat — each deployed + verified on Basescan):
+
+| Enforcer | Address (Basescan) |
+|---|---|
+| X402ReceiptEnforcer | [`0xF3D95eD5949970F483b11867b3b6509422a617AA`](https://basescan.org/address/0xF3D95eD5949970F483b11867b3b6509422a617AA#code) |
+| X402SubscriptionEnforcer | [`0x177e5DC050Da4aCE6655B721E3a24B2A553B5F9F`](https://basescan.org/address/0x177e5DC050Da4aCE6655B721E3a24B2A553B5F9F#code) |
+| SwapBoundsEnforcer | [`0x62DabA9aAD63B914Cba295B08a65263eEc401EE3`](https://basescan.org/address/0x62DabA9aAD63B914Cba295B08a65263eEc401EE3#code) |
+| SwapAllowlistEnforcer | [`0x150933Eb33176B763c79609FF771d14D8Dc665c5`](https://basescan.org/address/0x150933Eb33176B763c79609FF771d14D8Dc665c5#code) |
+| ApproveBoundsEnforcer | [`0x388084511a9a1891021ea6989b8A756D1561e0aA`](https://basescan.org/address/0x388084511a9a1891021ea6989b8A756D1561e0aA#code) |
+| YieldAllowlistEnforcer | [`0xcBc69E09A6dfeCd503881DcAd595166f81836029`](https://basescan.org/address/0xcBc69E09A6dfeCd503881DcAd595166f81836029#code) |
+
+**Framework + tokens:**
+
+| Contract | Address (Basescan) |
+|---|---|
+| DelegationManager (MetaMask v1.3.0) | [`0xdb9B1e94B5b69Df7e401DDbedE43491141047dB3`](https://basescan.org/address/0xdb9B1e94B5b69Df7e401DDbedE43491141047dB3) |
+| EIP7702StatelessDeleGatorImpl | [`0x63c0c19a282a1B52b07dD5a65b58948A07DAE32B`](https://basescan.org/address/0x63c0c19a282a1B52b07dD5a65b58948A07DAE32B) |
+| USDC | [`0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`](https://basescan.org/address/0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913) |
+
+**Agents (ERC-8004 Identity Registry).** The marketplace agents are registered on the
+Base mainnet ERC-8004 Identity Registry
+([`0x8004A169FB4a3325136EB29fA0ceB6D2e539a432`](https://basescan.org/address/0x8004A169FB4a3325136EB29fA0ceB6D2e539a432))
+by registrant
+([`0x131EC028Bb8Bd936A3416635777D905497F3D21f`](https://basescan.org/address/0x131EC028Bb8Bd936A3416635777D905497F3D21f)) —
+**13 agents, IDs 55321–55336** (including the **Roaster**, agentId `55324`). Each
+agent's on-chain `agentURI` points at its AgentCard, e.g.
+[`/api/agent-card/roaster`](https://conduit-protocol.vercel.app/api/agent-card/roaster).
+
+**Aave-V3 yield venues:**
+[Aave](https://basescan.org/address/0xA238Dd80C259a72e81d7e4664a9801593F98d1c5) ·
+[Seamless](https://basescan.org/address/0x8F44Fd754285aa6A2b8B9B97739B79746e0475a7) ·
+[ZeroLend](https://basescan.org/address/0x766f21277087E18967c1b10bF602d8Fe56d0c671).
 
 ## Feedback
 Detailed, balanced feedback for MetaMask, 1Shot, Venice, and the x402 / ERC-7710 spec —
