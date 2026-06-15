@@ -127,13 +127,7 @@ through our facilitator. The breadth is the selling point and it delivered.
 
 ## x402 / ERC-7710 spec + general
 
-**10. The "is this actually deployed and working" gap.**
-The x402 spec describes the protocol, not which facilitators implement `erc7710`
-on which chains today. Early on we burned time probing facilitators to find one that
-actually supported the method live. A maintained capability matrix (facilitator ×
-chain × method) would help every team pick a viable path on day one.
-
-**11. WebAuthn-PRF device fragmentation.**
+**10. WebAuthn-PRF device fragmentation.**
 PRF is the right primitive for a passkey-derived key, but support is fragmented
 (works on Chrome/Android; no PRF on Firefox; macOS needs Sequoia/15). There is no good
 runtime capability probe, so we built device-support handling by trial. A standard
