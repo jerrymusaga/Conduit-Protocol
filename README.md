@@ -244,78 +244,78 @@ caveat enforcers.
 - **Request** — `grantBudgetVia7715()` calls `requestExecutionPermissions` (the
   `erc7715ProviderActions` extension); MetaMask grants an `erc20-token-periodic`
   permission and performs the 7702 upgrade itself:
-  [`conduit-dapp/lib/erc7715.ts#L30-L82`](https://github.com/jerrymusaga/Conduit-Protocol/blob/main/conduit-dapp/lib/erc7715.ts#L30-L82)
-  (called from [`app/demo/page.tsx#L893`](https://github.com/jerrymusaga/Conduit-Protocol/blob/main/conduit-dapp/app/demo/page.tsx#L893)).
+  [`conduit-dapp/lib/erc7715.ts#L30-L82`](https://github.com/jerrymusaga/Conduit-Protocol/blob/cd4d974/conduit-dapp/lib/erc7715.ts#L30-L82)
+  (called from [`app/demo/page.tsx#L893`](https://github.com/jerrymusaga/Conduit-Protocol/blob/cd4d974/conduit-dapp/app/demo/page.tsx#L893)).
 - **Redeem** — the granted `PermissionResponse.context` becomes the root of a
   redelegation chain that the relayer redeems via `redeemDelegations`. Client builds the
-  redemption: [`conduit-dapp/lib/payment.ts#L111`](https://github.com/jerrymusaga/Conduit-Protocol/blob/main/conduit-dapp/lib/payment.ts#L111);
+  redemption: [`conduit-dapp/lib/payment.ts#L111`](https://github.com/jerrymusaga/Conduit-Protocol/blob/cd4d974/conduit-dapp/lib/payment.ts#L111);
   facilitator simulates/executes it:
-  [`conduit-facilitator/src/routes/verify.ts#L70-L82`](https://github.com/jerrymusaga/Conduit-Protocol/blob/main/conduit-facilitator/src/routes/verify.ts#L70-L82).
+  [`conduit-facilitator/src/routes/verify.ts#L70-L82`](https://github.com/jerrymusaga/Conduit-Protocol/blob/cd4d974/conduit-facilitator/src/routes/verify.ts#L70-L82).
 
 ### Delegations
 - **Create** — the user signs a root `Delegation` (`signDelegation`,
   `authority = ROOT_AUTHORITY`, bound by a caveat enforcer): budget root
-  [`conduit-dapp/lib/grant.ts#L88-L150`](https://github.com/jerrymusaga/Conduit-Protocol/blob/main/conduit-dapp/lib/grant.ts#L88-L150);
+  [`conduit-dapp/lib/grant.ts#L88-L150`](https://github.com/jerrymusaga/Conduit-Protocol/blob/cd4d974/conduit-dapp/lib/grant.ts#L88-L150);
   subscription root
-  [`conduit-dapp/lib/subscription.ts#L190-L230`](https://github.com/jerrymusaga/Conduit-Protocol/blob/main/conduit-dapp/lib/subscription.ts#L190-L230).
+  [`conduit-dapp/lib/subscription.ts#L190-L230`](https://github.com/jerrymusaga/Conduit-Protocol/blob/cd4d974/conduit-dapp/lib/subscription.ts#L190-L230).
 - **Redeem** — `redeemDelegations` is simulated in
-  [`conduit-facilitator/src/routes/verify.ts#L70-L82`](https://github.com/jerrymusaga/Conduit-Protocol/blob/main/conduit-facilitator/src/routes/verify.ts#L70-L82)
+  [`conduit-facilitator/src/routes/verify.ts#L70-L82`](https://github.com/jerrymusaga/Conduit-Protocol/blob/cd4d974/conduit-facilitator/src/routes/verify.ts#L70-L82)
   and its args are built in
-  [`conduit-facilitator/src/x402.ts#L118`](https://github.com/jerrymusaga/Conduit-Protocol/blob/main/conduit-facilitator/src/x402.ts#L118).
+  [`conduit-facilitator/src/x402.ts#L118`](https://github.com/jerrymusaga/Conduit-Protocol/blob/cd4d974/conduit-facilitator/src/x402.ts#L118).
 
 ### Redelegation
 - **Create** — a coordinator redelegates a narrowed leaf to the relayer
   (`authority = hashDelegation(parent)`, a child narrows-never-widens):
-  [`conduit-dapp/lib/payment.ts#L284`](https://github.com/jerrymusaga/Conduit-Protocol/blob/main/conduit-dapp/lib/payment.ts#L284)
+  [`conduit-dapp/lib/payment.ts#L284`](https://github.com/jerrymusaga/Conduit-Protocol/blob/cd4d974/conduit-dapp/lib/payment.ts#L284)
   (multi-hop leaf signing at
-  [`L171-L208`](https://github.com/jerrymusaga/Conduit-Protocol/blob/main/conduit-dapp/lib/payment.ts#L171-L208)).
+  [`L171-L208`](https://github.com/jerrymusaga/Conduit-Protocol/blob/cd4d974/conduit-dapp/lib/payment.ts#L171-L208)).
 
 ### x402
 - **Server** — the facilitator advertises `erc7710` and runs verify/settle
-  ([`supported.ts#L39-L46`](https://github.com/jerrymusaga/Conduit-Protocol/blob/main/conduit-facilitator/src/routes/supported.ts#L39-L46),
-  [`verify.ts#L34`](https://github.com/jerrymusaga/Conduit-Protocol/blob/main/conduit-facilitator/src/routes/verify.ts#L34),
-  [`settle.ts#L19`](https://github.com/jerrymusaga/Conduit-Protocol/blob/main/conduit-facilitator/src/routes/settle.ts#L19));
+  ([`supported.ts#L39-L46`](https://github.com/jerrymusaga/Conduit-Protocol/blob/cd4d974/conduit-facilitator/src/routes/supported.ts#L39-L46),
+  [`verify.ts#L34`](https://github.com/jerrymusaga/Conduit-Protocol/blob/cd4d974/conduit-facilitator/src/routes/verify.ts#L34),
+  [`settle.ts#L19`](https://github.com/jerrymusaga/Conduit-Protocol/blob/cd4d974/conduit-facilitator/src/routes/settle.ts#L19));
   the resource server returns the `402`:
-  [`conduit-endpoint/src/index.ts#L345-L349`](https://github.com/jerrymusaga/Conduit-Protocol/blob/main/conduit-endpoint/src/index.ts#L345-L349).
+  [`conduit-endpoint/src/index.ts#L345-L349`](https://github.com/jerrymusaga/Conduit-Protocol/blob/cd4d974/conduit-endpoint/src/index.ts#L345-L349).
 - **Client (erc7710 asset transfer)** — runs `402 → X-PAYMENT → claim` and builds the
   intent-bound erc7710 redelegation that transfers USDC:
-  [`conduit-dapp/lib/endpoint.ts#L157`](https://github.com/jerrymusaga/Conduit-Protocol/blob/main/conduit-dapp/lib/endpoint.ts#L157)
-  + [`conduit-dapp/lib/payment.ts#L111`](https://github.com/jerrymusaga/Conduit-Protocol/blob/main/conduit-dapp/lib/payment.ts#L111).
+  [`conduit-dapp/lib/endpoint.ts#L157`](https://github.com/jerrymusaga/Conduit-Protocol/blob/cd4d974/conduit-dapp/lib/endpoint.ts#L157)
+  + [`conduit-dapp/lib/payment.ts#L111`](https://github.com/jerrymusaga/Conduit-Protocol/blob/cd4d974/conduit-dapp/lib/payment.ts#L111).
 
 ## 1Shot API usage
 - **Relayer JSON-RPC client** — `getCapabilities`, `getFeeData`, `send7710Transaction`,
   `send7710TransactionMultichain`, `estimate7710Transaction`, `getStatus`:
-  [`conduit-facilitator/src/relayers/oneshotClient.ts#L130-L161`](https://github.com/jerrymusaga/Conduit-Protocol/blob/main/conduit-facilitator/src/relayers/oneshotClient.ts#L130-L161).
+  [`conduit-facilitator/src/relayers/oneshotClient.ts#L130-L161`](https://github.com/jerrymusaga/Conduit-Protocol/blob/cd4d974/conduit-facilitator/src/relayers/oneshotClient.ts#L130-L161).
 - **Settlement** — builds `works[]` + a bounded USDC `feeChain`, sizes the fee with
   `estimate7710Transaction`, submits via `send7710Transaction` (gas in USDC, 7702 in
   `authorizationList`):
-  [`conduit-facilitator/src/relayers/oneshotPermissionless.ts`](https://github.com/jerrymusaga/Conduit-Protocol/blob/main/conduit-facilitator/src/relayers/oneshotPermissionless.ts).
+  [`conduit-facilitator/src/relayers/oneshotPermissionless.ts`](https://github.com/jerrymusaga/Conduit-Protocol/blob/cd4d974/conduit-facilitator/src/relayers/oneshotPermissionless.ts).
 - **Ed25519 webhook verification** (JWKS by `keyId`):
-  [`conduit-facilitator/src/relayers/oneshotWebhook.ts`](https://github.com/jerrymusaga/Conduit-Protocol/blob/main/conduit-facilitator/src/relayers/oneshotWebhook.ts)
+  [`conduit-facilitator/src/relayers/oneshotWebhook.ts`](https://github.com/jerrymusaga/Conduit-Protocol/blob/cd4d974/conduit-facilitator/src/relayers/oneshotWebhook.ts)
   + inbound handler
-  [`conduit-facilitator/src/routes/relayerWebhook.ts`](https://github.com/jerrymusaga/Conduit-Protocol/blob/main/conduit-facilitator/src/routes/relayerWebhook.ts).
+  [`conduit-facilitator/src/routes/relayerWebhook.ts`](https://github.com/jerrymusaga/Conduit-Protocol/blob/cd4d974/conduit-facilitator/src/routes/relayerWebhook.ts).
 
 ## Venice AI usage
 - **Seller agents** (chat + web-search, reasoning, image, TTS, crypto-RPC) — the paid
   agents' generation:
-  [`conduit-endpoint/src/venice.ts`](https://github.com/jerrymusaga/Conduit-Protocol/blob/main/conduit-endpoint/src/venice.ts)
+  [`conduit-endpoint/src/venice.ts`](https://github.com/jerrymusaga/Conduit-Protocol/blob/cd4d974/conduit-endpoint/src/venice.ts)
   (chat `#L84`, crypto-RPC `#L125`, image `#L145`, TTS `#L171`, search `#L203`); per-role
   outputs incl. the **Roaster**:
-  [`conduit-endpoint/src/index.ts`](https://github.com/jerrymusaga/Conduit-Protocol/blob/main/conduit-endpoint/src/index.ts).
+  [`conduit-endpoint/src/index.ts`](https://github.com/jerrymusaga/Conduit-Protocol/blob/cd4d974/conduit-endpoint/src/index.ts).
 - **Coordinator intelligence** (chat / image / STT):
-  [`conduit-dapp/lib/venice-server.ts`](https://github.com/jerrymusaga/Conduit-Protocol/blob/main/conduit-dapp/lib/venice-server.ts).
+  [`conduit-dapp/lib/venice-server.ts`](https://github.com/jerrymusaga/Conduit-Protocol/blob/cd4d974/conduit-dapp/lib/venice-server.ts).
 - **Voice input (STT)**:
-  [`conduit-dapp/app/api/transcribe/route.ts`](https://github.com/jerrymusaga/Conduit-Protocol/blob/main/conduit-dapp/app/api/transcribe/route.ts).
+  [`conduit-dapp/app/api/transcribe/route.ts`](https://github.com/jerrymusaga/Conduit-Protocol/blob/cd4d974/conduit-dapp/app/api/transcribe/route.ts).
 - **Team planning** (Venice picks the agent team):
-  [`conduit-dapp/app/api/plan/route.ts`](https://github.com/jerrymusaga/Conduit-Protocol/blob/main/conduit-dapp/app/api/plan/route.ts).
+  [`conduit-dapp/app/api/plan/route.ts`](https://github.com/jerrymusaga/Conduit-Protocol/blob/cd4d974/conduit-dapp/app/api/plan/route.ts).
 - **Scout** (picks the best token/venue within a signed set):
-  [`conduit-dapp/app/api/scout/route.ts`](https://github.com/jerrymusaga/Conduit-Protocol/blob/main/conduit-dapp/app/api/scout/route.ts)
-  + [`conduit-dapp/app/api/yield-scout/route.ts`](https://github.com/jerrymusaga/Conduit-Protocol/blob/main/conduit-dapp/app/api/yield-scout/route.ts).
+  [`conduit-dapp/app/api/scout/route.ts`](https://github.com/jerrymusaga/Conduit-Protocol/blob/cd4d974/conduit-dapp/app/api/scout/route.ts)
+  + [`conduit-dapp/app/api/yield-scout/route.ts`](https://github.com/jerrymusaga/Conduit-Protocol/blob/cd4d974/conduit-dapp/app/api/yield-scout/route.ts).
 
 ## Feedback
 Detailed, balanced feedback for MetaMask, 1Shot, Venice, and the x402 / ERC-7710 spec —
 **what we hit → why it cost time → a concrete suggestion** for each — is in
-[`FEEDBACK.md`](https://github.com/jerrymusaga/Conduit-Protocol/blob/main/FEEDBACK.md).
+[`FEEDBACK.md`](https://github.com/jerrymusaga/Conduit-Protocol/blob/cd4d974/FEEDBACK.md).
 
 ## Social Media
 
