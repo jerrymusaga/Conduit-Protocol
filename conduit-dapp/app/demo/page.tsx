@@ -15,7 +15,6 @@ import {
   BUDGET,
   createCoordinatorAccount,
   grantBudget,
-  revokeRootDelegation,
   type Coordinator,
   type GrantResult,
 } from "@/lib/grant";
@@ -34,7 +33,7 @@ import {
 import { buildOneshotPayment, type Eip7702Authorization } from "@/lib/payment";
 import { useActiveWallet } from "@/lib/activeWallet";
 import { useConduitEmbedded } from "@/lib/conduitEmbedded";
-import { buildGaslessRevoke, settleGaslessRevoke } from "@/lib/revoke";
+import { gaslessRevoke } from "@/lib/revoke";
 import { keccak256, parseUnits, formatUnits, type Hex, type EIP1193Provider } from "viem";
 import { Erc7710Inspector, type InspectorBinding } from "@/components/Erc7710Inspector";
 import { Toast, type ToastState } from "@/components/Toast";
@@ -636,48 +635,34 @@ export default function DemoPage() {
   // AllowedMethods), gas reimbursed in USDC, no ETH. Falls back to a direct tx
   // (needs a little ETH) so the kill switch ALWAYS works.
   const revoke = async () => {
-    if (busy || !granted || !grantResult || !walletClient || !address || !coordinatorRef.current) return;
+    if (busy || !granted || !grantResult || !walletClient || !address) return;
     setBusy(true);
     showToast("pending", "Revoking — signing your kill switch…");
-    const finish = () => {
-      append("Budget revoked ✓ · every task agent under this grant is now dead on-chain");
-      showToast("success", "Revoked ✓ — every agent under this grant is dead");
-      setRevoked(true); // keep the tree on screen, dimmed — the cascading-death beat
-      coordinatorRef.current = null;
-      setGranted(false);
-      setGrantResult(null);
-      setAuthorization(null);
-      clearSession();
-    };
+    // Use the shared gaslessRevoke helper: it spins up its own coordinator, and —
+    // critically — RE-SIGNS the 7702 authorization when the account isn't yet
+    // designated, so the relayer can disableDelegation FROM the user's smart
+    // account (gas in USDC, no ETH). Direct-tx fallback lives inside the helper.
     try {
-      append("Revoking · the relayer disables the root for you — gas in USDC, no ETH…");
-      const req = await fetch402("/services/researcher");
-      const { paymentPayload } = await buildGaslessRevoke({
-        walletClient, userAddress: address, coordinator: coordinatorRef.current,
-        context: grantResult.context, req, authorization: authorization ?? undefined,
+      const r = await gaslessRevoke({
+        walletClient,
+        userAddress: address as Hex,
+        context: grantResult.context,
+        delegationManager: grantResult.delegationManager,
+        signAuthorization: activeWallet.signAuthorization,
+        log: append,
       });
-      const r = await settleGaslessRevoke(paymentPayload, { agent: "revoke" });
-      if (!r.ok) throw new Error(r.error ?? "gasless revoke rejected");
-      append(`Revoke submitted gaslessly · ${shorten(r.transaction ?? "")} — confirming…`);
-      if (r.jobId) {
-        const job = await pollTradeJob(r.jobId);
-        if (job?.status !== "confirmed") throw new Error(job?.error ?? "revoke didn't confirm in time");
-      }
-      finish();
-    } catch (gaslessErr) {
-      // Gasless path unavailable — fall back to the direct tx (needs a little ETH).
-      append(`Gasless revoke unavailable (${errMsg(gaslessErr)}) — falling back to a direct tx (needs a little ETH)…`);
-      try {
-        const tx = await revokeRootDelegation({
-          walletClient, userAddress: address,
-          context: grantResult.context, delegationManager: grantResult.delegationManager,
-        });
-        append(`Revoke tx · ${shorten(tx)} — awaiting confirmation…`);
-        await publicClient.waitForTransactionReceipt({ hash: tx });
-        finish();
-      } catch (e) {
-        append(`Revoke failed · ${errMsg(e)}`);
-        showToast("error", `Revoke failed · ${errMsg(e)}`);
+      if (r.ok) {
+        append(`Budget revoked ${r.viaGasless ? "gaslessly · gas in USDC, no ETH" : "on-chain"} ✓ · every task agent under this grant is now dead on-chain`);
+        showToast("success", "Revoked ✓ — every agent under this grant is dead");
+        setRevoked(true); // keep the tree on screen, dimmed — the cascading-death beat
+        coordinatorRef.current = null;
+        setGranted(false);
+        setGrantResult(null);
+        setAuthorization(null);
+        clearSession();
+      } else {
+        append(`Revoke failed · ${r.error}`);
+        showToast("error", `Revoke failed · ${r.error}`);
       }
     } finally {
       setBusy(false);
