@@ -30,7 +30,30 @@ EIP-712 `Delegation` directly — you must use ERC-7715 `wallet_requestExecution
   (`-32xxx delegation_requires_grant_permissions`) with a docs link instead of
   "internal error".
 
-**2. ERC-7715 only delegates token-spending — there is no permission to delegate an
+**2. MetaMask Embedded Wallets (Web3Auth) can't back a 7702 + ERC-7710 + relayer
+architecture — surprising, given it's the same brand as the Delegation Framework.**
+We tried to go "all MetaMask" for login by replacing our embedded signer with MetaMask
+Embedded Wallets (`@web3auth/modal` v11) and inspected the SDK directly. It does not fit
+a delegation / 7702-settlement model:
+- **No `signAuthorization` anywhere** in `@web3auth/modal` / `@web3auth/no-modal` (0
+  matches) — so there is no way to produce the raw **EIP-7702 authorization tuple** a
+  type-4 settle tx needs (Privy exposes `useSign7702Authorization`; MM-EW has no
+  equivalent).
+- Its smart accounts (incl. the EIP-7702 mode) are **ERC-4337 / bundler-based** —
+  execution is UserOperations through its own bundler + EntryPoint, **not
+  `redeemDelegations` through a relayer** like 1Shot. Adopting it means abandoning the
+  relayer settlement path.
+- Its `./x402` module signs **EIP-3009 `transferWithAuthorization`**, not ERC-7710 — a
+  different settlement lane than an enforcer-bound delegation.
+- The only route to a raw 7702 auth is private-key export (`eth_private_key`), which
+  **403'd** for us — too fragile to build an architecture on.
+- **Suggestion:** expose a first-class `signAuthorization` (raw EIP-7702 auth) in
+  MetaMask Embedded Wallets, and document clearly whether MM-EW is meant to support the
+  **DeleGator / `redeemDelegations`** path or only its 4337 bundler path. As of now,
+  choosing MM-EW for login silently costs you the delegation + relayer settlement model
+  — the exact thing the MetaMask Delegation Framework is for.
+
+**3. ERC-7715 only delegates token-spending — there is no permission to delegate an
 arbitrary contract call.**
 The permission catalog is `native/erc20 token stream | periodic | allowance |
 revocation`. That covers budgets and recurring transfers, but a bounded *swap*
@@ -45,7 +68,7 @@ the budget/subscription flows.
   a custom `CaveatEnforcer` to a granted permission's `rules`. This is the single
   feature that would let "safe agentic DeFi on MetaMask" exist.
 
-**3. The `@metamask/delegation-toolkit` → `@metamask/smart-accounts-kit` rename.**
+**4. The `@metamask/delegation-toolkit` → `@metamask/smart-accounts-kit` rename.**
 The deprecated package (0.13.0) sends an older `wallet_requestExecutionPermissions`
 wire format that current MetaMask rejects with "Missing or invalid parameters". Many
 public examples and search results still reference the old package, and the migration
@@ -53,7 +76,7 @@ is easy to miss.
 - **Suggestion:** a clear migration note + a deprecation warning on install that names
   the replacement and the minimum compatible MetaMask version.
 
-**4. The ERC-7715 request/response shape is hard to discover.**
+**5. The ERC-7715 request/response shape is hard to discover.**
 We reverse-engineered it from the package's `.d.ts`: request is
 `PermissionRequestParameter[]` (`{ chainId, to, from?, expiry?, permission }`), and the
 response is `PermissionResponse[]` with `{ context, delegationManager, dependencies }`.
@@ -62,14 +85,14 @@ redelegation against the returned `context`" would have saved a day.
 - **Suggestion:** one canonical, current example repo (the `templated-gator` idea, kept
   in lockstep with `smart-accounts-kit` versions) showing grant → redelegate → redeem.
 
-**5. EIP-7702 + injected MetaMask: no dapp-accessible `signAuthorization`.**
+**6. EIP-7702 + injected MetaMask: no dapp-accessible `signAuthorization`.**
 There is no standard way for a dapp to ask the injected MetaMask provider to sign a
 raw 7702 authorization (Privy embedded exposes `useSign7702Authorization`; the
 extension does not). The upgrade only happens inside MetaMask's own grant UI.
 Undocumented; we discovered it by elimination.
 - **Suggestion:** document the supported 7702 entry points per wallet type.
 
-**6. 7702-delegated accounts hit the relayer's in-flight transaction limit.**
+**7. 7702-delegated accounts hit the relayer's in-flight transaction limit.**
 Deploying our contracts from an account we had manually upgraded to a smart account
 failed mid-broadcast with `-32000 "in-flight transaction limit reached for delegated
 accounts"`. `forge script --slow` fixes it, but the error is cryptic and the cause
@@ -83,7 +106,7 @@ accounts"`. `forge script --slow` fixes it, but the error is cryptic and the cau
 (`send7710TransactionMultichain`) is a real differentiator we want to build on. Two
 sharp edges:
 
-**7. Webhook signature verification was the trickiest part.**
+**8. Webhook signature verification was the trickiest part.**
 Getting `relayer-webhook` verification right required: pulling the right key from the
 JWKS by `keyId`, using a stable stringify, and — critically — handling a
 double-serialization quirk where the relayer's signed payload had to be verified in
@@ -93,7 +116,7 @@ behavior here.
   lookup) and a documented note about the serialization, plus a webhook payload sample
   with a known-good signature to test against.
 
-**8. Per-chain redeemer/feeCollector and the relayer URL.**
+**9. Per-chain redeemer/feeCollector and the relayer URL.**
 Capabilities differ per chain (`targetAddress`, `feeCollector`), and the relayer URL
 auto-derives `.dev`/`.com` from chain id unless overridden — easy to leave a testnet
 URL pinned in env and silently keep hitting testnet on a mainnet cutover.
@@ -112,13 +135,13 @@ through our facilitator. The breadth is the selling point and it delivered.
 
 ## x402 / ERC-7710 spec + general
 
-**10. The "is this actually deployed and working" gap.**
+**11. The "is this actually deployed and working" gap.**
 The x402 spec describes the protocol, not which facilitators implement `erc7710`
 on which chains today. Early on we burned time probing facilitators to find one that
 actually supported the method live. A maintained capability matrix (facilitator ×
 chain × method) would help every team pick a viable path on day one.
 
-**11. Opaque errors across the stack cost the most time, cumulatively.**
+**12. Opaque errors across the stack cost the most time, cumulatively.**
 viem's `UnknownRpcError`/`InternalRpcError` wrappers hide the real cause one or two
 `.cause` levels down; MetaMask's "internal error" hides a policy decision; the relayer
 and Privy both surface generic messages. We ended up writing a cause-chain walker just
@@ -126,13 +149,13 @@ to see real errors.
 - **Suggestion (cross-cutting):** typed, named errors with docs links at each layer.
   This single thing would have saved us more time than any feature.
 
-**12. Chrome third-party-cookie / embedded-auth edge.**
+**13. Chrome third-party-cookie / embedded-auth edge.**
 A restored Privy session left the account `authenticated` but not connected to wagmi,
 so a gated route stuck on the sign-in screen and `login()` no-op'd ("already logged
 in") — Chrome-only (stored session), fine in Firefox. Worth a documented pattern for
 "authenticated but no active wallet → connect/link, don't login".
 
-**13. WebAuthn-PRF device fragmentation.**
+**14. WebAuthn-PRF device fragmentation.**
 PRF is the right primitive for a passkey-derived key, but support is fragmented
 (works on Chrome/Android; no PRF on Firefox; macOS needs Sequoia/15). There is no good
 runtime capability probe, so we built device-support handling by trial. A standard
