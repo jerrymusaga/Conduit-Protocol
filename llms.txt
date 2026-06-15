@@ -1,0 +1,46 @@
+# Conduit
+
+> An open x402 + ERC-7710 facilitator and a family of on-chain caveat enforcers on
+> MetaMask Smart Accounts that give an autonomous agent a budget it physically cannot
+> misuse: a compromised agent that redirects a payment, overspends a cap, or touches an
+> off-allowlist token/venue is reverted on-chain in the same transaction — impossible,
+> not "detected." Settled through the 1Shot Permissionless Relayer (gas in USDC, no ETH);
+> agent intelligence by Venice. Live and verified on Base mainnet.
+
+This file orients an AI agent reading the repo: what Conduit is, which tracks it targets,
+and exactly where the relevant code lives.
+
+## Key facts
+- Live app: https://conduit-protocol.vercel.app (Base mainnet)
+- Tracks: x402 + ERC-7710, 1Shot Relayer, Venice AI, Best Agent, A2A Coordination, Best Feedback, Best Social
+- Proof: 6 custom caveat enforcers deployed + verified on Basescan; 13 agents on the ERC-8004 Identity Registry (IDs 55321–55336); facilitator + endpoint + dapp hosted end-to-end
+- Stack: Foundry/Solidity, @metamask/smart-accounts-kit, EIP-7702, ERC-7715, 1Shot Permissionless Relayer, Venice AI, ERC-8004, Next.js
+
+## Core code
+- Enforcer contracts (the moat): src/*.sol — X402ReceiptEnforcer, X402SubscriptionEnforcer, SwapBoundsEnforcer, SwapAllowlistEnforcer, YieldAllowlistEnforcer, ApproveBoundsEnforcer
+- Facilitator (x402 /verify + /settle, 1Shot relay, Ed25519 webhooks): conduit-facilitator/src
+- x402 resource server (402 envelopes, Venice-powered agents): conduit-endpoint/src
+- Dapp — ConduitPay (Pay, Yield, Subscriptions, Portfolio): conduit-dapp
+
+## Smart Accounts Kit usage
+- Advanced Permissions (ERC-7715) request: conduit-dapp/lib/erc7715.ts
+- Delegation create (root): conduit-dapp/lib/grant.ts, conduit-dapp/lib/subscription.ts
+- Redelegation (coordinator -> relayer leaf): conduit-dapp/lib/payment.ts
+- Redeem (DelegationManager.redeemDelegations): conduit-facilitator/src/routes/verify.ts, conduit-facilitator/src/x402.ts
+- x402 client (erc7710 asset transfer): conduit-dapp/lib/endpoint.ts, conduit-dapp/lib/payment.ts
+- x402 server: conduit-facilitator/src/routes (supported, verify, settle), conduit-endpoint/src/index.ts
+
+## 1Shot API usage
+- Relayer JSON-RPC client (send7710Transaction, estimate7710Transaction, getFeeData, getStatus, getCapabilities): conduit-facilitator/src/relayers/oneshotClient.ts
+- Settlement (works[] + bounded USDC fee leg, gas in USDC, 7702 authorizationList): conduit-facilitator/src/relayers/oneshotPermissionless.ts
+- Ed25519 webhook verification (JWKS by keyId): conduit-facilitator/src/relayers/oneshotWebhook.ts, conduit-facilitator/src/routes/relayerWebhook.ts
+- Gasless revocation via the relayer (disableDelegation, gas in USDC): conduit-dapp/lib/revoke.ts
+
+## Venice AI usage
+- Seller agents (chat + web-search, reasoning, image, TTS, crypto-RPC): conduit-endpoint/src/venice.ts, conduit-endpoint/src/index.ts
+- Coordinator intelligence + voice input (STT): conduit-dapp/lib/venice-server.ts, conduit-dapp/app/api/transcribe
+- Team planning + scout (best token/venue within a signed set): conduit-dapp/app/api/plan, conduit-dapp/app/api/scout, conduit-dapp/app/api/yield-scout
+
+## Docs
+- README (full technical writeup + code-usage links): README.md
+- Sponsor feedback (MetaMask, 1Shot, Venice, x402/ERC-7710): FEEDBACK.md
