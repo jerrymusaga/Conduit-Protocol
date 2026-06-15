@@ -296,6 +296,11 @@ caveat enforcers.
   [`conduit-facilitator/src/relayers/oneshotWebhook.ts`](https://github.com/jerrymusaga/Conduit-Protocol/blob/cd4d974/conduit-facilitator/src/relayers/oneshotWebhook.ts)
   + inbound handler
   [`conduit-facilitator/src/routes/relayerWebhook.ts`](https://github.com/jerrymusaga/Conduit-Protocol/blob/cd4d974/conduit-facilitator/src/routes/relayerWebhook.ts).
+- **Gasless revocation through the relayer** — the kill switch builds a bounded "the
+  relayer may only call `disableDelegation`" delegation (MetaMask `AllowedTargetsEnforcer`
+  + `AllowedMethodsEnforcer`) and settles it through the relayer, so revoking costs USDC,
+  not ETH:
+  [`conduit-dapp/lib/revoke.ts#L47-L129`](https://github.com/jerrymusaga/Conduit-Protocol/blob/cd4d974/conduit-dapp/lib/revoke.ts#L47-L129).
 
 ## Venice AI usage
 - **Seller agents** (chat + web-search, reasoning, image, TTS, crypto-RPC) — the paid
