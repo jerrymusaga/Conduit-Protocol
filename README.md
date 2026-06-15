@@ -318,9 +318,30 @@ Detailed, balanced feedback for MetaMask, 1Shot, Venice, and the x402 / ERC-7710
 [`FEEDBACK.md`](https://github.com/jerrymusaga/Conduit-Protocol/blob/main/FEEDBACK.md).
 
 ## Social Media
-Build updates, demo clips, and the launch thread are posted on X:
 
-- _[X / Twitter links to be added]_
+Conduit's build was documented in public on X throughout the hackathon.
+
+- **Conduit:** [@ConduitProtocol](https://x.com/ConduitProtocol)
+- **Builder:** [@JerryMusaga](https://x.com/JerryMusaga)
+
+**Build log (chronological):**
+
+1. https://x.com/ConduitProtocol/status/2055280609132445820
+2. https://x.com/ConduitProtocol/status/2056397273504903175
+3. https://x.com/ConduitProtocol/status/2056748237873164679
+4. https://x.com/ConduitProtocol/status/2057066557335810132
+5. https://x.com/ConduitProtocol/status/2057848263169003740
+6. https://x.com/JerryMusaga/status/2057888316096196688
+7. https://x.com/ConduitProtocol/status/2058873242933146025
+8. https://x.com/ConduitProtocol/status/2059006116215083088
+9. https://x.com/ConduitProtocol/status/2060052391656050960
+10. https://x.com/ConduitProtocol/status/2060079706469261761
+11. https://x.com/ConduitProtocol/status/2061426516890657270
+12. https://x.com/ConduitProtocol/status/2062951973687595017
+13. https://x.com/ConduitProtocol/status/2064934228261744697
+14. https://x.com/ConduitProtocol/status/2065825625621811477
+15. https://x.com/ConduitProtocol/status/2066377699308847112
+16. https://x.com/ConduitProtocol/status/2066472187884650814
 
 ## Build and test
 
