@@ -1,5 +1,7 @@
 # Conduit
 
+**Live:** https://conduit-protocol.vercel.app · **Network:** Base mainnet
+
 Conduit is an open x402 facilitator and a family of on-chain caveat enforcers that
 give an autonomous agent a budget it physically cannot misuse — even when the agent
 is fully compromised.
