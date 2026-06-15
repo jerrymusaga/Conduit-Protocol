@@ -81,16 +81,24 @@ function agentToService(a: DiscoveredAgent): CatalogService {
   };
 }
 
-/** Which roles a prompt needs. `always` roles are included in every plan
- *  (research grounds any brief; the narrator voices every deliverable). */
-const ROLE_RULES: { role: AgentRole; test: RegExp; always?: boolean; why: string }[] = [
-  { role: "research", test: /.^/, always: true, why: "Research the topic." },
+const CREATIVE_RE = /(roast|joke|poem|rant|funny|meme|parody|satir|story|rhyme|\brap\b|haiku|diss|burn|comedy|humou?r|limerick)/;
+// "Grounding" intent — research/analysis the user actually asked for. A creative
+// ask WITHOUT any of these is "creative-only": skip the always-on research +
+// summarizing voiceover so the creative output (the roast) is the star.
+const GROUNDING_RE = /(research|analy|brief|report|study|investigate|compare|market|outlook|landscape|insight|strategy)/;
+const VOICE_RE = /(voice|voiceover|narrat|audio|speak|podcast|tts|read\s+(?:it\s+)?aloud)/;
+
+/** Which roles a prompt needs. research + voice are DEFAULT-on (research grounds a
+ *  brief; the narrator voices the deliverable) — but suppressed for a pure creative
+ *  ask unless explicitly requested. Test-based roles fire on a keyword match. */
+const ROLE_RULES: { role: AgentRole; test: RegExp; why: string }[] = [
+  { role: "research", test: /.^/, why: "Research the topic." },
   { role: "copy", test: /(brief|copy|launch|positioning|announce|write|marketing|pitch|tagline|slogan|caption)/, why: "Write the brief / copy." },
-  { role: "creative", test: /(roast|joke|poem|rant|funny|meme|parody|satir|story|rhyme|\brap\b|haiku|diss|burn|comedy|humou?r|limerick)/, why: "Do the creative ask (roast / joke / poem)." },
+  { role: "creative", test: CREATIVE_RE, why: "Do the creative ask (roast / joke / poem)." },
   { role: "image", test: /(cover|image|visual|illustrat|design|art|graphic|logo|poster)/, why: "Design a cover image." },
   { role: "analysis", test: /(analy|market|compar|competit|outlook|assess|risk|trend|insight|strategy)/, why: "Analyze the landscape." },
   { role: "onchain", test: /(eth|staking|on-?chain|crypto|token|defi|tvl|validator|wallet|blockchain|web3)/, why: "Pull real on-chain data." },
-  { role: "voice", test: /.^/, always: true, why: "Narrate a voiceover summary." },
+  { role: "voice", test: /.^/, why: "Narrate a voiceover summary." },
 ];
 
 /**
@@ -102,10 +110,20 @@ const ROLE_RULES: { role: AgentRole; test: RegExp; always?: boolean; why: string
 export function planForPrompt(prompt: string, agents: DiscoveredAgent[]): PlanItem[] {
   const p = prompt.toLowerCase();
   const wantsPremium = /(premium|high[- ]?res|hi[- ]?res|4k|deep|best quality|top[- ]?tier|\bpro\b)/.test(p);
+  // A pure creative ask (roast/joke/poem) with no research/analysis intent → don't
+  // drag in the always-on Researcher + summarizing Narrator; let the creative win.
+  const creativeOnly = CREATIVE_RE.test(p) && !GROUNDING_RE.test(p);
+  const wantsVoice = VOICE_RE.test(p);
   const picks: PlanItem[] = [];
 
   for (const rule of ROLE_RULES) {
-    if (!rule.always && !rule.test.test(p)) continue;
+    // research + voice are default-on, except on a creative-only ask (voice still
+    // fires there if explicitly requested). Other roles fire on a keyword match.
+    const want =
+      rule.role === "research" ? !creativeOnly
+      : rule.role === "voice" ? (wantsVoice || !creativeOnly)
+      : rule.test.test(p);
+    if (!want) continue;
     const candidates = agents.filter((a) => a.role === rule.role);
     if (candidates.length === 0) continue;
     const sorted = [...candidates].sort((a, b) => Number(a.priceUsdc) - Number(b.priceUsdc));

@@ -39,14 +39,20 @@ export async function POST(req: Request) {
   const text = await veniceChat(
     "You are a procurement coordinator agent assembling a team to fulfill a user's request. " +
       "From the MARKETPLACE below, pick ONLY the agents whose capability the task actually requires — " +
-      "a lean team that matches THIS request, not a default bundle. " +
-      "ALWAYS include a researcher (to ground the work) and a narrator (for a voiceover summary). " +
+      "a lean team that matches THIS request, not a default bundle.\n" +
+      "Default support: include a researcher to GROUND an informational/brief task, and a narrator " +
+      "for a voiceover summary. BUT for a purely CREATIVE request (a roast, joke, poem, rant, parody) " +
+      "that needs no research, do NOT add a researcher, and add the narrator ONLY if the user asks for " +
+      "a voiceover/audio — let the creative agent be the star.\n" +
       "Add the OTHER specialists ONLY when the request clearly calls for them:\n" +
-      "- copywriter: ONLY when the user asks for written copy — marketing, a brief, positioning, " +
-      "an announcement, a tagline, a pitch. A research / analysis / data / trading task does NOT need a copywriter.\n" +
+      "- roaster (creative writer): ONLY when the user asks for a roast, joke, poem, rant, parody, meme, " +
+      "story, or other free-form creative writing. This agent DOES the creative ask itself — pick it for a roast.\n" +
+      "- copywriter: ONLY when the user asks for written marketing copy — a brief, positioning, " +
+      "an announcement, a tagline, a pitch. A research / analysis / data / creative task does NOT need a copywriter.\n" +
       "- illustrator: ONLY when the user asks for an image, cover, visual, logo, or design.\n" +
       "- analyst: ONLY when the user asks for analysis, comparison, market/competitive insight, or strategy.\n" +
-      "- on-chain data agent: ONLY when the user asks about crypto, tokens, staking, DeFi, yields, on-chain/blockchain data.\n" +
+      "- on-chain data agent: ONLY when the user asks for crypto/token/staking/DeFi/yield or on-chain " +
+      "data — NOT merely because a crypto name (e.g. Solana) is mentioned in passing.\n" +
       "When in doubt, LEAVE A SPECIALIST OUT. Prefer best value unless the user explicitly asks for premium / high quality / 4k. " +
       'Reply with ONLY JSON, no prose: {"picks":[{"id":"<marketplace id>","reason":"<one short reason>"}]}. ' +
       "Use ids exactly as they appear in the marketplace.",
