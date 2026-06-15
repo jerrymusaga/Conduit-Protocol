@@ -103,9 +103,10 @@ export default function WalletIframePage() {
       const cer = (credential.clientExtensionResults as any) ?? {};
       const prfEnabled = cer?.prf?.enabled === true;
       if (!prfEnabled) {
+        console.warn("[passkey] registration authenticator doesn't support PRF · cer=", cer);
         throw new Error(
-          "this device's passkey provider doesn't support PRF — use Android/Chrome, a PRF security key, or macOS 15 (Sequoia). " +
-            `cer=${JSON.stringify(cer)}`
+          "This device's passkey provider doesn't support the secure-key (PRF) extension. Create the " +
+            "passkey on your phone (Android/Chrome or iOS 18+), a PRF security key, or macOS 15 (Sequoia)."
         );
       }
       const r = await verifyRegister(credential, options.challengeId, "prf", null);
@@ -133,7 +134,17 @@ export default function WalletIframePage() {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const cer = (credential.clientExtensionResults as any) ?? {};
     const ab = toArrayBuffer(cer?.prf?.results?.first);
-    if (!ab) throw new Error(`no PRF output · cer=${JSON.stringify(cer)}`);
+    if (!ab) {
+      // PRF is evaluated by the DEVICE doing the ceremony, not stored with the
+      // (synced) passkey — so a fingerprint reader on older macOS/Windows can
+      // authenticate but return no PRF. Guide the user to a PRF-capable method.
+      console.warn("[passkey] authenticator returned no PRF output · cer=", cer);
+      throw new Error(
+        "This sign-in method can't unlock your wallet — the device you just used doesn't support " +
+          "the passkey secure-key (PRF) extension. Try again and choose your phone (or a PRF-capable " +
+          "passkey) instead of a fingerprint reader on older macOS/Windows."
+      );
+    }
     const key = await prfToValidEthPrivKey(ab, infoLabelRef.current);
     const account = privateKeyToAccount(key);
     const v = await verifyAuth(credential, options.challengeId, account.address);
