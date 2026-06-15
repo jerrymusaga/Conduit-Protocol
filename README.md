@@ -200,23 +200,38 @@ user-signed root). All are MetaMask Smart Accounts via the 7702 DeleGator.
 
 The full enforcer family is deployed and verified on Base mainnet.
 
-| Contract | Address |
-|---|---|
-| X402ReceiptEnforcer | `0xF3D95eD5949970F483b11867b3b6509422a617AA` |
-| X402SubscriptionEnforcer | `0x177e5DC050Da4aCE6655B721E3a24B2A553B5F9F` |
-| SwapBoundsEnforcer | `0x62DabA9aAD63B914Cba295B08a65263eEc401EE3` |
-| SwapAllowlistEnforcer | `0x150933Eb33176B763c79609FF771d14D8Dc665c5` |
-| ApproveBoundsEnforcer | `0x388084511a9a1891021ea6989b8A756D1561e0aA` |
-| YieldAllowlistEnforcer | `0xcBc69E09A6dfeCd503881DcAd595166f81836029` |
-| DelegationManager (MetaMask v1.3.0) | `0xdb9B1e94B5b69Df7e401DDbedE43491141047dB3` |
-| EIP7702StatelessDeleGatorImpl | `0x63c0c19a282a1B52b07dD5a65b58948A07DAE32B` |
-| USDC | `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` |
+**Conduit's custom caveat enforcers** (the moat — each deployed + verified on Basescan):
 
-The marketplace agents are registered on the Base mainnet ERC-8004 Identity Registry
-(`0x8004A169FB4a3325136EB29fA0ceB6D2e539a432`), agent IDs 55116–55127. Aave-V3 yield
-venues: Aave (`0xA238Dd80C259a72e81d7e4664a9801593F98d1c5`), Seamless
-(`0x8F44Fd754285aa6A2b8B9B97739B79746e0475a7`), ZeroLend
-(`0x766f21277087E18967c1b10bF602d8Fe56d0c671`).
+| Enforcer | Address (Basescan) |
+|---|---|
+| X402ReceiptEnforcer | [`0xF3D95eD5949970F483b11867b3b6509422a617AA`](https://basescan.org/address/0xF3D95eD5949970F483b11867b3b6509422a617AA#code) |
+| X402SubscriptionEnforcer | [`0x177e5DC050Da4aCE6655B721E3a24B2A553B5F9F`](https://basescan.org/address/0x177e5DC050Da4aCE6655B721E3a24B2A553B5F9F#code) |
+| SwapBoundsEnforcer | [`0x62DabA9aAD63B914Cba295B08a65263eEc401EE3`](https://basescan.org/address/0x62DabA9aAD63B914Cba295B08a65263eEc401EE3#code) |
+| SwapAllowlistEnforcer | [`0x150933Eb33176B763c79609FF771d14D8Dc665c5`](https://basescan.org/address/0x150933Eb33176B763c79609FF771d14D8Dc665c5#code) |
+| ApproveBoundsEnforcer | [`0x388084511a9a1891021ea6989b8A756D1561e0aA`](https://basescan.org/address/0x388084511a9a1891021ea6989b8A756D1561e0aA#code) |
+| YieldAllowlistEnforcer | [`0xcBc69E09A6dfeCd503881DcAd595166f81836029`](https://basescan.org/address/0xcBc69E09A6dfeCd503881DcAd595166f81836029#code) |
+
+**Framework + tokens:**
+
+| Contract | Address (Basescan) |
+|---|---|
+| DelegationManager (MetaMask v1.3.0) | [`0xdb9B1e94B5b69Df7e401DDbedE43491141047dB3`](https://basescan.org/address/0xdb9B1e94B5b69Df7e401DDbedE43491141047dB3) |
+| EIP7702StatelessDeleGatorImpl | [`0x63c0c19a282a1B52b07dD5a65b58948A07DAE32B`](https://basescan.org/address/0x63c0c19a282a1B52b07dD5a65b58948A07DAE32B) |
+| USDC | [`0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`](https://basescan.org/address/0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913) |
+
+**Agents (ERC-8004 Identity Registry).** The marketplace agents are registered on the
+Base mainnet ERC-8004 Identity Registry
+([`0x8004A169FB4a3325136EB29fA0ceB6D2e539a432`](https://basescan.org/address/0x8004A169FB4a3325136EB29fA0ceB6D2e539a432))
+by registrant
+([`0x131EC028Bb8Bd936A3416635777D905497F3D21f`](https://basescan.org/address/0x131EC028Bb8Bd936A3416635777D905497F3D21f)) —
+**13 agents, IDs 55321–55336** (including the **Roaster**, agentId `55324`). Each
+agent's on-chain `agentURI` points at its AgentCard, e.g.
+[`/api/agent-card/roaster`](https://conduit-protocol.vercel.app/api/agent-card/roaster).
+
+**Aave-V3 yield venues:**
+[Aave](https://basescan.org/address/0xA238Dd80C259a72e81d7e4664a9801593F98d1c5) ·
+[Seamless](https://basescan.org/address/0x8F44Fd754285aa6A2b8B9B97739B79746e0475a7) ·
+[ZeroLend](https://basescan.org/address/0x766f21277087E18967c1b10bF602d8Fe56d0c671).
 
 ## Build and test
 
